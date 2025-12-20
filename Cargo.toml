@@ -1,0 +1,22 @@
+[package]
+name = "ringmpsc-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Debasish Ghosh"]
+description = "A high-performance lock-free Multi-Producer Single-Consumer (MPSC) channel implementation achieving 50+ billion messages per second"
+license = "MIT"
+repository = "https://github.com/debasishg/ringmpsc-rs"
+readme = "README.md"
+keywords = ["mpsc", "lock-free", "channel", "concurrent", "ring-buffer"]
+categories = ["concurrency", "data-structures"]
+
+[dependencies]
+crossbeam-utils = "0.8"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "throughput"
+harness = false
+

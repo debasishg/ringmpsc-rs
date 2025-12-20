@@ -1,0 +1,56 @@
+/// Zero-copy reservation for writing directly into the ring buffer.
+///
+/// The producer obtains a reservation, writes data into the provided slice,
+/// then commits to make the data visible to the consumer.
+pub struct Reservation<'a, T> {
+    slice: &'a mut [T],
+    ring_commit: Box<dyn FnOnce(usize) + 'a>,
+    len: usize,
+}
+
+impl<'a, T> Reservation<'a, T> {
+    /// Creates a new reservation.
+    pub(crate) fn new(
+        slice: &'a mut [T],
+        ring_commit: impl FnOnce(usize) + 'a,
+    ) -> Self {
+        let len = slice.len();
+        Self {
+            slice,
+            ring_commit: Box::new(ring_commit),
+            len,
+        }
+    }
+
+    /// Returns a mutable slice for writing data.
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        self.slice
+    }
+
+    /// Returns the number of reserved slots.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns true if the reservation is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Commits the reservation, making data visible to the consumer.
+    ///
+    /// You can commit fewer items than reserved by passing a count < len().
+    pub fn commit(self) {
+        let len = self.len;
+        self.commit_n(len);
+    }
+
+    /// Commits n items (where n <= len()).
+    pub fn commit_n(self, n: usize) {
+        assert!(n <= self.len, "Cannot commit more than reserved");
+        (self.ring_commit)(n);
+    }
+}
