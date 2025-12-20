@@ -166,6 +166,20 @@ impl<T> Channel<T> {
 
         m
     }
+
+    /// Get a reference to a specific ring for dedicated consumer access.
+    ///
+    /// This allows implementing the N-producer N-consumer pattern where each
+    /// consumer has a dedicated ring to read from (matching the Zig implementation).
+    ///
+    /// Returns None if the ring_id is >= max_producers.
+    pub fn get_ring(&self, ring_id: usize) -> Option<&Ring<T>> {
+        if ring_id < self.inner.config.max_producers {
+            Some(&self.inner.rings[ring_id])
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> Clone for Channel<T> {
