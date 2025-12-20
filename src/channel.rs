@@ -196,6 +196,10 @@ impl<T> Producer<T> {
     }
 
     /// Reserve n slots for zero-copy writing. Returns None if full/closed.
+    ///
+    /// **Important:** The returned `Reservation` may contain **fewer than n items**
+    /// if the reservation wraps around the ring buffer. Always check the slice length.
+    /// See [`Ring::reserve`] for details and examples.
     #[inline]
     pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T>> {
         self.channel.rings[self.id].reserve(n)

@@ -2,6 +2,27 @@
 ///
 /// The producer obtains a reservation, writes data into the provided slice,
 /// then commits to make the data visible to the consumer.
+///
+/// **Important:** A `Reservation` may contain fewer items than requested from
+/// `reserve(n)` if the reservation wraps around the ring buffer boundary. Always
+/// check `as_mut_slice().len()` to determine how many items were actually reserved.
+///
+/// # Example
+///
+/// ```ignore
+/// // Request 100 items but might get fewer
+/// if let Some(mut reservation) = producer.reserve(100) {
+///     let slice = reservation.as_mut_slice();
+///     let actual = slice.len(); // May be < 100!
+///     
+///     // Write data to slice...
+///     for item in slice.iter_mut() {
+///         *item = some_value;
+///     }
+///     
+///     reservation.commit(); // Commits `actual` items
+/// }
+/// ```
 pub struct Reservation<'a, T> {
     slice: &'a mut [T],
     ring_commit: Box<dyn FnOnce(usize) + 'a>,
@@ -49,6 +70,10 @@ impl<'a, T> Reservation<'a, T> {
     }
 
     /// Commits n items (where n <= len()).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is greater than the number of reserved slots.
     pub fn commit_n(self, n: usize) {
         assert!(n <= self.len, "Cannot commit more than reserved");
         (self.ring_commit)(n);

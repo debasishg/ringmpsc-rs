@@ -4,49 +4,8 @@ A high-performance lock-free Multi-Producer Single-Consumer (MPSC) channel imple
 
 This is a Rust port of the [RingMPSC](https://github.com/boonzy00/ringmpsc) Zig implementation, maintaining the same design principles and algorithm while following Rust idioms.
 
+This is a work in progress (not safe at all to use for any serious application).
 
-## Algorithm
-
-RingMPSC uses a **ring-decomposed** architecture where each producer has a dedicated SPSC (Single-Producer Single-Consumer) ring buffer. This eliminates producer-producer contention entirely.
-
-```
-Producer 0 ──► [Ring 0] ──┐
-Producer 1 ──► [Ring 1] ──┼──► Consumer (polls all rings)
-Producer 2 ──► [Ring 2] ──┤
-Producer N ──► [Ring N] ──┘
-```
-
-### Key Optimizations
-
-1. **128-byte Cache Line Alignment**: Head and tail pointers are separated by 128 bytes to prevent prefetcher-induced false sharing (Intel/AMD prefetchers may pull adjacent lines).
-
-2. **Cached Sequence Numbers**: Producers cache the consumer's head position to minimize cross-core cache traffic. Cache refresh only occurs when the ring appears full.
-
-3. **Batch Operations**: The `consume_all` API processes all available items with a single atomic head update, amortizing synchronization overhead.
-
-4. **Adaptive Backoff**: Crossbeam-style exponential backoff (spin → yield → park) reduces contention without wasting CPU cycles.
-
-5. **Zero-Copy API**: The `reserve`/`commit` pattern allows producers to write directly into the ring buffer without intermediate copies.
-
-### Memory Layout
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ Producer Hot (128B aligned)                                      │
-│   tail: AtomicU64        ← Producer writes, Consumer reads       │
-│   cached_head: u64       ← Producer-local cache                  │
-├──────────────────────────────────────────────────────────────────┤
-│ Consumer Hot (128B aligned)                                      │
-│   head: AtomicU64        ← Consumer writes, Producer reads       │
-│   cached_tail: u64       ← Consumer-local cache                  │
-├──────────────────────────────────────────────────────────────────┤
-│ Cold State (128B aligned)                                        │
-│   active, closed, metrics                                        │
-├──────────────────────────────────────────────────────────────────┤
-│ Data Buffer (64B aligned)                                        │
-│   Vec<MaybeUninit<T>>                                            │
-└──────────────────────────────────────────────────────────────────┘
-```
 
 ## Usage
 
@@ -173,61 +132,6 @@ let config = Config::new(
 );
 ```
 
-## Benchmarks
-
-Comprehensive throughput benchmarks are available using Criterion:
-
-```bash
-# Quick benchmark run
-cargo bench --bench throughput -- --quick
-
-# Full benchmark suite
-cargo bench --bench throughput
-
-# Run specific benchmark groups
-cargo bench --bench throughput -- spsc
-cargo bench --bench throughput -- mpsc
-cargo bench --bench throughput -- batch_sizes
-```
-
-See [BENCHMARKS.md](BENCHMARKS.md) for detailed results and performance analysis.
-
-**Quick Results** (on test system):
-- SPSC: 1.46 billion elements/sec
-- 2P2C: 1.42 billion elements/sec
-- 4P4C: 1.23 billion elements/sec
-- Best batch size: 16K (1.62 billion elements/sec)
-
-## API Reference
-
-### Channel
-
-- `Channel::new(config)` - Create a new channel
-- `register()` - Register a new producer (returns `Result<Producer, ChannelError>`)
-- `consume_all(handler)` - Process all available items with batch update
-- `consume_all_up_to(max, handler)` - Process up to max items
-- `recv(&mut buffer)` - Convenience method to receive into buffer
-- `close()` - Close the channel
-- `is_closed()` - Check if closed
-- `producer_count()` - Get number of registered producers
-- `metrics()` - Get aggregated metrics (if enabled)
-
-### Producer
-
-- `reserve(n)` - Reserve n slots for zero-copy writing
-- `reserve_with_backoff(n)` - Reserve with adaptive backoff
-- `send(&items)` - Convenience method for batch send
-- `close()` - Close this producer's ring
-- `is_closed()` - Check if this producer's ring is closed
-
-### Reservation
-
-- `as_mut_slice()` - Get mutable slice for writing
-- `commit()` - Commit all reserved slots
-- `commit_n(n)` - Commit only n slots (n <= reserved)
-- `len()` - Number of reserved slots
-- `is_empty()` - Check if reservation is empty
-
 ## Correctness Properties
 
 RingMPSC guarantees the following properties:
@@ -259,8 +163,3 @@ While maintaining the same algorithm and design principles, this Rust implementa
 ## License
 
 MIT
-
-## See Also
-
-- [ALGORITHM.md](ALGORITHM.md) - Detailed algorithm description
-- [Original Zig Implementation](https://github.com/boonzy00/ringmpsc)

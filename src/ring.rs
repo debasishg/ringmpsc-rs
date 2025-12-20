@@ -17,13 +17,13 @@ pub struct Ring<T> {
     /// Tail index (written by producer, read by consumer)
     tail: CacheAligned<AtomicU64>,
     /// Producer's cached view of head (avoids cross-core reads)
-    cached_head: CacheAligned<u64>,
+    cached_head: CacheAligned<UnsafeCell<u64>>,
 
     // === CONSUMER HOT === (128-byte aligned)
     /// Head index (written by consumer, read by producer)
     head: CacheAligned<AtomicU64>,
     /// Consumer's cached view of tail (avoids cross-core reads)
-    cached_tail: CacheAligned<u64>,
+    cached_tail: CacheAligned<UnsafeCell<u64>>,
 
     // === COLD STATE === (rarely accessed)
     /// Whether this ring is active
@@ -56,9 +56,9 @@ impl<T> Ring<T> {
 
         Self {
             tail: CacheAligned::new(AtomicU64::new(0)),
-            cached_head: CacheAligned::new(0),
+            cached_head: CacheAligned::new(UnsafeCell::new(0)),
             head: CacheAligned::new(AtomicU64::new(0)),
-            cached_tail: CacheAligned::new(0),
+            cached_tail: CacheAligned::new(UnsafeCell::new(0)),
             active: CacheAligned::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
             metrics: UnsafeCell::new(Metrics::new()),
@@ -120,8 +120,26 @@ impl<T> Ring<T> {
 
     /// Reserve n slots for zero-copy writing. Returns None if full/closed.
     ///
+    /// **Important:** The returned `Reservation` may contain **fewer than n items**
+    /// if the reservation wraps around the ring buffer. The ring buffer is circular,
+    /// and reservations only provide contiguous memory regions. Always check
+    /// `reservation.as_mut_slice().len()` to see how many items were actually reserved.
+    ///
+    /// To send exactly n items, you may need to call `reserve()` multiple times:
+    /// ```ignore
+    /// let mut sent = 0;
+    /// while sent < n {
+    ///     if let Some(mut r) = ring.reserve(n - sent) {
+    ///         sent += r.as_mut_slice().len();
+    ///         // ... write to slice ...
+    ///         r.commit();
+    ///     }
+    /// }
+    /// ```
+    ///
     /// Fast path uses cached head to avoid cross-core reads.
     /// Slow path refreshes the cache only when needed.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T>> {
         if n == 0 || n > self.capacity() {
             return None;
@@ -130,7 +148,7 @@ impl<T> Ring<T> {
         let tail = self.tail.load(Ordering::Relaxed);
 
         // Fast path: check cached head
-        let cached_head = self.cached_head.get();
+        let cached_head = unsafe { *self.cached_head.get() };
         let space = self.capacity().saturating_sub(tail.wrapping_sub(cached_head) as usize);
 
         if space >= n {
@@ -139,7 +157,7 @@ impl<T> Ring<T> {
 
         // Slow path: refresh cache
         let head = self.head.load(Ordering::Acquire);
-        self.cached_head.set(head);
+        unsafe { *self.cached_head.get() = head; }
 
         let space = self.capacity().saturating_sub(tail.wrapping_sub(head) as usize);
         if space < n {
@@ -182,7 +200,7 @@ impl<T> Ring<T> {
         let slice = unsafe {
             let buffer = &mut *self.buffer.get();
             std::slice::from_raw_parts_mut(
-                buffer[idx..].as_mut_ptr() as *mut T,
+                buffer[idx..].as_mut_ptr().cast::<T>(),
                 contiguous,
             )
         };
@@ -214,17 +232,18 @@ impl<T> Ring<T> {
     // ---------------------------------------------------------------------
 
     /// Get readable slice. Returns None if empty.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn readable(&self) -> Option<&[T]> {
         let head = self.head.load(Ordering::Relaxed);
 
         // Fast path: check cached tail
-        let mut cached_tail = self.cached_tail.get();
+        let mut cached_tail = unsafe { *self.cached_tail.get() };
         let mut avail = cached_tail.wrapping_sub(head) as usize;
 
         if avail == 0 {
             // Slow path: refresh cache
             cached_tail = self.tail.load(Ordering::Acquire);
-            self.cached_tail.set(cached_tail);
+            unsafe { *self.cached_tail.get() = cached_tail; }
             avail = cached_tail.wrapping_sub(head) as usize;
             if avail == 0 {
                 return None;
@@ -246,7 +265,7 @@ impl<T> Ring<T> {
         unsafe {
             let buffer = &*self.buffer.get();
             Some(std::slice::from_raw_parts(
-                buffer[idx..].as_ptr() as *const T,
+                buffer[idx..].as_ptr().cast::<T>(),
                 contiguous,
             ))
         }
@@ -275,6 +294,7 @@ impl<T> Ring<T> {
     ///
     /// This is the key optimization: amortizes atomic operations by processing
     /// the entire batch before updating the head pointer once.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn consume_batch<F>(&self, mut handler: F) -> usize
     where
         F: FnMut(&T),
@@ -317,9 +337,10 @@ impl<T> Ring<T> {
         count
     }
 
-    /// Consume up to max_items with a single head update.
+    /// Consume up to `max_items` with a single head update.
     ///
     /// Useful for real-world processing where large batches may block too long.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn consume_up_to<F>(&self, max_items: usize, mut handler: F) -> usize
     where
         F: FnMut(&T),
@@ -376,15 +397,13 @@ impl<T> Ring<T> {
     where
         T: Copy,
     {
-        if let Some(mut reservation) = self.reserve(items.len()) {
+        self.reserve(items.len()).map_or(0, |mut reservation| {
             let slice = reservation.as_mut_slice();
             let n = slice.len();
             slice.copy_from_slice(&items[..n]);
             reservation.commit();
             n
-        } else {
-            0
-        }
+        })
     }
 
     /// Batch receive (convenience).
@@ -392,14 +411,12 @@ impl<T> Ring<T> {
     where
         T: Copy,
     {
-        if let Some(slice) = self.readable() {
+        self.readable().map_or(0, |slice| {
             let n = slice.len().min(out.len());
             out[..n].copy_from_slice(&slice[..n]);
             self.advance(n);
             n
-        } else {
-            0
-        }
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -443,57 +460,27 @@ impl<T> Drop for Ring<T> {
 }
 
 // ---------------------------------------------------------------------
-// HELPER: Cache-aligned wrapper
+// HELPER: 128-byte cache-aligned wrapper
 // ---------------------------------------------------------------------
 
+/// Wrapper type that ensures 128-byte alignment to prevent prefetcher-induced
+/// false sharing on Intel/AMD CPUs (which may prefetch adjacent cache lines).
 #[repr(align(128))]
 struct CacheAligned<T> {
-    value: UnsafeCell<T>,
+    value: T,
 }
 
 impl<T> CacheAligned<T> {
-    fn new(value: T) -> Self {
-        Self {
-            value: UnsafeCell::new(value),
-        }
-    }
-
-    #[allow(dead_code)]
-    unsafe fn get_mut_unchecked(&self) -> *mut T {
-        self.value.get()
+    const fn new(value: T) -> Self {
+        Self { value }
     }
 }
 
-// Specialized implementations for atomic types
-impl CacheAligned<AtomicU64> {
-    fn load(&self, order: Ordering) -> u64 {
-        unsafe { (*self.value.get()).load(order) }
-    }
-
-    fn store(&self, val: u64, order: Ordering) {
-        unsafe { (*self.value.get()).store(val, order) }
-    }
-}
-
-impl CacheAligned<AtomicBool> {
-    #[allow(dead_code)]
-    fn load(&self, order: Ordering) -> bool {
-        unsafe { (*self.value.get()).load(order) }
-    }
-
-    fn store(&self, val: bool, order: Ordering) {
-        unsafe { (*self.value.get()).store(val, order) }
-    }
-}
-
-// For plain u64
-impl CacheAligned<u64> {
-    fn get(&self) -> u64 {
-        unsafe { *self.value.get() }
-    }
-
-    fn set(&self, val: u64) {
-        unsafe { *self.value.get() = val; }
+impl<T> std::ops::Deref for CacheAligned<T> {
+    type Target = T;
+    
+    fn deref(&self) -> &Self::Target {
+        &self.value
     }
 }
 

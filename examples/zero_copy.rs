@@ -31,28 +31,36 @@ fn main() {
 
     // Spawn producer threads
     let mut handles = vec![];
-    for id in 0..N_PRODUCERS {
+    for _id in 0..N_PRODUCERS {
         let ch = Arc::clone(&channel);
         let handle = thread::spawn(move || {
             let producer = ch.register().unwrap();
             
-            for batch in 0..BATCHES {
-                // Reserve a batch for zero-copy writing
-                while let Some(mut reservation) = producer.reserve(BATCH_SIZE) {
-                    let slice = reservation.as_mut_slice();
-                    
-                    // Write directly into the ring buffer
-                    for (i, item) in slice.iter_mut().enumerate() {
-                        let value = (batch * BATCH_SIZE + i) as u64;
-                        *item = [value; 8]; // 64 bytes per item
+            let mut sent = 0;
+            for _batch in 0..BATCHES {
+                let mut batch_sent = 0;
+                // Keep sending until we've sent BATCH_SIZE items for this batch
+                while batch_sent < BATCH_SIZE {
+                    let remaining = BATCH_SIZE - batch_sent;
+                    if let Some(mut reservation) = producer.reserve(remaining) {
+                        let slice = reservation.as_mut_slice();
+                        
+                        // Write directly into the ring buffer
+                        for (i, item) in slice.iter_mut().enumerate() {
+                            let value = (sent + i) as u64;
+                            *item = [value; 8]; // 64 bytes per item
+                        }
+                        
+                        let n = slice.len();
+                        sent += n;
+                        batch_sent += n;
+                        reservation.commit();
+                    } else {
+                        // Yield if ring is full
+                        thread::yield_now();
                     }
-                    
-                    reservation.commit();
-                    break;
                 }
             }
-            
-            println!("Producer {} finished", id);
         });
         handles.push(handle);
     }
