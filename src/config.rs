@@ -11,7 +11,15 @@ pub struct Config {
 
 impl Config {
     /// Creates a new configuration with custom settings.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if `ring_bits` is greater than 20 (1M slots max) to prevent excessive memory usage.
+    /// Panics if `max_producers` is 0 or greater than 128.
     pub const fn new(ring_bits: u8, max_producers: usize, enable_metrics: bool) -> Self {
+        assert!(ring_bits > 0 && ring_bits <= 20, "ring_bits must be between 1 and 20 (max 1M slots)");
+        assert!(max_producers > 0 && max_producers <= 128, "max_producers must be between 1 and 128");
+        
         Self {
             ring_bits,
             max_producers,

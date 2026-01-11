@@ -188,14 +188,6 @@ impl<T> Ring<T> {
         let idx = (tail as usize) & mask;
         let contiguous = n.min(self.capacity() - idx);
 
-        // Prefetch next batch location (hide memory latency)
-        let next_idx = ((tail + n as u64) as usize) & mask;
-        unsafe {
-            let buffer = &*self.buffer.get();
-            // Just touch the memory for prefetching
-            let _ = &buffer[next_idx];
-        }
-
         // Get mutable slice for writing
         let slice = unsafe {
             let buffer = &mut *self.buffer.get();
@@ -205,16 +197,13 @@ impl<T> Ring<T> {
             )
         };
 
-        // Create closure for committing
+        // Create reservation with commit callback
         let ring_ptr = self as *const Self;
-        Reservation::new(slice, move |count| {
-            let ring = unsafe { &*ring_ptr };
-            ring.commit_internal(count);
-        })
+        Reservation::new(slice, ring_ptr)
     }
 
-    /// Internal: Commit n slots after writing.
-    fn commit_internal(&self, n: usize) {
+    /// Internal: Commit n slots after writing. Called by Reservation.
+    pub(crate) fn commit_internal(&self, n: usize) {
         let tail = self.tail.load(Ordering::Relaxed);
         self.tail.store(tail.wrapping_add(n as u64), Ordering::Release);
 
@@ -253,14 +242,6 @@ impl<T> Ring<T> {
         let mask = self.mask();
         let idx = (head as usize) & mask;
         let contiguous = avail.min(self.capacity() - idx);
-
-        // Prefetch ahead
-        let next_idx = ((head + contiguous as u64) as usize) & mask;
-        unsafe {
-            let buffer = &*self.buffer.get();
-            // Just touch the memory for prefetching
-            let _ = &buffer[next_idx];
-        }
 
         unsafe {
             let buffer = &*self.buffer.get();

@@ -27,11 +27,15 @@ fn main() {
         let handle = thread::spawn(move || {
             let producer = ch.register().unwrap();
             for i in 0..ITEMS_PER_PRODUCER {
-                // Reserve space and write
-                while let Some(mut reservation) = producer.reserve(1) {
-                    reservation.as_mut_slice()[0] = (id * ITEMS_PER_PRODUCER + i) as u64;
-                    reservation.commit();
-                    break;
+                // Reserve space and write - retry if ring is full
+                loop {
+                    if let Some(mut reservation) = producer.reserve(1) {
+                        reservation.as_mut_slice()[0] = (id * ITEMS_PER_PRODUCER + i) as u64;
+                        reservation.commit();
+                        break;
+                    }
+                    // Ring is full, yield to consumer
+                    thread::yield_now();
                 }
             }
             println!("Producer {} finished", id);

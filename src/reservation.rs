@@ -1,3 +1,5 @@
+use crate::Ring;
+
 /// Zero-copy reservation for writing directly into the ring buffer.
 ///
 /// The producer obtains a reservation, writes data into the provided slice,
@@ -25,20 +27,17 @@
 /// ```
 pub struct Reservation<'a, T> {
     slice: &'a mut [T],
-    ring_commit: Box<dyn FnOnce(usize) + 'a>,
+    ring_ptr: *const Ring<T>,
     len: usize,
 }
 
 impl<'a, T> Reservation<'a, T> {
     /// Creates a new reservation.
-    pub(crate) fn new(
-        slice: &'a mut [T],
-        ring_commit: impl FnOnce(usize) + 'a,
-    ) -> Self {
+    pub(crate) fn new(slice: &'a mut [T], ring_ptr: *const Ring<T>) -> Self {
         let len = slice.len();
         Self {
             slice,
-            ring_commit: Box::new(ring_commit),
+            ring_ptr,
             len,
         }
     }
@@ -76,6 +75,9 @@ impl<'a, T> Reservation<'a, T> {
     /// Panics if `n` is greater than the number of reserved slots.
     pub fn commit_n(self, n: usize) {
         assert!(n <= self.len, "Cannot commit more than reserved");
-        (self.ring_commit)(n);
+        unsafe {
+            let ring = &*self.ring_ptr;
+            ring.commit_internal(n);
+        }
     }
 }
