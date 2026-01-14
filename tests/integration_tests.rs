@@ -9,12 +9,9 @@ fn test_fifo_ordering_single_producer() {
 
     const N: u64 = 10_000;
 
-    // Send N items
+    // Send N items using push() convenience method
     for i in 0..N {
-        if let Some(mut r) = producer.reserve(1) {
-            r.as_mut_slice()[0] = i;
-            r.commit();
-        }
+        assert!(producer.push(i), "push failed at item {}", i);
     }
 
     // Verify FIFO order
@@ -42,10 +39,8 @@ fn test_fifo_ordering_multi_producer() {
         let handle = thread::spawn(move || {
             let producer = ch.register().unwrap();
             for i in 0..ITEMS_PER_PRODUCER {
-                if let Some(mut r) = producer.reserve(1) {
-                    r.as_mut_slice()[0] = (producer_id, i);
-                    r.commit();
-                }
+                // Use push() convenience method for single-item sends
+                assert!(producer.push((producer_id, i)));
             }
         });
         handles.push(handle);
@@ -91,12 +86,9 @@ fn test_concurrent_stress() {
         let handle = thread::spawn(move || {
             let producer = ch.register().unwrap();
             for i in 0..ITEMS_PER_PRODUCER {
-                while producer.reserve(1).is_none() {
+                // Use push() with backpressure handling
+                while !producer.push(i) {
                     thread::yield_now();
-                }
-                if let Some(mut r) = producer.reserve(1) {
-                    r.as_mut_slice()[0] = i;
-                    r.commit();
                 }
             }
         });
@@ -143,7 +135,7 @@ fn test_batch_operations() {
         if let Some(mut r) = producer.reserve(BATCH_SIZE) {
             let slice = r.as_mut_slice();
             for i in 0..slice.len() {
-                slice[i] = (batch * BATCH_SIZE + i) as u64;
+                slice[i].write((batch * BATCH_SIZE + i) as u64);
             }
             r.commit();
         }
@@ -176,7 +168,7 @@ fn test_wrap_around() {
     // Interleaved send/receive to force wrapping
     for i in 0..N {
         if let Some(mut r) = producer.reserve(1) {
-            r.as_mut_slice()[0] = i as u64;
+            r.as_mut_slice()[0].write(i as u64);
             r.commit();
         }
 
@@ -200,7 +192,7 @@ fn test_consume_up_to_limit() {
     // Send 1000 items
     for i in 0..1000 {
         if let Some(mut r) = producer.reserve(1) {
-            r.as_mut_slice()[0] = i;
+            r.as_mut_slice()[0].write(i);
             r.commit();
         }
     }

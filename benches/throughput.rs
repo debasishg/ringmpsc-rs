@@ -27,7 +27,7 @@ fn bench_spsc(c: &mut Criterion) {
                         let len = {
                             let slice = r.as_mut_slice();
                             for (i, item) in slice.iter_mut().enumerate() {
-                                *item = (sent + i as u64) as u32;
+                                item.write((sent + i as u64) as u32);
                             }
                             slice.len()
                         };
@@ -87,7 +87,7 @@ fn bench_mpsc(c: &mut Criterion) {
                                     let len = {
                                         let slice = r.as_mut_slice();
                                         for (i, item) in slice.iter_mut().enumerate() {
-                                            *item = (sent + i as u64) as u32;
+                                            item.write((sent + i as u64) as u32);
                                         }
                                         slice.len()
                                     };
@@ -157,7 +157,7 @@ fn bench_batch_sizes(c: &mut Criterion) {
                                 let len = {
                                     let slice = r.as_mut_slice();
                                     for (i, item) in slice.iter_mut().enumerate() {
-                                        *item = (sent + i as u64) as u32;
+                                        item.write((sent + i as u64) as u32);
                                     }
                                     slice.len()
                                 };
@@ -210,7 +210,7 @@ fn bench_zero_copy(c: &mut Criterion) {
                         let len = {
                             let slice = r.as_mut_slice();
                             for (i, item) in slice.iter_mut().enumerate() {
-                                *item = [(sent + i as u64); 8];
+                                item.write([(sent + i as u64); 8]);
                             }
                             slice.len()
                         };
@@ -269,7 +269,7 @@ fn bench_contention(c: &mut Criterion) {
                             
                             while sent < msgs {
                                 if let Some(mut r) = producer.reserve(1) {
-                                    r.as_mut_slice()[0] = sent as u32;
+                                    r.as_mut_slice()[0].write(sent as u32);
                                     r.commit();
                                     sent += 1;
                                 } else {

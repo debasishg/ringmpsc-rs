@@ -71,14 +71,14 @@ fn run_benchmark(num_producers: usize) {
                         // Write data (4-way unroll like Zig)
                         let mut i = 0;
                         while i + 4 <= n {
-                            slice[i] = (sent + i as u64) as u32;
-                            slice[i + 1] = (sent + i as u64 + 1) as u32;
-                            slice[i + 2] = (sent + i as u64 + 2) as u32;
-                            slice[i + 3] = (sent + i as u64 + 3) as u32;
+                            slice[i].write((sent + i as u64) as u32);
+                            slice[i + 1].write((sent + i as u64 + 1) as u32);
+                            slice[i + 2].write((sent + i as u64 + 2) as u32);
+                            slice[i + 3].write((sent + i as u64 + 3) as u32);
                             i += 4;
                         }
                         while i < n {
-                            slice[i] = (sent + i as u64) as u32;
+                            slice[i].write((sent + i as u64) as u32);
                             i += 1;
                         }
                         

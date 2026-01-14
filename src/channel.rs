@@ -225,6 +225,23 @@ impl<T> Producer<T> {
         self.channel.rings[self.id].reserve_with_backoff(n)
     }
 
+    /// Send a single item (convenience).
+    ///
+    /// Returns `true` if the item was successfully enqueued, `false` if the
+    /// ring is full or closed. This is the simplest API for single-item sends.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let producer = channel.register().unwrap();
+    /// if !producer.push(42) {
+    ///     // Ring is full, handle backpressure
+    /// }
+    /// ```
+    #[inline]
+    pub fn push(&self, item: T) -> bool {
+        self.channel.rings[self.id].push(item)
+    }
+
     /// Batch send (convenience).
     #[inline]
     pub fn send(&self, items: &[T]) -> usize

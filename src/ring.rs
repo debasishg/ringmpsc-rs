@@ -188,13 +188,10 @@ impl<T> Ring<T> {
         let idx = (tail as usize) & mask;
         let contiguous = n.min(self.capacity() - idx);
 
-        // Get mutable slice for writing
+        // Get mutable slice for writing (keeping as MaybeUninit)
         let slice = unsafe {
             let buffer = &mut *self.buffer.get();
-            std::slice::from_raw_parts_mut(
-                buffer[idx..].as_mut_ptr().cast::<T>(),
-                contiguous,
-            )
+            &mut buffer[idx..idx + contiguous]
         };
 
         // Create reservation with commit callback
@@ -297,7 +294,7 @@ impl<T> Ring<T> {
             let idx = (pos as usize) & mask;
             unsafe {
                 let buffer = &*self.buffer.get();
-                let item = &*(buffer[idx].as_ptr());
+                let item = buffer[idx].assume_init_ref();
                 handler(item);
             }
             pos = pos.wrapping_add(1);
@@ -348,7 +345,7 @@ impl<T> Ring<T> {
             let idx = (pos as usize) & mask;
             unsafe {
                 let buffer = &*self.buffer.get();
-                let item = &*(buffer[idx].as_ptr());
+                let item = buffer[idx].assume_init_ref();
                 handler(item);
             }
             pos = pos.wrapping_add(1);
@@ -373,6 +370,26 @@ impl<T> Ring<T> {
     // CONVENIENCE WRAPPERS
     // ---------------------------------------------------------------------
 
+    /// Send a single item (convenience).
+    ///
+    /// Returns `true` if the item was successfully enqueued, `false` if the
+    /// ring is full or closed. This is the simplest API for single-item sends.
+    ///
+    /// # Example
+    /// ```ignore
+    /// if !producer.push(42) {
+    ///     // Ring is full, handle backpressure
+    /// }
+    /// ```
+    #[inline]
+    pub fn push(&self, item: T) -> bool {
+        self.reserve(1).map_or(false, |mut r| {
+            r.as_mut_slice()[0] = std::mem::MaybeUninit::new(item);
+            r.commit();
+            true
+        })
+    }
+
     /// Batch send (convenience).
     pub fn send(&self, items: &[T]) -> usize
     where
@@ -381,7 +398,9 @@ impl<T> Ring<T> {
         self.reserve(items.len()).map_or(0, |mut reservation| {
             let slice = reservation.as_mut_slice();
             let n = slice.len();
-            slice.copy_from_slice(&items[..n]);
+            for i in 0..n {
+                slice[i].write(items[i]);
+            }
             reservation.commit();
             n
         })
@@ -476,10 +495,10 @@ mod tests {
         // Write
         if let Some(mut r) = ring.reserve(4) {
             let slice = r.as_mut_slice();
-            slice[0] = 100;
-            slice[1] = 200;
-            slice[2] = 300;
-            slice[3] = 400;
+            slice[0].write(100);
+            slice[1].write(200);
+            slice[2].write(300);
+            slice[3].write(400);
             r.commit();
         }
 
@@ -502,7 +521,7 @@ mod tests {
         // Write 10 items
         for i in 0..10 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = i * 10;
+                r.as_mut_slice()[0].write(i * 10);
                 r.commit();
             }
         }
@@ -523,7 +542,7 @@ mod tests {
         // Write 10 items
         for i in 0..10 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = i * 10;
+                r.as_mut_slice()[0].write(i * 10);
                 r.commit();
             }
         }
@@ -552,7 +571,7 @@ mod tests {
         // Fill it
         for i in 0..16 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = i;
+                r.as_mut_slice()[0].write(i);
                 r.commit();
             }
         }

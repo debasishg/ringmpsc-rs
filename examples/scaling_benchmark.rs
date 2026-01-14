@@ -30,7 +30,7 @@ fn benchmark_config(num_producers: usize) {
                     if let Some(mut r) = producer.reserve(want) {
                         let slice = r.as_mut_slice();
                         for (i, item) in slice.iter_mut().enumerate() {
-                            *item = (sent + i as u64) as u32;
+                            item.write((sent + i as u64) as u32);
                         }
                         sent += slice.len() as u64;
                         r.commit();

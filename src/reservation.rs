@@ -1,4 +1,5 @@
 use crate::Ring;
+use std::mem::MaybeUninit;
 
 /// Zero-copy reservation for writing directly into the ring buffer.
 ///
@@ -26,14 +27,14 @@ use crate::Ring;
 /// }
 /// ```
 pub struct Reservation<'a, T> {
-    slice: &'a mut [T],
+    slice: &'a mut [MaybeUninit<T>],
     ring_ptr: *const Ring<T>,
     len: usize,
 }
 
 impl<'a, T> Reservation<'a, T> {
     /// Creates a new reservation.
-    pub(crate) fn new(slice: &'a mut [T], ring_ptr: *const Ring<T>) -> Self {
+    pub(crate) fn new(slice: &'a mut [MaybeUninit<T>], ring_ptr: *const Ring<T>) -> Self {
         let len = slice.len();
         Self {
             slice,
@@ -44,7 +45,7 @@ impl<'a, T> Reservation<'a, T> {
 
     /// Returns a mutable slice for writing data.
     #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
+    pub fn as_mut_slice(&mut self) -> &mut [MaybeUninit<T>] {
         self.slice
     }
 

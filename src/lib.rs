@@ -18,13 +18,17 @@
 //!
 //! ```
 //! use ringmpsc_rs::{Channel, Config};
+//! use std::mem::MaybeUninit;
 //!
 //! let channel = Channel::<u64>::new(Config::default());
 //! let producer = channel.register().unwrap();
 //!
-//! // Send with zero-copy API
+//! // Simple API: push() for single items
+//! producer.push(42);
+//!
+//! // Zero-copy API: reserve() + MaybeUninit for maximum performance
 //! if let Some(mut reservation) = producer.reserve(1) {
-//!     reservation.as_mut_slice()[0] = 42;
+//!     reservation.as_mut_slice()[0] = MaybeUninit::new(43);
 //!     reservation.commit();
 //! }
 //!
@@ -42,7 +46,7 @@ mod reservation;
 mod ring;
 
 pub use backoff::Backoff;
-pub use channel::Channel;
+pub use channel::{Channel, ChannelError, Producer};
 pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
 pub use metrics::Metrics;
 pub use reservation::Reservation;

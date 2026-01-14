@@ -48,7 +48,7 @@ fn main() {
                         // Write directly into the ring buffer
                         for (i, item) in slice.iter_mut().enumerate() {
                             let value = (sent + i) as u64;
-                            *item = [value; 8]; // 64 bytes per item
+                            item.write([value; 8]); // 64 bytes per item
                         }
                         
                         let n = slice.len();

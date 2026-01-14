@@ -20,3 +20,11 @@ criterion = "0.5"
 name = "throughput"
 harness = false
 
+# Note: The assume_init_ref() fix eliminates UB, so opt-level workaround is no longer needed
+# Keeping default debug settings (opt-level = 0) for faster compile times
+# [profile.dev]
+# opt-level = 2
+#
+# [profile.test]
+# opt-level = 2
+
