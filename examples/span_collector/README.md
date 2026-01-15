@@ -19,16 +19,16 @@ This project demonstrates how to build a production-ready span collector for Ope
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Instrumented Service                      │
-│  Async Task 1  │  Async Task 2  │ ... │  Async Task N      │
-│  (Producer)    │  (Producer)    │     │  (Producer)        │
+│                    Instrumented Service                     │
+│  Async Task 1  │  Async Task 2  │ ... │  Async Task N       │
+│  (Producer)    │  (Producer)    │     │  (Producer)         │
 └────────┬────────────────┬─────────────────────┬─────────────┘
-         │ submit_span()  │ submit_span()      │ submit_span()
-         │ <100ns         │ <100ns             │ <100ns
+         │ submit_span()  │ submit_span()       │ submit_span()
+         │ <100ns         │ <100ns              │ <100ns
          ▼                ▼                     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              Lock-Free MPSC Ring Buffers                     │
-│  Ring 0 (4K)  │  Ring 1 (4K)  │ ... │  Ring N (4K)         │
+│              Lock-Free MPSC Ring Buffers                    │
+│  Ring 0 (4K)  │  Ring 1 (4K)  │ ... │  Ring N (4K)          │
 └────────┬────────────────────────────────────────────────────┘
          │ consume_all_up_to(10K) - tokio::spawn consumer
          ▼
@@ -183,14 +183,17 @@ tests/
 
 - **Memory safety in debug builds**: Lock-free data structures using `MaybeUninit<T>` require compiler optimizations to function safely. Always use `--release` mode for testing and production. We've added `opt-level = 2` to debug/test profiles in the root Cargo.toml, but release mode is still recommended for production use.
 
+## TODO
+
+- [ ] **OTLP Exporter** - Implement `OtlpExporter` to export spans to OpenTelemetry collectors via OTLP protocol (gRPC using `tonic` or HTTP using `reqwest`). This would convert the internal `Span` format to OTLP protobuf and support configurable endpoints, headers, and retry logic.
+
 ## Future Enhancements
 
-1. OTLP gRPC/HTTP exporters (using `tonic`/`reqwest`)
-2. Sampling strategies (head-based/tail-based)
-3. Compression on export (gzip/zstd)
-4. Multiple consumers (fan-out to backends)
-5. Adaptive batching based on latency
-6. Resource attributes (service metadata)
+1. Sampling strategies (head-based/tail-based)
+2. Compression on export (gzip/zstd)
+3. Multiple consumers (fan-out to backends)
+4. Adaptive batching based on latency
+5. Resource attributes (service metadata)
 
 ## References
 

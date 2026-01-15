@@ -29,6 +29,8 @@ impl fmt::Display for ExportError {
 impl std::error::Error for ExportError {}
 
 /// Trait for exporting span batches to various backends
+/// We need `#[async_trait]` because the code does use dynamic dispatch - 
+/// there are multiple places using `Arc<dyn SpanExporter>`
 #[async_trait]
 pub trait SpanExporter: Send + Sync {
     /// Exports a batch of spans

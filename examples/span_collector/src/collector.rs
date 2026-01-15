@@ -48,6 +48,15 @@ pub struct CollectorMetrics {
     pub reserve_retries: AtomicU64,
 }
 
+// All methods use `Ordering::Relaxed` because these are purely statistical counters:
+//
+// 1. No control flow dependencies - No code path depends on these values being "up to date"
+// 2. Eventual visibility is acceptable - Slightly stale reads are fine for observability
+// 3. No happens-before relationships needed - Unlike ring buffer head/tail, these don't
+//    guard any other data or coordinate producer-consumer handoff
+// 4. Maximum performance - Relaxed avoids memory barriers in hot paths (submit loops)
+//
+// This is the standard pattern for metrics/counters in high-performance code.
 impl CollectorMetrics {
     pub fn new() -> Self {
         Self::default()
@@ -120,6 +129,11 @@ impl SpanCollector {
     /// Returns the underlying channel
     pub fn channel(&self) -> &Arc<Channel<Span>> {
         &self.channel
+    }
+
+    /// Returns the collector configuration
+    pub fn config(&self) -> &CollectorConfig {
+        &self.config
     }
 
     /// Returns collector metrics
