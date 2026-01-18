@@ -175,13 +175,19 @@ tests/
 
 ### Why Separate Sync + Async Layers?
 
-- **Hot path optimization**: Span submission stays lock-free (no async overhead)
+The architecture has two distinct layers:
+
+1. **Sync layer** (`SpanProducer` in `collector.rs`): Provides `submit_span()` and `try_submit_span()` - fully synchronous, lock-free ring buffer operations with optional backoff retry.
+
+2. **Async layer** (`AsyncSpanProducer` in `async_bridge.rs`): Wraps the sync producer with `async fn submit_span()` that handles backpressure via `tokio::sync::Notify`.
+
+**Hot path optimization**: The async `submit_span()` calls the sync `try_submit_span()` internally. When the ring buffer is **not full** (the common case), the lock-free write succeeds immediately and the async function returns without ever awaiting - no async runtime overhead. Only when the buffer is full does it `await` on backpressure notification, yielding to the runtime until the consumer drains spans.
+
+This means:
+- **Fast path** (buffer not full): Pure lock-free operation, <100ns latency
+- **Slow path** (buffer full): Async wait for consumer to drain, then retry
 - **Flexibility**: Consumer can be async (I/O) or sync (CPU-bound)
-- **Testability**: Sync core is deterministic
-
-## Known Issues
-
-- **Memory safety in debug builds**: Lock-free data structures using `MaybeUninit<T>` require compiler optimizations to function safely. Always use `--release` mode for testing and production. We've added `opt-level = 2` to debug/test profiles in the root Cargo.toml, but release mode is still recommended for production use.
+- **Testability**: Sync core is deterministic and can be tested without async runtime
 
 ## TODO
 
