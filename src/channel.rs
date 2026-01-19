@@ -1,26 +1,21 @@
 use crate::{Config, Reservation, Ring};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use thiserror::Error;
 
 /// Error types for channel operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ChannelError {
-    /// Too many producers registered.
-    TooManyProducers,
+    /// Too many producers registered (exceeds max_producers config).
+    #[error("too many producers registered (max: {max})")]
+    TooManyProducers {
+        /// The configured maximum number of producers.
+        max: usize,
+    },
     /// Channel is closed.
+    #[error("channel is closed")]
     Closed,
 }
-
-impl std::fmt::Display for ChannelError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChannelError::TooManyProducers => write!(f, "Too many producers"),
-            ChannelError::Closed => write!(f, "Channel is closed"),
-        }
-    }
-}
-
-impl std::error::Error for ChannelError {}
 
 /// Multi-Producer Single-Consumer channel using ring decomposition.
 ///
@@ -63,7 +58,9 @@ impl<T> Channel<T> {
         let id = self.inner.producer_count.fetch_add(1, Ordering::SeqCst);
         if id >= self.inner.config.max_producers {
             self.inner.producer_count.fetch_sub(1, Ordering::SeqCst);
-            return Err(ChannelError::TooManyProducers);
+            return Err(ChannelError::TooManyProducers {
+                max: self.inner.config.max_producers,
+            });
         }
 
         self.inner.rings[id].set_active(true);
@@ -335,7 +332,7 @@ mod tests {
         let _p2 = ch.register().unwrap();
 
         // Should fail
-        assert!(matches!(ch.register(), Err(ChannelError::TooManyProducers)));
+        assert!(matches!(ch.register(), Err(ChannelError::TooManyProducers { max: 2 })));
     }
 
     #[test]

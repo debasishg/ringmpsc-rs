@@ -2,6 +2,7 @@ use crate::span::Span;
 use ringmpsc_rs::{Channel, ChannelError, Config, Producer};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use thiserror::Error;
 
 /// Configuration for the span collector
 #[derive(Debug, Clone)]
@@ -80,24 +81,15 @@ impl CollectorMetrics {
 }
 
 /// Error types for span submission
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SubmitError {
     /// Ring buffer is full
+    #[error("ring buffer is full")]
     Full,
     /// Channel is closed
+    #[error("channel is closed")]
     Closed,
 }
-
-impl std::fmt::Display for SubmitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SubmitError::Full => write!(f, "ring buffer is full"),
-            SubmitError::Closed => write!(f, "channel is closed"),
-        }
-    }
-}
-
-impl std::error::Error for SubmitError {}
 
 /// Core synchronous span collector using lock-free MPSC channels
 pub struct SpanCollector {

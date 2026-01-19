@@ -1,5 +1,16 @@
 use crate::Ring;
 use std::mem::MaybeUninit;
+use thiserror::Error;
+
+/// Error returned when trying to commit more items than reserved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("cannot commit {attempted} items, only {available} reserved")]
+pub struct CommitError {
+    /// Number of items attempted to commit.
+    pub attempted: usize,
+    /// Number of items actually reserved.
+    pub available: usize,
+}
 
 /// Zero-copy reservation for writing directly into the ring buffer.
 ///
@@ -63,22 +74,58 @@ impl<'a, T> Reservation<'a, T> {
 
     /// Commits the reservation, making data visible to the consumer.
     ///
-    /// You can commit fewer items than reserved by passing a count < len().
+    /// This commits all reserved slots. Use `try_commit_n` if you want to
+    /// commit fewer items than reserved.
     pub fn commit(self) {
         let len = self.len;
-        self.commit_n(len);
+        // SAFETY: len is always <= self.len by construction
+        unsafe { self.commit_n_unchecked(len) };
     }
 
-    /// Commits n items (where n <= len()).
+    /// Commits exactly n items (where n <= len()).
     ///
-    /// # Panics
+    /// Returns `Ok(())` on success, or `Err(CommitError)` if `n > len()`.
     ///
-    /// Panics if `n` is greater than the number of reserved slots.
-    pub fn commit_n(self, n: usize) {
-        assert!(n <= self.len, "Cannot commit more than reserved");
-        unsafe {
-            let ring = &*self.ring_ptr;
-            ring.commit_internal(n);
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut reservation = producer.reserve(10).unwrap();
+    /// // Only write 5 items...
+    /// reservation.try_commit_n(5)?; // Commits only 5
+    /// ```
+    pub fn try_commit_n(self, n: usize) -> Result<(), CommitError> {
+        if n > self.len {
+            return Err(CommitError {
+                attempted: n,
+                available: self.len,
+            });
         }
+        // SAFETY: We just verified n <= self.len
+        unsafe { self.commit_n_unchecked(n) };
+        Ok(())
+    }
+
+    /// Commits n items without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `n <= self.len()`.
+    #[inline]
+    unsafe fn commit_n_unchecked(self, n: usize) {
+        let ring = &*self.ring_ptr;
+        ring.commit_internal(n);
+    }
+
+    /// Commits n items, saturating at len() if n is too large.
+    ///
+    /// This never fails - if you request more than available, it commits
+    /// all available items.
+    ///
+    /// Returns the number of items actually committed.
+    pub fn commit_up_to(self, n: usize) -> usize {
+        let to_commit = n.min(self.len);
+        // SAFETY: to_commit <= self.len by construction
+        unsafe { self.commit_n_unchecked(to_commit) };
+        to_commit
     }
 }

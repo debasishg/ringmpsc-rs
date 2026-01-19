@@ -4,36 +4,22 @@ use crate::exporter::{ExportError, SpanExporter};
 use crate::span::Span;
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::sync::{oneshot, Notify};
 use tokio::task::JoinHandle;
 
 /// Error types for async operations
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum AsyncError {
     /// Error during registration
+    #[error("registration failed: {0}")]
     RegistrationFailed(String),
     /// Error during export
-    ExportFailed(ExportError),
+    #[error("export failed: {0}")]
+    ExportFailed(#[from] ExportError),
     /// Channel is closed
+    #[error("channel is closed")]
     Closed,
-}
-
-impl std::fmt::Display for AsyncError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AsyncError::RegistrationFailed(e) => write!(f, "registration failed: {}", e),
-            AsyncError::ExportFailed(e) => write!(f, "export failed: {}", e),
-            AsyncError::Closed => write!(f, "channel is closed"),
-        }
-    }
-}
-
-impl std::error::Error for AsyncError {}
-
-impl From<ExportError> for AsyncError {
-    fn from(e: ExportError) -> Self {
-        AsyncError::ExportFailed(e)
-    }
 }
 
 /// Configuration for the async span collector

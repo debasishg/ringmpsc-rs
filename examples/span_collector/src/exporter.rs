@@ -1,32 +1,23 @@
 use crate::span::SpanBatch;
 use async_trait::async_trait;
-use std::fmt;
+use thiserror::Error;
 
 /// Error types for span export operations
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ExportError {
     /// Transport-layer error (network, gRPC, HTTP)
+    #[error("transport error: {0}")]
     Transport(String),
     /// Serialization error
+    #[error("serialization error: {0}")]
     Serialization(String),
     /// All retry attempts exhausted
+    #[error("all retry attempts exhausted")]
     RetriesExhausted,
     /// Export operation timed out
+    #[error("export operation timed out")]
     Timeout,
 }
-
-impl fmt::Display for ExportError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ExportError::Transport(msg) => write!(f, "transport error: {}", msg),
-            ExportError::Serialization(msg) => write!(f, "serialization error: {}", msg),
-            ExportError::RetriesExhausted => write!(f, "all retry attempts exhausted"),
-            ExportError::Timeout => write!(f, "export operation timed out"),
-        }
-    }
-}
-
-impl std::error::Error for ExportError {}
 
 /// Trait for exporting span batches to various backends
 /// We need `#[async_trait]` because the code does use dynamic dispatch - 
