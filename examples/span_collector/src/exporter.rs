@@ -132,11 +132,18 @@ pub struct TestExporter {
 }
 
 #[cfg(test)]
-impl TestExporter {
-    pub fn new() -> Self {
+impl Default for TestExporter {
+    fn default() -> Self {
         Self {
             spans: std::sync::Mutex::new(Vec::new()),
         }
+    }
+}
+
+#[cfg(test)]
+impl TestExporter {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn exported_count(&self) -> usize {

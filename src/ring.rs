@@ -443,7 +443,7 @@ impl<T> Ring<T> {
     /// ```
     #[inline]
     pub fn push(&self, item: T) -> bool {
-        self.reserve(1).map_or(false, |mut r| {
+        self.reserve(1).is_some_and(|mut r| {
             r.as_mut_slice()[0] = std::mem::MaybeUninit::new(item);
             r.commit();
             true
@@ -591,7 +591,7 @@ mod tests {
         let consumed = ring.consume_batch(|item| sum += item);
 
         assert_eq!(consumed, 10);
-        assert_eq!(sum, 0 + 10 + 20 + 30 + 40 + 50 + 60 + 70 + 80 + 90);
+        assert_eq!(sum, 10 + 20 + 30 + 40 + 50 + 60 + 70 + 80 + 90);
         assert!(ring.is_empty());
     }
 
@@ -612,7 +612,7 @@ mod tests {
         let consumed = ring.consume_up_to(5, |item| sum += item);
 
         assert_eq!(consumed, 5);
-        assert_eq!(sum, 0 + 10 + 20 + 30 + 40);
+        assert_eq!(sum, 10 + 20 + 30 + 40);
         assert_eq!(ring.len(), 5); // 5 left
 
         // Consume remaining

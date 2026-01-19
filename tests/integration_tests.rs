@@ -52,7 +52,7 @@ fn test_fifo_ordering_multi_producer() {
     }
 
     // Verify per-producer FIFO
-    let mut last_seen = vec![0u64; N_PRODUCERS];
+    let mut last_seen = [0u64; N_PRODUCERS];
     let consumed = channel.consume_all(|(producer_id, value)| {
         assert_eq!(
             *value, last_seen[*producer_id],
@@ -134,8 +134,8 @@ fn test_batch_operations() {
     for batch in 0..N_BATCHES {
         if let Some(mut r) = producer.reserve(BATCH_SIZE) {
             let slice = r.as_mut_slice();
-            for i in 0..slice.len() {
-                slice[i].write((batch * BATCH_SIZE + i) as u64);
+            for (i, slot) in slice.iter_mut().enumerate() {
+                slot.write((batch * BATCH_SIZE + i) as u64);
             }
             r.commit();
         }

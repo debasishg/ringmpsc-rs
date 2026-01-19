@@ -67,7 +67,7 @@ async fn generate_spans(
     let producer = collector.register_producer().await
         .map_err(|e| e.to_string())?;
 
-    let operations = vec![
+    let operations = [
         "http.request",
         "db.query",
         "cache.get",

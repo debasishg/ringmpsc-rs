@@ -20,9 +20,9 @@ fn run_benchmark(num_producers: usize) {
     
     // Spawn N consumer threads (one per ring) - like Zig version
     let mut consumer_handles = vec![];
-    for id in 0..num_producers {
+    for (id, count) in consumer_counts.iter().enumerate().take(num_producers) {
         let ch = Arc::clone(&channel);
-        let count = Arc::clone(&consumer_counts[id]);
+        let count = Arc::clone(count);
         
         let handle = thread::spawn(move || {
             // Get dedicated ring for this consumer
