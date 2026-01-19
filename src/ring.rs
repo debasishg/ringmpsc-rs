@@ -30,8 +30,8 @@ pub struct Ring<T> {
     active: CacheAligned<AtomicBool>,
     /// Whether this ring is closed
     closed: AtomicBool,
-    /// Optional metrics
-    metrics: UnsafeCell<Metrics>,
+    /// Thread-safe metrics (uses atomics internally)
+    metrics: Metrics,
 
     // === CONFIG ===
     config: Config,
@@ -61,7 +61,7 @@ impl<T> Ring<T> {
             cached_tail: CacheAligned::new(UnsafeCell::new(0)),
             active: CacheAligned::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
-            metrics: UnsafeCell::new(Metrics::new()),
+            metrics: Metrics::new(),
             config,
             buffer: UnsafeCell::new(buffer),
         }
@@ -205,11 +205,8 @@ impl<T> Ring<T> {
         self.tail.store(tail.wrapping_add(n as u64), Ordering::Release);
 
         if self.config.enable_metrics {
-            unsafe {
-                let metrics = &mut *self.metrics.get();
-                metrics.messages_sent += n as u64;
-                metrics.batches_sent += 1;
-            }
+            self.metrics.add_messages_sent(n as u64);
+            self.metrics.add_batches_sent(1);
         }
     }
 
@@ -256,11 +253,8 @@ impl<T> Ring<T> {
         self.head.store(head.wrapping_add(n as u64), Ordering::Release);
 
         if self.config.enable_metrics {
-            unsafe {
-                let metrics = &mut *self.metrics.get();
-                metrics.messages_received += n as u64;
-                metrics.batches_received += 1;
-            }
+            self.metrics.add_messages_received(n as u64);
+            self.metrics.add_batches_received(1);
         }
     }
 
@@ -305,11 +299,8 @@ impl<T> Ring<T> {
         self.head.store(tail, Ordering::Release);
 
         if self.config.enable_metrics {
-            unsafe {
-                let metrics = &mut *self.metrics.get();
-                metrics.messages_received += count as u64;
-                metrics.batches_received += 1;
-            }
+            self.metrics.add_messages_received(count as u64);
+            self.metrics.add_batches_received(1);
         }
 
         count
@@ -356,11 +347,8 @@ impl<T> Ring<T> {
         self.head.store(head.wrapping_add(count as u64), Ordering::Release);
 
         if self.config.enable_metrics {
-            unsafe {
-                let metrics = &mut *self.metrics.get();
-                metrics.messages_received += count as u64;
-                metrics.batches_received += 1;
-            }
+            self.metrics.add_messages_received(count as u64);
+            self.metrics.add_batches_received(1);
         }
 
         count
@@ -428,12 +416,12 @@ impl<T> Ring<T> {
         self.closed.store(true, Ordering::Release);
     }
 
-    /// Get metrics if enabled.
-    pub fn metrics(&self) -> Metrics {
+    /// Get a snapshot of metrics if enabled.
+    pub fn metrics(&self) -> crate::MetricsSnapshot {
         if self.config.enable_metrics {
-            unsafe { *self.metrics.get() }
+            self.metrics.snapshot()
         } else {
-            Metrics::default()
+            crate::MetricsSnapshot::default()
         }
     }
 }

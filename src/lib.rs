@@ -48,6 +48,6 @@ mod ring;
 pub use backoff::Backoff;
 pub use channel::{Channel, ChannelError, Producer};
 pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
-pub use metrics::Metrics;
+pub use metrics::{Metrics, MetricsSnapshot};
 pub use reservation::Reservation;
 pub use ring::Ring;

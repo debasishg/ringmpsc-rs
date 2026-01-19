@@ -1,4 +1,4 @@
-use crate::{Config, Metrics, Reservation, Ring};
+use crate::{Config, Reservation, Ring};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -150,9 +150,9 @@ impl<T> Channel<T> {
         self.inner.producer_count.load(Ordering::Acquire)
     }
 
-    /// Get aggregated metrics from all rings if enabled.
-    pub fn metrics(&self) -> Metrics {
-        let mut m = Metrics::default();
+    /// Get aggregated metrics snapshot from all rings if enabled.
+    pub fn metrics(&self) -> crate::MetricsSnapshot {
+        let mut m = crate::MetricsSnapshot::default();
         let count = self.inner.producer_count.load(Ordering::Acquire);
 
         for ring in &self.inner.rings[..count] {
@@ -264,14 +264,9 @@ impl<T> Producer<T> {
     }
 }
 
-impl<T> Clone for Producer<T> {
-    fn clone(&self) -> Self {
-        Self {
-            channel: Arc::clone(&self.channel),
-            id: self.id,
-        }
-    }
-}
+// Note: Producer intentionally does NOT implement Clone.
+// Cloning would allow multiple threads to write to the same Ring,
+// breaking the single-producer invariant that enables lock-free operation.
 
 // Safety: Producer is Send + Sync as long as T is Send
 unsafe impl<T: Send> Send for Producer<T> {}
@@ -349,19 +344,5 @@ mod tests {
         ch.close();
 
         assert!(matches!(ch.register(), Err(ChannelError::Closed)));
-    }
-
-    #[test]
-    fn test_producer_clone() {
-        let ch = Channel::<u64>::new(Config::default());
-        let p1 = ch.register().unwrap();
-        let p2 = p1.clone();
-
-        assert_eq!(p1.id(), p2.id());
-        assert_eq!(p1.send(&[42]), 1);
-
-        let mut sum = 0;
-        ch.consume_all(|item| sum += item);
-        assert_eq!(sum, 42);
     }
 }
