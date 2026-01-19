@@ -4,6 +4,51 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+// =============================================================================
+// MEMORY ORDERING & SYNCHRONIZATION STRATEGY
+// =============================================================================
+//
+// This SPSC ring buffer uses a classic producer-consumer protocol with the
+// following synchronization guarantees:
+//
+// ## Sequence Numbers (ABA Prevention)
+//
+// We use unbounded u64 sequence numbers for `head` and `tail` instead of
+// wrapped indices. This prevents the ABA problem entirely:
+// - With 2^64 possible values, wrap-around is practically impossible
+// - At 10 billion messages/second, wrap takes ~58 years
+// - Buffer index is computed as `sequence & mask` only when accessing slots
+//
+// ## Memory Ordering Protocol
+//
+// **Producer (write path):**
+// 1. Load `tail` with Relaxed (only producer writes tail)
+// 2. Load `cached_head` with no ordering (UnsafeCell, single-writer)
+// 3. If cache insufficient: Load `head` with Acquire (synchronizes with consumer)
+// 4. Write data to buffer slots (no ordering needed - protected by protocol)
+// 5. Store `tail` with Release (publishes writes to consumer)
+//
+// **Consumer (read path):**
+// 1. Load `head` with Relaxed (only consumer writes head)
+// 2. Load `cached_tail` with no ordering (UnsafeCell, single-writer)
+// 3. If cache insufficient: Load `tail` with Acquire (synchronizes with producer)
+// 4. Read data from buffer slots (no ordering needed - protected by protocol)
+// 5. Store `head` with Release (publishes consumption to producer)
+//
+// ## Single-Writer Invariants
+//
+// The following fields are accessed via UnsafeCell without atomics because
+// they have exactly one writer:
+// - `cached_head`: Only written by producer, read by producer
+// - `cached_tail`: Only written by consumer, read by consumer
+// - `buffer[idx]`: Written by producer (between tail reservation and commit),
+//                  read by consumer (between head load and advance)
+//
+// These invariants are enforced by the SPSC design: one Producer handle,
+// one consumer (Channel polls rings sequentially on single thread).
+//
+// =============================================================================
+
 /// SPSC ring buffer - the core building block.
 ///
 /// A single-producer single-consumer ring buffer with lock-free operations.
@@ -148,6 +193,8 @@ impl<T> Ring<T> {
         let tail = self.tail.load(Ordering::Relaxed);
 
         // Fast path: check cached head
+        // SAFETY: cached_head is only written by the producer (this code path).
+        // No other thread writes to it, so this unsynchronized read is safe.
         let cached_head = unsafe { *self.cached_head.get() };
         let space = self.capacity().saturating_sub(tail.wrapping_sub(cached_head) as usize);
 
@@ -157,6 +204,8 @@ impl<T> Ring<T> {
 
         // Slow path: refresh cache
         let head = self.head.load(Ordering::Acquire);
+        // SAFETY: cached_head is only written by the producer (this code path).
+        // The Acquire load above synchronizes with the consumer's Release store.
         unsafe { *self.cached_head.get() = head; }
 
         let space = self.capacity().saturating_sub(tail.wrapping_sub(head) as usize);
@@ -188,7 +237,11 @@ impl<T> Ring<T> {
         let idx = (tail as usize) & mask;
         let contiguous = n.min(self.capacity() - idx);
 
-        // Get mutable slice for writing (keeping as MaybeUninit)
+        // SAFETY: Buffer access is safe because:
+        // 1. idx is within bounds (masked to capacity)
+        // 2. These slots are not being read by consumer (they're beyond current tail)
+        // 3. Only the producer writes to slots between tail and tail+n
+        // 4. The Reservation's commit() will publish via Release store to tail
         let slice = unsafe {
             let buffer = &mut *self.buffer.get();
             &mut buffer[idx..idx + contiguous]
@@ -220,12 +273,16 @@ impl<T> Ring<T> {
         let head = self.head.load(Ordering::Relaxed);
 
         // Fast path: check cached tail
+        // SAFETY: cached_tail is only written by the consumer (this code path).
+        // No other thread writes to it, so this unsynchronized read is safe.
         let mut cached_tail = unsafe { *self.cached_tail.get() };
         let mut avail = cached_tail.wrapping_sub(head) as usize;
 
         if avail == 0 {
             // Slow path: refresh cache
             cached_tail = self.tail.load(Ordering::Acquire);
+            // SAFETY: cached_tail is only written by the consumer (this code path).
+            // The Acquire load above synchronizes with the producer's Release store.
             unsafe { *self.cached_tail.get() = cached_tail; }
             avail = cached_tail.wrapping_sub(head) as usize;
             if avail == 0 {
@@ -237,6 +294,11 @@ impl<T> Ring<T> {
         let idx = (head as usize) & mask;
         let contiguous = avail.min(self.capacity() - idx);
 
+        // SAFETY: Buffer access is safe because:
+        // 1. idx is within bounds (masked to capacity)
+        // 2. Items in [head, tail) were written by producer and published via Release
+        // 3. The Acquire load on tail synchronizes with that Release
+        // 4. Only consumer reads these slots; producer won't overwrite until head advances
         unsafe {
             let buffer = &*self.buffer.get();
             Some(std::slice::from_raw_parts(
@@ -286,6 +348,11 @@ impl<T> Ring<T> {
         // Process all available items (no atomics in loop!)
         while pos != tail {
             let idx = (pos as usize) & mask;
+            // SAFETY: Buffer access is safe because:
+            // 1. idx is within bounds (masked to capacity)
+            // 2. Items in [head, tail) were fully written by producer
+            // 3. The Acquire load on tail synchronizes with producer's Release store
+            // 4. assume_init_ref is safe: producer initialized these slots before commit
             unsafe {
                 let buffer = &*self.buffer.get();
                 let item = buffer[idx].assume_init_ref();
@@ -334,6 +401,11 @@ impl<T> Ring<T> {
         // Process up to max_items
         while count < to_consume {
             let idx = (pos as usize) & mask;
+            // SAFETY: Buffer access is safe because:
+            // 1. idx is within bounds (masked to capacity)
+            // 2. Items in [head, tail) were fully written by producer
+            // 3. The Acquire load on tail synchronizes with producer's Release store
+            // 4. assume_init_ref is safe: producer initialized these slots before commit
             unsafe {
                 let buffer = &*self.buffer.get();
                 let item = buffer[idx].assume_init_ref();
