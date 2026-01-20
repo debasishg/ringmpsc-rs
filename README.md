@@ -166,11 +166,11 @@ While maintaining the same algorithm and design principles, this Rust implementa
 
 #### Code Review Items (Medium Priority)
 
-- [ ] **`consume_batch` doesn't drop items** ([src/ring.rs#L312-L345](src/ring.rs#L312-L345)) - Uses `assume_init_ref()` which doesn't drop items. For `T: Drop`, items leak until Ring drops. Either document that `T` should not implement `Drop`, or use `assume_init_read()` with proper drop handling.
+- [x] **`consume_batch` doesn't drop items** ([src/ring.rs#L312-L345](src/ring.rs#L312-L345)) - ~~Uses `assume_init_ref()` which doesn't drop items.~~ Fixed: Now uses `assume_init_read()` which moves ownership and drops items after handler processes them.
 
 - [ ] **Span cloning in async bridge** ([async_bridge.rs](examples/span_collector/src/async_bridge.rs)) - `span.clone()` is called during consumption, but `Span` contains `String` and `HashMap` making clone expensive. Redesign to move/take spans or use `Arc<Span>`.
 
-- [ ] **Reservation holds raw pointer** ([reservation.rs](src/reservation.rs)) - `ring_ptr: *const Ring<T>` is stored without lifetime explanation. Add documentation clarifying that the `'a` lifetime on slice ties to Ring's lifetime.
+- [x] **Reservation holds raw pointer** ([reservation.rs](src/reservation.rs)) - ~~`ring_ptr: *const Ring<T>` is stored without lifetime explanation.~~ Fixed: Added comprehensive documentation explaining why the raw pointer is safe (lifetime coupling via slice, single producer invariant, no aliasing violations).
 
 - [ ] **Vec instead of Box<[T]>** ([ring.rs](src/ring.rs)) - Buffer uses `Vec` but never grows/shrinks. `Box<[MaybeUninit<T>]>` would save 8 bytes per Ring (capacity field).
 

@@ -328,6 +328,12 @@ impl<T> Ring<T> {
     ///
     /// This is the key optimization: amortizes atomic operations by processing
     /// the entire batch before updating the head pointer once.
+    ///
+    /// # Drop Behavior
+    ///
+    /// Items are moved out of the buffer using `assume_init_read()` and dropped
+    /// after the handler processes them. This ensures proper cleanup for types
+    /// that implement `Drop`.
     #[allow(clippy::cast_possible_truncation)]
     pub fn consume_batch<F>(&self, mut handler: F) -> usize
     where
@@ -352,12 +358,15 @@ impl<T> Ring<T> {
             // 1. idx is within bounds (masked to capacity)
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
-            // 4. assume_init_ref is safe: producer initialized these slots before commit
-            unsafe {
+            // 4. assume_init_read moves ownership out - item will be dropped after handler
+            // 5. Only consumer reads these slots; after head advances, slots are "empty"
+            //    and producer can reuse them
+            let item = unsafe {
                 let buffer = &*self.buffer.get();
-                let item = buffer[idx].assume_init_ref();
-                handler(item);
-            }
+                buffer[idx].assume_init_read()
+            };
+            handler(&item);
+            // `item` is dropped here, ensuring proper cleanup for T: Drop
             pos = pos.wrapping_add(1);
             count += 1;
         }
@@ -405,12 +414,15 @@ impl<T> Ring<T> {
             // 1. idx is within bounds (masked to capacity)
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
-            // 4. assume_init_ref is safe: producer initialized these slots before commit
-            unsafe {
+            // 4. assume_init_read moves ownership out - item will be dropped after handler
+            // 5. Only consumer reads these slots; after head advances, slots are "empty"
+            //    and producer can reuse them
+            let item = unsafe {
                 let buffer = &*self.buffer.get();
-                let item = buffer[idx].assume_init_ref();
-                handler(item);
-            }
+                buffer[idx].assume_init_read()
+            };
+            handler(&item);
+            // `item` is dropped here, ensuring proper cleanup for T: Drop
             pos = pos.wrapping_add(1);
             count += 1;
         }
@@ -638,5 +650,86 @@ mod tests {
 
         // Should fail
         assert!(ring.reserve(1).is_none());
+    }
+
+    #[test]
+    fn test_consume_batch_drops_items() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Counter for tracking drops
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Clone)]
+        struct DropTracker {
+            _id: u64,
+        }
+
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let ring = Ring::<DropTracker>::new(Config::default());
+
+        // Write 5 items
+        for i in 0..5 {
+            if let Some(mut r) = ring.reserve(1) {
+                r.as_mut_slice()[0].write(DropTracker { _id: i });
+                r.commit();
+            }
+        }
+
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+
+        // Consume all - should drop each item after handler
+        let consumed = ring.consume_batch(|_item| {
+            // Item is still alive here
+        });
+
+        assert_eq!(consumed, 5);
+        // All 5 items should have been dropped
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn test_consume_up_to_drops_items() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct DropTracker {
+            _id: u64,
+        }
+
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let ring = Ring::<DropTracker>::new(Config::default());
+
+        // Write 10 items
+        for i in 0..10 {
+            if let Some(mut r) = ring.reserve(1) {
+                r.as_mut_slice()[0].write(DropTracker { _id: i });
+                r.commit();
+            }
+        }
+
+        // Consume 5 - should drop those 5
+        let consumed = ring.consume_up_to(5, |_item| {});
+        assert_eq!(consumed, 5);
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 5);
+
+        // Consume remaining 5
+        let consumed = ring.consume_up_to(10, |_item| {});
+        assert_eq!(consumed, 5);
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 10);
     }
 }

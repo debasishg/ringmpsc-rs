@@ -38,8 +38,32 @@ pub struct CommitError {
 /// }
 /// ```
 pub struct Reservation<'a, T> {
+    /// Mutable slice into the ring buffer for writing data.
     slice: &'a mut [MaybeUninit<T>],
+    
+    /// Raw pointer to the parent Ring for commit operations.
+    ///
+    /// # Safety Invariant
+    ///
+    /// This raw pointer is safe to dereference for the lifetime `'a` because:
+    ///
+    /// 1. **Lifetime Coupling**: The `slice` field borrows from the Ring's buffer
+    ///    with lifetime `'a`. Since `slice` keeps the Ring borrowed, the Ring
+    ///    cannot be dropped or moved while this Reservation exists.
+    ///
+    /// 2. **Single Producer**: Each Ring has exactly one Producer (SPSC design).
+    ///    The Producer creates Reservations and holds an `Arc<Ring<T>>`, ensuring
+    ///    the Ring outlives any Reservation it creates.
+    ///
+    /// 3. **No Aliasing Violations**: We only use the pointer to call
+    ///    `commit_internal()`, which accesses atomic fields that are safe to
+    ///    access through a shared reference.
+    ///
+    /// We use a raw pointer instead of `&'a Ring<T>` to avoid borrow checker
+    /// complications when the slice already borrows from the Ring's buffer.
     ring_ptr: *const Ring<T>,
+    
+    /// Number of slots reserved (cached from slice.len()).
     len: usize,
 }
 
