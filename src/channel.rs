@@ -92,6 +92,15 @@ impl<T> Channel<T> {
     /// Batch consume from all producers - THE FAST PATH.
     ///
     /// Processes all available items from all rings with minimal atomic operations.
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
+    /// - You only need to inspect or log items without storing them
+    ///
+    /// For types expensive to clone (containing `String`, `HashMap`, `Vec`),
+    /// prefer [`consume_all_owned`] which transfers ownership directly.
     pub fn consume_all<F>(&self, mut handler: F) -> usize
     where
         F: FnMut(&T),
@@ -110,6 +119,14 @@ impl<T> Channel<T> {
     ///
     /// Useful for real-world processing to limit batch size and avoid long pauses.
     /// Prefers earlier rings (producer 0, then 1, etc.).
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
+    /// - You only need to inspect or log items without storing them
+    ///
+    /// For types expensive to clone, prefer [`consume_all_up_to_owned`].
     pub fn consume_all_up_to<F>(&self, max_total: usize, mut handler: F) -> usize
     where
         F: FnMut(&T),
@@ -123,6 +140,60 @@ impl<T> Channel<T> {
             }
             let remaining = max_total - total;
             total += ring.consume_up_to(remaining, &mut handler);
+        }
+
+        total
+    }
+
+    /// Batch consume from all producers, transferring ownership - THE FAST PATH.
+    ///
+    /// Similar to [`consume_all`], but the handler receives ownership of each item.
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` contains heap allocations (`String`, `HashMap`, `Vec`, `Box<_>`)
+    /// - You need to move items into a collection or storage
+    /// - You want to avoid clone overhead entirely
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Zero-copy transfer into batch processor
+    /// channel.consume_all_owned(|span| batch_processor.add(span));
+    /// ```
+    pub fn consume_all_owned<F>(&self, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for ring in &self.inner.rings[..count] {
+            total += ring.consume_batch_owned(&mut handler);
+        }
+
+        total
+    }
+
+    /// Consume up to max_total items from all producers, transferring ownership.
+    ///
+    /// Similar to `consume_all_up_to`, but the handler receives ownership of each
+    /// item instead of a reference. This is more efficient when you need to move
+    /// items (e.g., into a collection) since it avoids cloning.
+    pub fn consume_all_up_to_owned<F>(&self, max_total: usize, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for ring in &self.inner.rings[..count] {
+            if total >= max_total {
+                break;
+            }
+            let remaining = max_total - total;
+            total += ring.consume_up_to_owned(remaining, &mut handler);
         }
 
         total

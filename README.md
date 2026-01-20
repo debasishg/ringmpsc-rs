@@ -162,19 +162,7 @@ While maintaining the same algorithm and design principles, this Rust implementa
 
 ## TODO
 
-### Memory Management
-
-#### Code Review Items (Medium Priority)
-
-- [x] **`consume_batch` doesn't drop items** ([src/ring.rs#L312-L345](src/ring.rs#L312-L345)) - ~~Uses `assume_init_ref()` which doesn't drop items.~~ Fixed: Now uses `assume_init_read()` which moves ownership and drops items after handler processes them.
-
-- [ ] **Span cloning in async bridge** ([async_bridge.rs](examples/span_collector/src/async_bridge.rs)) - `span.clone()` is called during consumption, but `Span` contains `String` and `HashMap` making clone expensive. Redesign to move/take spans or use `Arc<Span>`.
-
-- [x] **Reservation holds raw pointer** ([reservation.rs](src/reservation.rs)) - ~~`ring_ptr: *const Ring<T>` is stored without lifetime explanation.~~ Fixed: Added comprehensive documentation explaining why the raw pointer is safe (lifetime coupling via slice, single producer invariant, no aliasing violations).
-
-- [ ] **Vec instead of Box<[T]>** ([ring.rs](src/ring.rs)) - Buffer uses `Vec` but never grows/shrinks. `Box<[MaybeUninit<T>]>` would save 8 bytes per Ring (capacity field).
-
-#### Future Optimizations
+### Future Optimizations
 
 - [ ] **NUMA-aware ring allocation** - Allocate ring buffers on NUMA nodes local to their producer/consumer threads for multi-socket systems
 - [ ] **Custom allocator integration** - Allow users to provide custom allocators for specialized use cases (arena allocators, huge pages, etc.)

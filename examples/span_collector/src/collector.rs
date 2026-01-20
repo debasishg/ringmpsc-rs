@@ -133,13 +133,23 @@ impl SpanCollector {
         &self.metrics
     }
 
-    /// Consumes up to `limit` spans from all producers
+    /// Consumes up to `limit` spans from all producers, transferring ownership.
+    ///
+    /// # Design Note
+    ///
+    /// This collector only provides owned consumption APIs because `Span` contains
+    /// heap-allocated fields (`String`, `Box<HashMap>`) making cloning expensive.
+    /// Reference-based consumption would force callers to clone, which defeats the
+    /// purpose of zero-copy ring buffer design.
+    ///
+    /// For generic use cases where `T` might be `Copy`, see the core library's
+    /// `Channel::consume_all_up_to` which provides both reference and owned variants.
     pub fn consume_all_up_to<F>(&self, limit: usize, mut f: F) -> usize
     where
-        F: FnMut(&Span),
+        F: FnMut(Span),
     {
         let mut consumed = 0;
-        let result = self.channel.consume_all_up_to(limit, |span| {
+        let result = self.channel.consume_all_up_to_owned(limit, |span| {
             f(span);
             consumed += 1;
         });
@@ -153,13 +163,19 @@ impl SpanCollector {
         result
     }
 
-    /// Consumes all available spans from all producers
+    /// Consumes all available spans from all producers, transferring ownership.
+    ///
+    /// # Design Note
+    ///
+    /// This collector only provides owned consumption APIs because `Span` contains
+    /// heap-allocated fields (`String`, `Box<HashMap>`) making cloning expensive.
+    /// See [`consume_all_up_to`] for detailed rationale.
     pub fn consume_all<F>(&self, mut f: F) -> usize
     where
-        F: FnMut(&Span),
+        F: FnMut(Span),
     {
         let mut consumed = 0;
-        let result = self.channel.consume_all(|span| {
+        let result = self.channel.consume_all_owned(|span| {
             f(span);
             consumed += 1;
         });
@@ -242,11 +258,11 @@ mod tests {
         let producer = collector.register().unwrap();
 
         let span = Span::new(12345, 1, 0, "test-op".to_string(), SpanKind::Internal);
-        producer.submit_span(span.clone()).unwrap();
+        producer.submit_span(span).unwrap();
 
         let mut consumed = Vec::new();
         collector.consume_all(|span| {
-            consumed.push(span.clone());
+            consumed.push(span);  // Zero-copy: ownership transferred
         });
 
         assert_eq!(consumed.len(), 1);
@@ -269,7 +285,7 @@ mod tests {
 
         let mut consumed = Vec::new();
         collector.consume_all(|span| {
-            consumed.push(span.clone());
+            consumed.push(span);  // Zero-copy: ownership transferred
         });
 
         assert_eq!(consumed.len(), 2);
@@ -287,7 +303,9 @@ mod tests {
 
         assert_eq!(collector.metrics().spans_submitted(), 10);
 
-        collector.consume_all(|_| {});
+        collector.consume_all(|_span| {
+            // Span is dropped here after processing
+        });
 
         assert_eq!(collector.metrics().spans_consumed(), 10);
     }

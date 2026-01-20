@@ -75,9 +75,9 @@ impl AsyncSpanCollector {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // Consume spans from ring buffers
+                        // Consume spans from ring buffers (zero-copy transfer)
                         let consumed = collector_clone.consume_all_up_to(max_consume, |span| {
-                            batch_processor.add(span.clone());
+                            batch_processor.add(span);
                         });
 
                         if consumed > 0 {
@@ -93,9 +93,9 @@ impl AsyncSpanCollector {
                         }
                     }
                     _ = &mut shutdown_rx => {
-                        // Drain remaining spans
+                        // Drain remaining spans (zero-copy transfer)
                         collector_clone.consume_all(|span| {
-                            batch_processor.add(span.clone());
+                            batch_processor.add(span);
                         });
 
                         // Final flush

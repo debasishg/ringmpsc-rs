@@ -82,8 +82,13 @@ pub struct Ring<T> {
     config: Config,
 
     // === DATA BUFFER === (64-byte aligned)
-    /// The actual ring buffer storage
-    buffer: UnsafeCell<Vec<MaybeUninit<T>>>,
+    /// The actual ring buffer storage.
+    ///
+    /// Uses `Box<[T]>` instead of `Vec<T>` because:
+    /// - Buffer size is fixed at construction (never grows/shrinks)
+    /// - Saves 8 bytes per Ring (no capacity field needed)
+    /// - Clearer semantic intent: this is a fixed-size allocation
+    buffer: UnsafeCell<Box<[MaybeUninit<T>]>>,
 }
 
 // Safety: Ring is Send + Sync as long as T is Send
@@ -95,9 +100,17 @@ impl<T> Ring<T> {
     /// Creates a new ring buffer with the given configuration.
     pub fn new(config: Config) -> Self {
         let capacity = config.capacity();
+        
+        // Create fixed-size buffer as boxed slice.
+        // Stable Rust: allocate via Vec then convert to Box<[T]>
         let mut buffer = Vec::with_capacity(capacity);
-        // Initialize with uninitialized memory
         buffer.resize_with(capacity, MaybeUninit::uninit);
+        let buffer = buffer.into_boxed_slice();
+        
+        // Nightly alternative (more efficient - single allocation, no intermediate Vec):
+        // let buffer = Box::new_uninit_slice(capacity);
+        // This avoids the Vec's capacity field and potential reallocation tracking.
+        // Tracking issue: https://github.com/rust-lang/rust/issues/63291
 
         Self {
             tail: CacheAligned::new(AtomicU64::new(0)),
@@ -323,11 +336,38 @@ impl<T> Ring<T> {
     // ---------------------------------------------------------------------
     // BATCH CONSUMPTION (Disruptor Pattern)
     // ---------------------------------------------------------------------
+    //
+    // Two variants are provided for each consumption method:
+    //
+    // 1. Reference variant (`consume_batch`, `consume_up_to`):
+    //    - Handler receives `&T`
+    //    - Use when: T is Copy, or you only need to inspect/log items
+    //    - Example: `consume_batch(|item: &u64| sum += item)`
+    //
+    // 2. Owned variant (`consume_batch_owned`, `consume_up_to_owned`):
+    //    - Handler receives `T` (ownership transferred)
+    //    - Use when: T is expensive to clone (String, HashMap, Vec), or
+    //      you need to move items into a collection
+    //    - Example: `consume_batch_owned(|span| batch.push(span))`
+    //
+    // Both variants properly drop items after consumption. The owned variant
+    // is more efficient when you need ownership since it avoids cloning.
+    // ---------------------------------------------------------------------
 
     /// Process ALL available items with a single head update.
     ///
     /// This is the key optimization: amortizes atomic operations by processing
     /// the entire batch before updating the head pointer once.
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
+    /// - You only need to inspect or log items without storing them
+    /// - You want to aggregate values (sum, count, etc.)
+    ///
+    /// For types expensive to clone (containing `String`, `HashMap`, `Vec`),
+    /// prefer [`consume_batch_owned`] which transfers ownership directly.
     ///
     /// # Drop Behavior
     ///
@@ -367,6 +407,76 @@ impl<T> Ring<T> {
             };
             handler(&item);
             // `item` is dropped here, ensuring proper cleanup for T: Drop
+            pos = pos.wrapping_add(1);
+            count += 1;
+        }
+
+        // Single atomic update for entire batch
+        self.head.store(tail, Ordering::Release);
+
+        if self.config.enable_metrics {
+            self.metrics.add_messages_received(count as u64);
+            self.metrics.add_batches_received(1);
+        }
+
+        count
+    }
+
+    /// Process ALL available items with a single head update, transferring ownership.
+    ///
+    /// Similar to [`consume_batch`], but the handler receives ownership of each item
+    /// instead of a reference.
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` contains heap allocations (`String`, `HashMap`, `Vec`, `Box<_>`)
+    /// - You need to move items into a collection or storage
+    /// - You want to avoid clone overhead entirely
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Zero-copy transfer into a Vec
+    /// let mut batch = Vec::new();
+    /// ring.consume_batch_owned(|item| batch.push(item));
+    /// ```
+    ///
+    /// # Drop Behavior
+    ///
+    /// The handler receives ownership and is responsible for the item. If the handler
+    /// doesn't move or store the item, it will be dropped when the handler returns.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn consume_batch_owned<F>(&self, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+
+        let avail = tail.wrapping_sub(head) as usize;
+        if avail == 0 {
+            return 0;
+        }
+
+        let mask = self.mask();
+        let mut pos = head;
+        let mut count = 0;
+
+        // Process all available items (no atomics in loop!)
+        while pos != tail {
+            let idx = (pos as usize) & mask;
+            // SAFETY: Buffer access is safe because:
+            // 1. idx is within bounds (masked to capacity)
+            // 2. Items in [head, tail) were fully written by producer
+            // 3. The Acquire load on tail synchronizes with producer's Release store
+            // 4. assume_init_read moves ownership out - handler takes ownership
+            // 5. Only consumer reads these slots; after head advances, slots are "empty"
+            let item = unsafe {
+                let buffer = &*self.buffer.get();
+                buffer[idx].assume_init_read()
+            };
+            handler(item); // Transfer ownership to handler
             pos = pos.wrapping_add(1);
             count += 1;
         }
@@ -423,6 +533,62 @@ impl<T> Ring<T> {
             };
             handler(&item);
             // `item` is dropped here, ensuring proper cleanup for T: Drop
+            pos = pos.wrapping_add(1);
+            count += 1;
+        }
+
+        // Single atomic update for the batch
+        self.head.store(head.wrapping_add(count as u64), Ordering::Release);
+
+        if self.config.enable_metrics {
+            self.metrics.add_messages_received(count as u64);
+            self.metrics.add_batches_received(1);
+        }
+
+        count
+    }
+
+    /// Consume up to `max_items` with a single head update, transferring ownership.
+    ///
+    /// Similar to `consume_up_to`, but the handler receives ownership of each item
+    /// instead of a reference. This is more efficient when you need to move items
+    /// (e.g., into a collection) since it avoids cloning.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn consume_up_to_owned<F>(&self, max_items: usize, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        if max_items == 0 {
+            return 0;
+        }
+
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+
+        let avail = tail.wrapping_sub(head) as usize;
+        if avail == 0 {
+            return 0;
+        }
+
+        let to_consume = avail.min(max_items);
+        let mask = self.mask();
+        let mut pos = head;
+        let mut count = 0;
+
+        // Process up to max_items
+        while count < to_consume {
+            let idx = (pos as usize) & mask;
+            // SAFETY: Buffer access is safe because:
+            // 1. idx is within bounds (masked to capacity)
+            // 2. Items in [head, tail) were fully written by producer
+            // 3. The Acquire load on tail synchronizes with producer's Release store
+            // 4. assume_init_read moves ownership out - handler takes ownership
+            // 5. Only consumer reads these slots; after head advances, slots are "empty"
+            let item = unsafe {
+                let buffer = &*self.buffer.get();
+                buffer[idx].assume_init_read()
+            };
+            handler(item); // Transfer ownership to handler
             pos = pos.wrapping_add(1);
             count += 1;
         }
