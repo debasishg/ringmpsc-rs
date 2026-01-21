@@ -18,3 +18,7 @@ criterion = "0.5"
 [[example]]
 name = "demo"
 path = "examples/main.rs"
+
+[[example]]
+name = "span_generator"
+path = "examples/span_generator.rs"

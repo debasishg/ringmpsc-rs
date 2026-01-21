@@ -8,6 +8,7 @@ pub mod async_bridge;
 pub mod batch_processor;
 pub mod collector;
 pub mod exporter;
+pub mod rate_limiter;
 pub mod span;
 
 // Re-export main types
@@ -15,4 +16,5 @@ pub use async_bridge::{AsyncCollectorConfig, AsyncSpanCollector, AsyncSpanProduc
 pub use batch_processor::{BatchConfig, BatchProcessor};
 pub use collector::{CollectorConfig, SpanCollector, SpanProducer, SubmitError};
 pub use exporter::{ExportError, SpanExporter, StdoutExporter, JsonFileExporter, NullExporter};
+pub use rate_limiter::{RateLimiter, IntervalRateLimiter};
 pub use span::{AttributeValue, Span, SpanBatch, SpanKind, SpanStatus};
