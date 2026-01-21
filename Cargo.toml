@@ -13,6 +13,8 @@ categories = ["concurrency", "data-structures"]
 [features]
 # Enable loom for concurrency testing (cargo test --features loom)
 loom = ["dep:loom"]
+# Enable stack-allocated ring buffer variants (StackRing, StackChannel)
+stack-ring = []
 
 [dependencies]
 crossbeam-utils = "0.8"
@@ -25,6 +27,11 @@ criterion = "0.5"
 [[bench]]
 name = "throughput"
 harness = false
+
+[[bench]]
+name = "stack_vs_heap"
+harness = false
+required-features = ["stack-ring"]
 
 # Note: The assume_init_ref() fix eliminates UB, so opt-level workaround is no longer needed
 # Keeping default debug settings (opt-level = 0) for faster compile times

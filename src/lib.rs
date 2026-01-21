@@ -45,9 +45,15 @@ mod metrics;
 mod reservation;
 mod ring;
 
+#[cfg(feature = "stack-ring")]
+mod stack_ring;
+
 pub use backoff::Backoff;
 pub use channel::{Channel, ChannelError, Producer};
 pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use reservation::{CommitError, Reservation};
 pub use ring::Ring;
+
+#[cfg(feature = "stack-ring")]
+pub use stack_ring::{StackRing, StackRing4K, StackRing8K, StackRing16K, StackRing64K};

@@ -166,7 +166,18 @@ While maintaining the same algorithm and design principles, this Rust implementa
 
 - [ ] **NUMA-aware ring allocation** - Allocate ring buffers on NUMA nodes local to their producer/consumer threads for multi-socket systems
 - [ ] **Custom allocator integration** - Allow users to provide custom allocators for specialized use cases (arena allocators, huge pages, etc.)
-- [ ] **Optional StackRing variant** - Provide a stack-allocated ring buffer variant behind a feature flag for latency-critical expert use
+- [ ] **Optional StackRing variant** - Provide a stack-allocated ring buffer variant behind a feature flag for latency-critical expert use. See [STACK_RING_IMPL.md](STACK_RING_IMPL.md) for the implementation plan and design details.
+
+### Feature Flags
+
+```toml
+[dependencies]
+ringmpsc-rs = { version = "0.1", features = ["stack-ring"] }
+```
+
+| Feature | Description |
+|---------|-------------|
+| `stack-ring` | Enables `StackRing<T, N>` and `StackChannel<T, N, P>` — stack-allocated variants for latency-critical use |
 
 ## License
 
