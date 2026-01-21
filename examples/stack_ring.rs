@@ -6,14 +6,23 @@
 //!
 //! Run with: cargo run --release --features stack-ring --example stack_ring
 
-#![cfg(feature = "stack-ring")]
+#[cfg(not(feature = "stack-ring"))]
+fn main() {
+    eprintln!("This example requires the 'stack-ring' feature.");
+    eprintln!("Run with: cargo run --release --features stack-ring --example stack_ring");
+}
 
+#[cfg(feature = "stack-ring")]
 use ringmpsc_rs::{StackChannel, StackRing};
+#[cfg(feature = "stack-ring")]
 use std::thread;
+#[cfg(feature = "stack-ring")]
 use std::time::Instant;
 
+#[cfg(feature = "stack-ring")]
 const MSG_COUNT: u64 = 10_000_000;
 
+#[cfg(feature = "stack-ring")]
 fn main() {
     println!("=== Stack-Allocated Ring Buffer Examples ===\n");
 
@@ -24,6 +33,7 @@ fn main() {
 }
 
 /// Basic SPSC usage with StackRing
+#[cfg(feature = "stack-ring")]
 fn example_spsc_basic() {
     println!("1. Basic SPSC (StackRing)");
     println!("   ----------------------");
@@ -56,6 +66,7 @@ fn example_spsc_basic() {
 }
 
 /// SPSC throughput demonstration
+#[cfg(feature = "stack-ring")]
 fn example_spsc_throughput() {
     println!("2. SPSC Throughput (StackRing)");
     println!("   ---------------------------");
@@ -116,6 +127,7 @@ fn example_spsc_throughput() {
 }
 
 /// Basic MPSC usage with StackChannel
+#[cfg(feature = "stack-ring")]
 fn example_mpsc_basic() {
     println!("3. Basic MPSC (StackChannel)");
     println!("   -------------------------");
@@ -146,6 +158,7 @@ fn example_mpsc_basic() {
 }
 
 /// MPSC throughput with multiple producer threads
+#[cfg(feature = "stack-ring")]
 fn example_mpsc_throughput() {
     println!("4. MPSC Throughput (StackChannel, 4 producers)");
     println!("   -------------------------------------------");
