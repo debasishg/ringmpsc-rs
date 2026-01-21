@@ -166,9 +166,9 @@ While maintaining the same algorithm and design principles, this Rust implementa
 
 - [ ] **NUMA-aware ring allocation** - Allocate ring buffers on NUMA nodes local to their producer/consumer threads for multi-socket systems
 - [ ] **Custom allocator integration** - Allow users to provide custom allocators for specialized use cases (arena allocators, huge pages, etc.)
-- [ ] **Optional StackRing variant** - Provide a stack-allocated ring buffer variant behind a feature flag for latency-critical expert use. See [STACK_RING_IMPL.md](STACK_RING_IMPL.md) for the implementation plan and design details.
+- [x] **Stack-allocated ring variant** - `StackRing<T, N>` and `StackChannel<T, N, P>` for latency-critical expert use. See [STACK_RING_IMPL.md](STACK_RING_IMPL.md) for design details.
 
-### Feature Flags
+## Feature Flags
 
 ```toml
 [dependencies]
@@ -177,7 +177,38 @@ ringmpsc-rs = { version = "0.1", features = ["stack-ring"] }
 
 | Feature | Description |
 |---------|-------------|
-| `stack-ring` | Enables `StackRing<T, N>` and `StackChannel<T, N, P>` — stack-allocated variants for latency-critical use |
+| `stack-ring` | Enables `StackRing<T, N>` and `StackChannel<T, N, P>` — stack-allocated variants with **2-4x higher throughput** |
+
+### Stack-Allocated Example
+
+```rust
+use ringmpsc_rs::{StackChannel, StackRing};
+
+// SPSC: 4K slots, stack-allocated
+let ring: StackRing<u64, 4096> = StackRing::new();
+
+unsafe {
+    // Producer
+    if let Some((ptr, len)) = ring.reserve(10) {
+        for i in 0..len {
+            *ptr.add(i) = i as u64;
+        }
+        ring.commit(len);
+    }
+    
+    // Consumer
+    ring.consume_batch(|value| println!("Got: {}", value));
+}
+
+// MPSC: 4K slots per ring, max 4 producers
+let channel: StackChannel<u64, 4096, 4> = StackChannel::new();
+let producer = channel.register().unwrap();
+producer.push(42);
+
+channel.consume_all(|v| println!("Received: {}", v));
+```
+
+See `examples/stack_ring.rs` for more examples.
 
 ## License
 

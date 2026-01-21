@@ -4,10 +4,12 @@
 //! for both implementations to quantify the benefit of eliminating heap
 //! pointer indirection.
 //!
+//! Also benchmarks StackChannel vs Channel for MPSC scenarios.
+//!
 //! Run with: cargo bench --features stack-ring --bench stack_vs_heap
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use ringmpsc_rs::{Config, Ring, StackRing};
+use ringmpsc_rs::{Channel, Config, Ring, StackChannel, StackRing};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -270,6 +272,260 @@ fn bench_stack_sizes(c: &mut Criterion) {
     group.finish();
 }
 
+// =============================================================================
+// MPSC BENCHMARKS: StackChannel vs Channel
+// =============================================================================
+
+const MPSC_MSG_COUNT: u64 = 2_000_000; // 2M messages total
+const MPSC_BATCH: usize = 512;
+
+/// Benchmark heap Channel with multiple producers
+fn bench_heap_mpsc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mpsc_throughput");
+    
+    for num_producers in [2usize, 4, 8] {
+        let msg_per_producer = MPSC_MSG_COUNT / num_producers as u64;
+        group.throughput(Throughput::Elements(MPSC_MSG_COUNT));
+        
+        group.bench_function(format!("heap_channel_{}P", num_producers), |b| {
+            b.iter(|| {
+                let config = Config::new(16, num_producers, false);
+                let channel = Channel::<u32>::new(config);
+                let done = Arc::new(AtomicBool::new(false));
+                
+                // Spawn producers
+                let handles: Vec<_> = (0..num_producers)
+                    .map(|_| {
+                        let producer = channel.register().unwrap();
+                        let _done = Arc::clone(&done);
+                        thread::spawn(move || {
+                            let mut sent = 0u64;
+                            while sent < msg_per_producer {
+                                let want = MPSC_BATCH.min((msg_per_producer - sent) as usize);
+                                if let Some(mut r) = producer.reserve(want) {
+                                    let len = r.as_mut_slice().len();
+                                    for (i, item) in r.as_mut_slice().iter_mut().enumerate() {
+                                        item.write((sent + i as u64) as u32);
+                                    }
+                                    r.commit();
+                                    sent += len as u64;
+                                } else {
+                                    std::hint::spin_loop();
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+                
+                // Consumer
+                let mut total = 0u64;
+                loop {
+                    let consumed = channel.consume_all(|_| {});
+                    total += consumed as u64;
+                    if total >= MPSC_MSG_COUNT {
+                        break;
+                    }
+                    if consumed == 0 {
+                        std::hint::spin_loop();
+                    }
+                }
+                
+                done.store(true, Ordering::Release);
+                for h in handles {
+                    h.join().unwrap();
+                }
+                
+                black_box(total)
+            });
+        });
+    }
+    
+    group.finish();
+}
+
+/// Benchmark StackChannel with multiple producers (2P)
+fn bench_stack_mpsc_2p(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mpsc_throughput");
+    group.throughput(Throughput::Elements(MPSC_MSG_COUNT));
+    
+    const NUM_PRODUCERS: usize = 2;
+    let msg_per_producer = MPSC_MSG_COUNT / NUM_PRODUCERS as u64;
+    
+    group.bench_function("stack_channel_2P", |b| {
+        b.iter(|| {
+            let channel = Box::new(StackChannel::<u32, 65536, 2>::new());
+            let channel_ptr = Box::into_raw(channel);
+            let channel_ref: &'static StackChannel<u32, 65536, 2> = unsafe { &*channel_ptr };
+            
+            let handles: Vec<_> = (0..NUM_PRODUCERS)
+                .map(|_| {
+                    let producer = channel_ref.register().unwrap();
+                    thread::spawn(move || {
+                        let mut sent = 0u64;
+                        while sent < msg_per_producer {
+                            let want = MPSC_BATCH.min((msg_per_producer - sent) as usize);
+                            unsafe {
+                                if let Some((ptr, len)) = producer.reserve(want) {
+                                    for i in 0..len {
+                                        *ptr.add(i) = (sent + i as u64) as u32;
+                                    }
+                                    producer.commit(len);
+                                    sent += len as u64;
+                                } else {
+                                    std::hint::spin_loop();
+                                }
+                            }
+                        }
+                    })
+                })
+                .collect();
+            
+            let mut total = 0u64;
+            loop {
+                let consumed = channel_ref.consume_all(|_| {});
+                total += consumed as u64;
+                if total >= MPSC_MSG_COUNT {
+                    break;
+                }
+                if consumed == 0 {
+                    std::hint::spin_loop();
+                }
+            }
+            
+            for h in handles {
+                h.join().unwrap();
+            }
+            
+            unsafe { drop(Box::from_raw(channel_ptr)); }
+            black_box(total)
+        });
+    });
+    
+    group.finish();
+}
+
+/// Benchmark StackChannel with 4 producers
+fn bench_stack_mpsc_4p(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mpsc_throughput");
+    group.throughput(Throughput::Elements(MPSC_MSG_COUNT));
+    
+    const NUM_PRODUCERS: usize = 4;
+    let msg_per_producer = MPSC_MSG_COUNT / NUM_PRODUCERS as u64;
+    
+    group.bench_function("stack_channel_4P", |b| {
+        b.iter(|| {
+            let channel = Box::new(StackChannel::<u32, 65536, 4>::new());
+            let channel_ptr = Box::into_raw(channel);
+            let channel_ref: &'static StackChannel<u32, 65536, 4> = unsafe { &*channel_ptr };
+            
+            let handles: Vec<_> = (0..NUM_PRODUCERS)
+                .map(|_| {
+                    let producer = channel_ref.register().unwrap();
+                    thread::spawn(move || {
+                        let mut sent = 0u64;
+                        while sent < msg_per_producer {
+                            let want = MPSC_BATCH.min((msg_per_producer - sent) as usize);
+                            unsafe {
+                                if let Some((ptr, len)) = producer.reserve(want) {
+                                    for i in 0..len {
+                                        *ptr.add(i) = (sent + i as u64) as u32;
+                                    }
+                                    producer.commit(len);
+                                    sent += len as u64;
+                                } else {
+                                    std::hint::spin_loop();
+                                }
+                            }
+                        }
+                    })
+                })
+                .collect();
+            
+            let mut total = 0u64;
+            loop {
+                let consumed = channel_ref.consume_all(|_| {});
+                total += consumed as u64;
+                if total >= MPSC_MSG_COUNT {
+                    break;
+                }
+                if consumed == 0 {
+                    std::hint::spin_loop();
+                }
+            }
+            
+            for h in handles {
+                h.join().unwrap();
+            }
+            
+            unsafe { drop(Box::from_raw(channel_ptr)); }
+            black_box(total)
+        });
+    });
+    
+    group.finish();
+}
+
+/// Benchmark StackChannel with 8 producers
+fn bench_stack_mpsc_8p(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mpsc_throughput");
+    group.throughput(Throughput::Elements(MPSC_MSG_COUNT));
+    
+    const NUM_PRODUCERS: usize = 8;
+    let msg_per_producer = MPSC_MSG_COUNT / NUM_PRODUCERS as u64;
+    
+    group.bench_function("stack_channel_8P", |b| {
+        b.iter(|| {
+            let channel = Box::new(StackChannel::<u32, 65536, 8>::new());
+            let channel_ptr = Box::into_raw(channel);
+            let channel_ref: &'static StackChannel<u32, 65536, 8> = unsafe { &*channel_ptr };
+            
+            let handles: Vec<_> = (0..NUM_PRODUCERS)
+                .map(|_| {
+                    let producer = channel_ref.register().unwrap();
+                    thread::spawn(move || {
+                        let mut sent = 0u64;
+                        while sent < msg_per_producer {
+                            let want = MPSC_BATCH.min((msg_per_producer - sent) as usize);
+                            unsafe {
+                                if let Some((ptr, len)) = producer.reserve(want) {
+                                    for i in 0..len {
+                                        *ptr.add(i) = (sent + i as u64) as u32;
+                                    }
+                                    producer.commit(len);
+                                    sent += len as u64;
+                                } else {
+                                    std::hint::spin_loop();
+                                }
+                            }
+                        }
+                    })
+                })
+                .collect();
+            
+            let mut total = 0u64;
+            loop {
+                let consumed = channel_ref.consume_all(|_| {});
+                total += consumed as u64;
+                if total >= MPSC_MSG_COUNT {
+                    break;
+                }
+                if consumed == 0 {
+                    std::hint::spin_loop();
+                }
+            }
+            
+            for h in handles {
+                h.join().unwrap();
+            }
+            
+            unsafe { drop(Box::from_raw(channel_ptr)); }
+            black_box(total)
+        });
+    });
+    
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_heap_single_thread,
@@ -277,5 +533,9 @@ criterion_group!(
     bench_heap_spsc,
     bench_stack_spsc,
     bench_stack_sizes,
+    bench_heap_mpsc,
+    bench_stack_mpsc_2p,
+    bench_stack_mpsc_4p,
+    bench_stack_mpsc_8p,
 );
 criterion_main!(benches);

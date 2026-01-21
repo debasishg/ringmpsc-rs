@@ -48,6 +48,9 @@ mod ring;
 #[cfg(feature = "stack-ring")]
 mod stack_ring;
 
+#[cfg(feature = "stack-ring")]
+mod stack_channel;
+
 pub use backoff::Backoff;
 pub use channel::{Channel, ChannelError, Producer};
 pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
@@ -57,3 +60,9 @@ pub use ring::Ring;
 
 #[cfg(feature = "stack-ring")]
 pub use stack_ring::{StackRing, StackRing4K, StackRing8K, StackRing16K, StackRing64K};
+
+#[cfg(feature = "stack-ring")]
+pub use stack_channel::{
+    StackChannel, StackChannel4K4P, StackChannel4K8P, StackChannel4K16P, StackChannel8K4P,
+    StackChannel16K4P, StackChannelError, StackProducer,
+};

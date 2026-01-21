@@ -263,33 +263,77 @@ This is substantial! For >4 producers or large T, prefer heap-based `Channel<T>`
 - [x] Add SPSC tests in `tests/stack_ring_tests.rs`
 - [x] Add type aliases (`StackRing4K`, `StackRing8K`, `StackRing16K`, `StackRing64K`)
 
-### Phase 2: StackChannel
-- [ ] Create `src/stack_channel.rs` with `StackChannel<T, N, P>`
-- [ ] Implement `StackProducer<'a, T, N, P>` handle
-- [ ] Implement `register()`, `consume_all()`, `close()`
-- [ ] Add multi-producer tests
-- [ ] Add stress tests with concurrent access
+### Phase 2: StackChannel ✅ COMPLETE
+- [x] Create `src/stack_channel.rs` with `StackChannel<T, N, P>`
+- [x] Implement `StackProducer<'a, T, N, P>` handle
+- [x] Implement `register()`, `consume_all()`, `close()`
+- [x] Add multi-producer tests in `tests/stack_channel_tests.rs`
+- [x] Add stress tests with concurrent access
+- [x] Add type aliases (`StackChannel4K4P`, `StackChannel4K8P`, etc.)
 
-### Documentation & Polish
-- [ ] Add examples in `examples/stack_ring.rs`
+### Documentation & Polish ✅ COMPLETE
+- [x] Add examples in `examples/stack_ring.rs`
 - [x] Add benchmarks comparing heap vs stack variants
-- [ ] Update README.md with feature flag usage
+- [x] Add MPSC benchmarks comparing StackChannel vs Channel
+- [x] Update README.md with feature flag usage
+
+## Future Work
+
+### StackSpanCollector for span_collector Example
+
+The `examples/span_collector` uses the heap-based `Channel<Span>`. A stack-allocated variant could reduce span submission latency from ~100ns to ~30-50ns.
+
+**Challenges:**
+
+1. **Static producer count** — `StackChannel<T, N, P>` requires knowing `P` at compile time, but `SpanCollector` uses dynamic `register()`. Solution: Make `P` a const generic on `StackSpanCollector`.
+
+2. **Lifetime management** — `StackProducer<'a, ...>` is tied to the channel's lifetime. For spawned async tasks, need `Box::leak` or scoped threads.
+
+3. **`Span` is not `Copy`** — Contains `String` and `Box<HashMap>`, so can't use `send()` batch method. Must use `push()` or `reserve()`/`commit()` loops.
+
+**Proposed API:**
+
+```rust
+// Dynamic producers, heap-allocated (existing)
+let collector = SpanCollector::new(config);
+
+// Fixed producers, stack-allocated (proposed)
+let collector = StackSpanCollector::<4096, 8>::new();  // 4K ring, max 8 producers
+```
+
+**Implementation checklist:**
+
+- [ ] Create `StackSpanCollector<const N: usize, const P: usize>`
+- [ ] Wrap `StackChannel<Span, N, P>` internally
+- [ ] Provide same API as `SpanCollector` (register, submit, consume)
+- [ ] Add `StackSpanProducer` with `'static` trick for async compatibility
+- [ ] Add benchmarks comparing heap vs stack span submission
 
 ## Benchmark Results
 
 Benchmarks run on Apple M-series (ARM64), Rust 1.87, `--release` with default optimizations.
 
-### Stack vs Heap Comparison
+### SPSC: Stack vs Heap Comparison
 
 | Benchmark | Heap `Ring<T>` | Stack `StackRing<T, N>` | Improvement |
 |-----------|----------------|-------------------------|-------------|
-| **Single Thread** (5M ops) | 1.46 Gelem/s | 1.47 Gelem/s | ~1.0x (parity) |
-| **SPSC Cross-Thread** (5M ops) | 2.97 Gelem/s | **5.93 Gelem/s** | **2.0x faster** |
+| **Single Thread** (5M ops) | 1.47 Gelem/s | 1.48 Gelem/s | ~1.0x (parity) |
+| **SPSC Cross-Thread** (5M ops) | 2.97 Gelem/s | **5.96 Gelem/s** | **2.0x faster** |
 
 **Key finding**: StackRing achieves **2x throughput** in the cross-thread SPSC scenario — the most important workload for this library. The improvement comes from:
 1. Eliminated pointer indirection (buffer is inline)
 2. Better cache locality (contiguous memory layout)
 3. Predictable memory addresses enable hardware prefetching
+
+### MPSC: StackChannel vs Channel Comparison
+
+| Producers | Heap `Channel<T>` | Stack `StackChannel<T,N,P>` | Improvement |
+|-----------|-------------------|------------------------------|-------------|
+| **2P** | 2.77 Gelem/s | **5.06 Gelem/s** | **1.8x faster** |
+| **4P** | 2.65 Gelem/s | **6.01 Gelem/s** | **2.3x faster** |
+| **8P** | 1.27 Gelem/s | **4.84 Gelem/s** | **3.8x faster** |
+
+**Key finding**: StackChannel shows even larger improvements than SPSC, especially at higher producer counts. The **3.8x improvement at 8P** demonstrates the benefit of eliminating heap indirection when the consumer must poll multiple rings.
 
 ### Stack Ring Size Comparison
 
