@@ -20,11 +20,100 @@ A high-performance lock-free MPSC channel using **ring decomposition**: each pro
 - **Batch consumption** (`consume_batch`): one atomic head update for N items - Disruptor pattern ([src/ring.rs#L378](src/ring.rs#L378))
 - **Per-producer FIFO only**: no global ordering across producers
 
-### Reference Implementation
-See [examples/span_collector/](examples/span_collector/) for a complete async tracing collector:
-- Bridges ringmpsc → tokio via `tokio::sync::Notify` ([examples/span_collector/src/async_bridge.rs](examples/span_collector/src/async_bridge.rs))
-- Demonstrates backpressure handling pattern ([examples/span_collector/docs/backpressure-notify-pattern.md](examples/span_collector/docs/backpressure-notify-pattern.md))
-- Shows batch processing with `consume_all_up_to()` for bounded latency
+### Reference Implementation: Span Collector
+
+The [examples/span_collector/](examples/span_collector/) is a complete async OpenTelemetry tracing collector showcasing all library patterns.
+
+#### Architecture Layers
+| Layer | File | Purpose |
+|-------|------|---------|
+| Sync Core | [collector.rs](examples/span_collector/src/collector.rs) | `SpanCollector`, `SpanProducer` - wraps `Channel<Span>` |
+| Async Bridge | [async_bridge.rs](examples/span_collector/src/async_bridge.rs) | Bridges ringmpsc → tokio via `Notify` |
+| Batch Processing | [batch_processor.rs](examples/span_collector/src/batch_processor.rs) | Groups spans by trace_id, time/size-based flush |
+| Export | [exporter.rs](examples/span_collector/src/exporter.rs) | OTLP/stdout/JSON export with retry |
+
+#### Key Design Decisions
+
+1. **Sync Core + Async Bridge Pattern**
+   - Keep lock-free ring operations synchronous for predictability
+   - Bridge to async via `tokio::spawn` consumer task + `tokio::sync::Notify`
+   - Never block tokio runtime threads with spin loops
+
+2. **Owned Consumption Only** ([collector.rs#L140](examples/span_collector/src/collector.rs#L140))
+   ```rust
+   // CORRECT: owned consumption - zero-copy transfer
+   collector.consume_all_up_to_owned(limit, |span: Span| { ... });
+   
+   // NOT PROVIDED: reference consumption would force clone
+   // collector.consume_all_up_to(limit, |span: &Span| { ... }); // Span has String, Box<HashMap>
+   ```
+   `Span` contains heap allocations; owned APIs avoid cloning.
+
+3. **Bounded Consumption per Poll** ([async_bridge.rs#L74](examples/span_collector/src/async_bridge.rs#L74))
+   ```rust
+   let consumed = collector.consume_all_up_to(10_000, |span| ...);
+   ```
+   Prevents consumer task from hogging the runtime; ensures predictable latency.
+
+4. **Boxed Variable-Size Fields** ([span.rs](examples/span_collector/src/span.rs))
+   ```rust
+   pub struct Span {
+       pub trace_id: u128,      // Fixed
+       pub attributes: Box<HashMap<String, AttributeValue>>, // Boxed!
+   }
+   ```
+   Keeps `Span` size ~88 bytes for efficient ring storage; heap-indirection for variable data.
+
+#### Backpressure Pattern with `tokio::sync::Notify`
+
+```rust
+// Producer side (async_bridge.rs)
+impl AsyncSpanProducer {
+    pub async fn submit_span(&self, span: Span) -> Result<(), SubmitError> {
+        loop {
+            match self.producer.submit_span(span.clone()) {
+                Ok(()) => return Ok(()),
+                Err(SubmitError::Full) => {
+                    // Wait for consumer to signal space available
+                    self.backpressure_notify.notified().await;
+                }
+            }
+        }
+    }
+}
+
+// Consumer side (async_bridge.rs#L76-L83)
+let consumed = collector.consume_all_up_to(max_consume, |span| { ... });
+if consumed > 0 {
+    // Signal ALL waiting producers that space is available
+    backpressure_notify.notify_waiters();
+}
+```
+
+**Why `notify_waiters()` not `notify_one()`**: Multiple producers may be waiting; wake all to retry.
+
+#### Graceful Shutdown Protocol
+```rust
+// 1. Signal shutdown
+shutdown_tx.send(()).ok();
+
+// 2. Consumer task receives signal, drains remaining spans
+collector.consume_all(|span| batch_processor.add(span));
+
+// 3. Final flush to exporter
+batch_processor.flush().await?;
+```
+
+#### Metrics Pattern (Relaxed Atomics)
+```rust
+// All counters use Relaxed ordering - safe because:
+// - No control flow depends on values
+// - No happens-before relationships needed
+// - Eventual consistency acceptable for observability
+metrics.spans_submitted.fetch_add(1, Ordering::Relaxed);
+```
+
+See [examples/span_collector/docs/backpressure-notify-pattern.md](examples/span_collector/docs/backpressure-notify-pattern.md) for the full async signaling pattern.
 
 ## Development Workflows
 
@@ -93,12 +182,77 @@ while !producer.push(value) { thread::yield_now(); }
 - `max_producers`: 1-128 (default 16)
 - `enable_metrics`: slight overhead, off by default
 
+### Async Integration Pattern (from span_collector)
+When integrating ringmpsc with async runtimes:
+
+```rust
+// 1. Keep sync core - don't make ring operations async
+pub struct SyncCollector {
+    channel: Arc<Channel<T>>,
+}
+
+// 2. Bridge to async via spawn + Notify
+pub struct AsyncCollector {
+    sync_collector: Arc<SyncCollector>,
+    consumer_task: JoinHandle<()>,
+    backpressure: Arc<Notify>,
+}
+
+// 3. Consumer task polls at fixed interval (don't spin!)
+let consumer_task = tokio::spawn(async move {
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let consumed = collector.consume_all_up_to(10_000, handler);
+                if consumed > 0 { notify.notify_waiters(); }
+            }
+            _ = &mut shutdown_rx => break,
+        }
+    }
+});
+
+// 4. Async producer awaits notification (doesn't spin!)
+pub async fn submit(&self, item: T) -> Result<(), Error> {
+    loop {
+        match self.try_submit(item.clone()) {
+            Ok(()) => return Ok(()),
+            Err(Full) => self.backpressure.notified().await,
+        }
+    }
+}
+```
+
+### Data Structure Design for Ring Buffers
+When designing types for ring buffer storage:
+
+| Pattern | Example | Benefit |
+|---------|---------|---------|
+| Fixed-size core | `trace_id: u128, span_id: u64` | Predictable ring slot size |
+| Boxed variable data | `attributes: Box<HashMap<K,V>>` | Keeps struct small (~88 bytes) |
+| Owned strings | `name: String` (not `&str`) | No lifetime params, safe transfer |
+| Atomic counters | `AtomicU64` with `Relaxed` | Low-overhead observability |
+
 ## Testing Conventions
 
 - **FIFO verification**: Use `(producer_id, sequence)` tuples, verify per-producer order ([tests/integration_tests.rs#L30](tests/integration_tests.rs#L30))
 - **Stress tests**: 8+ producers × 50K+ items, verify sum equals expected ([tests/integration_tests.rs#L77](tests/integration_tests.rs#L77))
 - **Loom tests**: Simplified ring in [tests/loom_tests.rs](tests/loom_tests.rs) for exhaustive interleaving
 - **Miri tests**: [tests/miri_tests.rs](tests/miri_tests.rs) catches UB in unsafe paths
+
+### Span Collector Testing Patterns
+
+```bash
+# Run span_collector tests
+cd examples/span_collector
+cargo test                    # Unit + integration tests
+cargo test --release          # Performance-sensitive tests
+```
+
+- **Ownership transfer**: Verify spans are moved (not cloned) through pipeline
+- **Backpressure**: Test slow consumer scenario - producers should await, not spin
+- **Graceful shutdown**: Verify all in-flight spans are drained and exported
+- **Metrics conservation**: `spans_submitted == spans_consumed` after full drain
 
 ## Common Gotchas
 
