@@ -268,7 +268,26 @@ impl<T> Ring<T> {
     /// Internal: Commit n slots after writing. Called by Reservation.
     pub(crate) fn commit_internal(&self, n: usize) {
         let tail = self.tail.load(Ordering::Relaxed);
-        self.tail.store(tail.wrapping_add(n as u64), Ordering::Release);
+        let new_tail = tail.wrapping_add(n as u64);
+        let head = self.head.load(Ordering::Relaxed);
+        
+        // INV-SEQ-01: Bounded Count - items in ring never exceed capacity
+        debug_assert!(
+            new_tail.wrapping_sub(head) as usize <= self.capacity(),
+            "INV-SEQ-01 violated: count {} exceeds capacity {}",
+            new_tail.wrapping_sub(head),
+            self.capacity()
+        );
+        
+        // INV-SEQ-02: Monotonic Progress - tail only increases
+        debug_assert!(
+            new_tail >= tail,
+            "INV-SEQ-02 violated: tail decreased from {} to {}",
+            tail,
+            new_tail
+        );
+        
+        self.tail.store(new_tail, Ordering::Release);
 
         if self.config.enable_metrics {
             self.metrics.add_messages_sent(n as u64);
@@ -325,7 +344,26 @@ impl<T> Ring<T> {
     #[inline]
     pub fn advance(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
-        self.head.store(head.wrapping_add(n as u64), Ordering::Release);
+        let new_head = head.wrapping_add(n as u64);
+        let tail = self.tail.load(Ordering::Relaxed);
+        
+        // INV-SEQ-01: Bounded Count - can't consume more than available
+        debug_assert!(
+            new_head <= tail,
+            "INV-SEQ-01 violated: advancing head {} beyond tail {}",
+            new_head,
+            tail
+        );
+        
+        // INV-SEQ-02: Monotonic Progress - head only increases
+        debug_assert!(
+            new_head >= head,
+            "INV-SEQ-02 violated: head decreased from {} to {}",
+            head,
+            new_head
+        );
+        
+        self.head.store(new_head, Ordering::Release);
 
         if self.config.enable_metrics {
             self.metrics.add_messages_received(n as u64);

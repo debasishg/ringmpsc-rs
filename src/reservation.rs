@@ -136,6 +136,9 @@ impl<'a, T> Reservation<'a, T> {
     /// Caller must ensure `n <= self.len()`.
     #[inline]
     unsafe fn commit_n_unchecked(self, n: usize) {
+        // INV-RES-03: Pointer Validity - ring_ptr valid for lifetime 'a
+        debug_assert!(!self.ring_ptr.is_null(), "INV-RES-03 violated: null ring pointer");
+        
         let ring = &*self.ring_ptr;
         ring.commit_internal(n);
     }

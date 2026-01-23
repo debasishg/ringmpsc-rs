@@ -105,6 +105,14 @@ impl Span {
             .unwrap()
             .as_nanos() as u64;
         self.status = status;
+        
+        // INV-DOM-04: Time Ordering - start_time ≤ end_time
+        debug_assert!(
+            self.start_time <= self.end_time,
+            "INV-DOM-04 violated: start_time {} > end_time {}",
+            self.start_time,
+            self.end_time
+        );
     }
 
     /// Adds an attribute to the span

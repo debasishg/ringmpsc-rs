@@ -50,25 +50,30 @@ pub trait RateLimiter: Send {
 /// let limiter = IntervalRateLimiter::new(Duration::from_millis(10));
 /// ```
 pub struct IntervalRateLimiter {
-    interval: Interval,
+    interval: Option<Interval>,
     rate_per_sec: f64,
 }
 
 impl IntervalRateLimiter {
     /// Create a rate limiter with a specific interval between operations.
+    ///
+    /// If `period` is zero, creates an unlimited rate limiter that only yields.
     pub fn new(period: Duration) -> Self {
+        if period.is_zero() {
+            return Self {
+                interval: None,
+                rate_per_sec: f64::INFINITY,
+            };
+        }
+        
         let mut interval = interval(period);
         // Skip missed ticks to avoid queueing - if we fall behind, catch up by skipping
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let rate_per_sec = if period.as_secs_f64() > 0.0 {
-            1.0 / period.as_secs_f64()
-        } else {
-            f64::INFINITY
-        };
+        let rate_per_sec = 1.0 / period.as_secs_f64();
 
         Self {
-            interval,
+            interval: Some(interval),
             rate_per_sec,
         }
     }
@@ -98,7 +103,15 @@ impl IntervalRateLimiter {
 #[async_trait::async_trait]
 impl RateLimiter for IntervalRateLimiter {
     async fn wait(&mut self) {
-        self.interval.tick().await;
+        match &mut self.interval {
+            Some(interval) => {
+                interval.tick().await;
+            }
+            None => {
+                // Unlimited: just yield to runtime
+                tokio::task::yield_now().await;
+            }
+        }
     }
 
     fn target_rate(&self) -> Option<f64> {
