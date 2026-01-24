@@ -1,0 +1,42 @@
+[package]
+name = "ringmpsc-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Debasish Ghosh"]
+description = "A high-performance lock-free Multi-Producer Single-Consumer (MPSC) channel implementation achieving 50+ billion messages per second"
+license = "MIT"
+repository = "https://github.com/debasishg/ringmpsc-rs"
+readme = "README.md"
+keywords = ["mpsc", "lock-free", "channel", "concurrent", "ring-buffer"]
+categories = ["concurrency", "data-structures"]
+
+[features]
+# Enable loom for concurrency testing (cargo test --features loom)
+loom = ["dep:loom"]
+# Enable stack-allocated ring buffer variants (StackRing, StackChannel)
+stack-ring = []
+
+[dependencies]
+crossbeam-utils.workspace = true
+loom = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[[bench]]
+name = "stack_vs_heap"
+harness = false
+required-features = ["stack-ring"]
+
+[[bin]]
+name = "bench_final"
+path = "bin/bench_final.rs"
+
+[[bin]]
+name = "scaling_benchmark"
+path = "bin/scaling_benchmark.rs"

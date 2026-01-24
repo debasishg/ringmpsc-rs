@@ -1,4 +1,4 @@
-# Ring Buffer Invariants
+# Ring Buffer Specification
 
 This document defines the invariants that ALL ring buffer implementations (`Ring<T>`, `StackRing<T, N>`) must satisfy. Violations indicate bugs.
 

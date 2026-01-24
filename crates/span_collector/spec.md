@@ -1,4 +1,4 @@
-# Span Collector Invariants
+# Span Collector Specification
 
 This document defines the domain and implementation invariants for the OpenTelemetry span collector built on ringmpsc-rs.
 
@@ -198,5 +198,5 @@ The bridge uses `tokio::sync::Notify` (not `std::sync::Condvar`) for async-aware
 
 ## Related Specifications
 
-- [Ring Buffer Invariants](../../../specs/ring-buffer-invariants.md) - Low-level guarantees this collector depends on
-- [Backpressure Pattern](../docs/backpressure-notify-pattern.md) - Detailed design doc
+- [Ring Buffer Specification](../ringmpsc/spec.md) - Low-level guarantees this collector depends on
+- [Backpressure Pattern](docs/backpressure-notify-pattern.md) - Detailed design doc

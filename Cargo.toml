@@ -1,43 +1,28 @@
-[package]
-name = "ringmpsc-rs"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["crates/ringmpsc", "crates/span_collector"]
+
+# Default to the ringmpsc library crate
+default-members = ["crates/ringmpsc"]
+
+[workspace.package]
 edition = "2021"
-authors = ["Debasish Ghosh"]
-description = "A high-performance lock-free Multi-Producer Single-Consumer (MPSC) channel implementation achieving 50+ billion messages per second"
 license = "MIT"
 repository = "https://github.com/debasishg/ringmpsc-rs"
-readme = "README.md"
-keywords = ["mpsc", "lock-free", "channel", "concurrent", "ring-buffer"]
-categories = ["concurrency", "data-structures"]
 
-[features]
-# Enable loom for concurrency testing (cargo test --features loom)
-loom = ["dep:loom"]
-# Enable stack-allocated ring buffer variants (StackRing, StackChannel)
-stack-ring = []
-
-[dependencies]
+[workspace.dependencies]
+# Core dependencies
 crossbeam-utils = "0.8"
-loom = { version = "0.7", optional = true }
 thiserror = "1.0"
 
-[dev-dependencies]
+# Optional/testing
+loom = "0.7"
 criterion = "0.5"
 
-[[bench]]
-name = "throughput"
-harness = false
-
-[[bench]]
-name = "stack_vs_heap"
-harness = false
-required-features = ["stack-ring"]
-
-# Note: The assume_init_ref() fix eliminates UB, so opt-level workaround is no longer needed
-# Keeping default debug settings (opt-level = 0) for faster compile times
-# [profile.dev]
-# opt-level = 2
-#
-# [profile.test]
-# opt-level = 2
+# Async runtime (span_collector)
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+rand = "0.8"
 

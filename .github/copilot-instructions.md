@@ -1,278 +1,140 @@
-# RingMPSC-RS Copilot Instructions
+# RingMPSC-RS Workspace Instructions
 
-## Project Overview
-A high-performance lock-free MPSC channel using **ring decomposition**: each producer gets a dedicated SPSC ring, eliminating producer-producer contention. Rust port of [RingMPSC Zig](https://github.com/boonzy00/ringmpsc), targeting 50+ billion msg/sec.
+This file defines **global** conventions for the entire workspace. Crate-specific details belong in each crate's `spec.md`.
 
-## Architecture
+## Workspace Structure
 
-### Core Components
-| Module | Purpose |
-|--------|---------|
-| [src/channel.rs](src/channel.rs) | `Channel<T>`, `Producer<T>` - MPSC coordination, `consume_all()` polls all rings |
-| [src/ring.rs](src/ring.rs) | `Ring<T>` - SPSC ring buffer with 128-byte aligned atomics, `MaybeUninit<T>` buffer |
-| [src/reservation.rs](src/reservation.rs) | Zero-copy `reserve(n)` → `Reservation` → `commit()` API |
-| [src/stack_ring.rs](src/stack_ring.rs) | `StackRing<T, N>` - Stack-allocated variant (feature `stack-ring`) |
-| [src/config.rs](src/config.rs) | `Config`, `LOW_LATENCY_CONFIG`, `HIGH_THROUGHPUT_CONFIG` presets |
-
-### Key Design Decisions
-- **Unbounded u64 sequence numbers** prevent ABA (58 years to wrap at 10B msg/sec)
-- **Cached head/tail** in `UnsafeCell`: single-writer fields avoid cross-core reads ([src/ring.rs#L56-L68](src/ring.rs#L56-L68))
-- **Batch consumption** (`consume_batch`): one atomic head update for N items - Disruptor pattern ([src/ring.rs#L378](src/ring.rs#L378))
-- **Per-producer FIFO only**: no global ordering across producers
-
-### Reference Implementation: Span Collector
-
-The [examples/span_collector/](examples/span_collector/) is a complete async OpenTelemetry tracing collector showcasing all library patterns.
-
-#### Architecture Layers
-| Layer | File | Purpose |
-|-------|------|---------|
-| Sync Core | [collector.rs](examples/span_collector/src/collector.rs) | `SpanCollector`, `SpanProducer` - wraps `Channel<Span>` |
-| Async Bridge | [async_bridge.rs](examples/span_collector/src/async_bridge.rs) | Bridges ringmpsc → tokio via `Notify` |
-| Batch Processing | [batch_processor.rs](examples/span_collector/src/batch_processor.rs) | Groups spans by trace_id, time/size-based flush |
-| Export | [exporter.rs](examples/span_collector/src/exporter.rs) | OTLP/stdout/JSON export with retry |
-
-#### Key Design Decisions
-
-1. **Sync Core + Async Bridge Pattern**
-   - Keep lock-free ring operations synchronous for predictability
-   - Bridge to async via `tokio::spawn` consumer task + `tokio::sync::Notify`
-   - Never block tokio runtime threads with spin loops
-
-2. **Owned Consumption Only** ([collector.rs#L140](examples/span_collector/src/collector.rs#L140))
-   ```rust
-   // CORRECT: owned consumption - zero-copy transfer
-   collector.consume_all_up_to_owned(limit, |span: Span| { ... });
-   
-   // NOT PROVIDED: reference consumption would force clone
-   // collector.consume_all_up_to(limit, |span: &Span| { ... }); // Span has String, Box<HashMap>
-   ```
-   `Span` contains heap allocations; owned APIs avoid cloning.
-
-3. **Bounded Consumption per Poll** ([async_bridge.rs#L74](examples/span_collector/src/async_bridge.rs#L74))
-   ```rust
-   let consumed = collector.consume_all_up_to(10_000, |span| ...);
-   ```
-   Prevents consumer task from hogging the runtime; ensures predictable latency.
-
-4. **Boxed Variable-Size Fields** ([span.rs](examples/span_collector/src/span.rs))
-   ```rust
-   pub struct Span {
-       pub trace_id: u128,      // Fixed
-       pub attributes: Box<HashMap<String, AttributeValue>>, // Boxed!
-   }
-   ```
-   Keeps `Span` size ~88 bytes for efficient ring storage; heap-indirection for variable data.
-
-#### Backpressure Pattern with `tokio::sync::Notify`
-
-```rust
-// Producer side (async_bridge.rs)
-impl AsyncSpanProducer {
-    pub async fn submit_span(&self, span: Span) -> Result<(), SubmitError> {
-        loop {
-            match self.producer.submit_span(span.clone()) {
-                Ok(()) => return Ok(()),
-                Err(SubmitError::Full) => {
-                    // Wait for consumer to signal space available
-                    self.backpressure_notify.notified().await;
-                }
-            }
-        }
-    }
-}
-
-// Consumer side (async_bridge.rs#L76-L83)
-let consumed = collector.consume_all_up_to(max_consume, |span| { ... });
-if consumed > 0 {
-    // Signal ALL waiting producers that space is available
-    backpressure_notify.notify_waiters();
-}
+```
+ringmpsc-rs/
+├── Cargo.toml                    # Workspace manifest
+├── .github/copilot-instructions.md  # This file (global conventions)
+├── crates/
+│   ├── ringmpsc/                 # Lock-free ring buffer library
+│   │   ├── Cargo.toml
+│   │   ├── spec.md               # Ring buffer invariants
+│   │   └── src/
+│   └── span_collector/           # Async tracing collector (binary)
+│       ├── Cargo.toml
+│       ├── spec.md               # Collector invariants
+│       └── src/
 ```
 
-**Why `notify_waiters()` not `notify_one()`**: Multiple producers may be waiting; wake all to retry.
+## Crate Specifications
 
-#### Graceful Shutdown Protocol
+Each crate has a `spec.md` documenting its invariants:
+- [crates/ringmpsc/spec.md](../crates/ringmpsc/spec.md) - Memory layout, sequencing, ordering, drop safety
+- [crates/span_collector/spec.md](../crates/span_collector/spec.md) - Domain model, ownership transfer, backpressure
+
+## Global Coding Standards
+
+### Error Handling
+
+| Context | Rule |
+|---------|------|
+| Library code | **Never use `.unwrap()`** - return `Result` or `Option` |
+| Test code | `.unwrap()` and `.expect()` are acceptable |
+| Binary entry points | `.expect("descriptive message")` for unrecoverable failures |
+| Panics | Only for logic errors that indicate bugs, never for recoverable conditions |
+
 ```rust
-// 1. Signal shutdown
-shutdown_tx.send(()).ok();
+// ❌ BAD (library code)
+let config = Config::new(bits).unwrap();
 
-// 2. Consumer task receives signal, drains remaining spans
-collector.consume_all(|span| batch_processor.add(span));
+// ✅ GOOD (library code)
+let config = Config::new(bits)?;
 
-// 3. Final flush to exporter
-batch_processor.flush().await?;
+// ✅ GOOD (test code)
+let config = Config::new(bits).expect("test config should be valid");
 ```
 
-#### Metrics Pattern (Relaxed Atomics)
+### Unsafe Code
+
+1. **Minimize unsafe blocks** - wrap smallest possible scope
+2. **Document invariants** - every `unsafe` block must have a `// Safety:` comment
+3. **Validate with Miri** - run `cargo +nightly miri test` before merging
+
 ```rust
-// All counters use Relaxed ordering - safe because:
-// - No control flow depends on values
-// - No happens-before relationships needed
-// - Eventual consistency acceptable for observability
-metrics.spans_submitted.fetch_add(1, Ordering::Relaxed);
+// ✅ GOOD
+// Safety: idx is bounded by mask (power-of-2 capacity), and the slot
+// at this index is initialized (head ≤ idx < tail per INV-INIT-01)
+unsafe { buffer[idx].assume_init_read() }
 ```
 
-See [examples/span_collector/docs/backpressure-notify-pattern.md](examples/span_collector/docs/backpressure-notify-pattern.md) for the full async signaling pattern.
+### Memory Ordering
+
+Use the minimum ordering required:
+
+| Pattern | Ordering | Use Case |
+|---------|----------|----------|
+| Counters/metrics | `Relaxed` | No synchronization needed |
+| Single-writer cache | `UnsafeCell` | Thread-local optimization |
+| Publish data | `Release` | Writer publishes to readers |
+| Read published data | `Acquire` | Reader synchronizes with writer |
+| Read-modify-write | `AcqRel` | Concurrent updates (rare) |
+
+### Performance
+
+- **Release builds only** for lock-free code - debug builds break optimizations
+- **Batch operations** preferred over single-item operations
+- **No mutexes** in hot paths - use lock-free primitives
+- **128-byte alignment** for hot atomics (prevent false sharing)
 
 ## Development Workflows
 
 ```bash
-# Build & Test
-cargo build --release           # Always use --release for lock-free code
-cargo test                      # Unit + integration tests
-cargo test --features loom --test loom_tests --release   # Exhaustive concurrency testing
-cargo +nightly miri test --test miri_tests               # UB detection
+# Build entire workspace
+cargo build --release
 
-# Benchmarking (10M messages, criterion)
-cargo bench                           # All benchmarks
-cargo bench --bench throughput spsc   # Specific group
+# Test specific crate
+cargo test -p ringmpsc-rs
+cargo test -p span_collector
 
-# Stack-allocated variants
-cargo test --features stack-ring
-cargo bench --features stack-ring --bench stack_vs_heap
+# Concurrency testing (ringmpsc)
+cargo test -p ringmpsc-rs --features loom --test loom_tests --release
+
+# UB detection (ringmpsc)
+cargo +nightly miri test -p ringmpsc-rs --test miri_tests
+
+# Benchmarks (ringmpsc)
+cargo bench -p ringmpsc-rs
+
+# Run span_collector demo
+cargo run -p span_collector --bin demo
 ```
 
-## Coding Patterns
+## Test Organization
 
-### Reservation API (Zero-Copy Writes)
-**CRITICAL**: `reserve(n)` may return fewer items than requested due to wrap-around:
-```rust
-let mut remaining = n;
-while remaining > 0 {
-    if let Some(mut r) = producer.reserve(remaining) {
-        let slice = r.as_mut_slice();
-        let got = slice.len(); // MAY BE < remaining!
-        for slot in slice.iter_mut() {
-            slot.write(value);  // Use MaybeUninit::write()
-        }
-        r.commit();
-        remaining -= got;
-    } else {
-        thread::yield_now(); // Backpressure: ring full
-    }
-}
-```
+| Location | Purpose |
+|----------|---------|
+| `crates/*/src/**` | Unit tests (`#[cfg(test)]` modules) |
+| `crates/*/tests/` | Integration tests |
+| `crates/ringmpsc/tests/loom_tests.rs` | Exhaustive concurrency testing |
+| `crates/ringmpsc/tests/miri_tests.rs` | UB detection |
+| `crates/*/benches/` | Performance benchmarks (criterion) |
 
-### Simple API (Single Items)
-```rust
-// Convenience method - returns false if ring full
-while !producer.push(value) { thread::yield_now(); }
-```
+### Test Naming
 
-### Stack vs Heap Ring Selection
-| Use Case | Choice | Reason |
-|----------|--------|--------|
-| Embedded/real-time, no allocator | `StackRing<T, N>` | Zero heap allocation |
-| Predictable cache locality | `StackRing<T, 4096>` | Buffer inline, fits L2 |
-| Large buffers (>64K slots) | `Ring<T>` | Avoids stack overflow |
-| Dynamic capacity needed | `Ring<T>` | Runtime `Config::ring_bits` |
+- `test_*` - standard unit/integration tests
+- `*_stress` - high-volume concurrency tests
+- `*_fifo` - ordering verification tests
 
-**Size limits** ([src/stack_ring.rs#L44-L48](src/stack_ring.rs#L44-L48)):
-- `StackRing<u64, 4096>` ≈ 33KB ✓ safe everywhere
-- `StackRing<u64, 65536>` ≈ 524KB ⚠️ may overflow thread stacks
+## Git Conventions
 
-### Memory Ordering Protocol
-- **Producer**: `Relaxed` on tail load, `Acquire` on head refresh, `Release` on tail store
-- **Consumer**: `Acquire` on tail read, `Release` on head update
-- All unsafe code has `// Safety:` comments explaining invariants
+- Feature branches: `feature/description`
+- Bug fixes: `fix/description`
+- Commits: imperative mood ("Add feature" not "Added feature")
+- PRs must pass: `cargo test --all`, `cargo clippy`, `cargo fmt --check`
 
-### Configuration
-- `ring_bits`: 1-20 (capacity = 2^bits, default 16 = 64K slots)
-- `max_producers`: 1-128 (default 16)
-- `enable_metrics`: slight overhead, off by default
+## Adding New Crates
 
-### Async Integration Pattern (from span_collector)
-When integrating ringmpsc with async runtimes:
-
-```rust
-// 1. Keep sync core - don't make ring operations async
-pub struct SyncCollector {
-    channel: Arc<Channel<T>>,
-}
-
-// 2. Bridge to async via spawn + Notify
-pub struct AsyncCollector {
-    sync_collector: Arc<SyncCollector>,
-    consumer_task: JoinHandle<()>,
-    backpressure: Arc<Notify>,
-}
-
-// 3. Consumer task polls at fixed interval (don't spin!)
-let consumer_task = tokio::spawn(async move {
-    let mut interval = tokio::time::interval(Duration::from_millis(100));
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                let consumed = collector.consume_all_up_to(10_000, handler);
-                if consumed > 0 { notify.notify_waiters(); }
-            }
-            _ = &mut shutdown_rx => break,
-        }
-    }
-});
-
-// 4. Async producer awaits notification (doesn't spin!)
-pub async fn submit(&self, item: T) -> Result<(), Error> {
-    loop {
-        match self.try_submit(item.clone()) {
-            Ok(()) => return Ok(()),
-            Err(Full) => self.backpressure.notified().await,
-        }
-    }
-}
-```
-
-### Data Structure Design for Ring Buffers
-When designing types for ring buffer storage:
-
-| Pattern | Example | Benefit |
-|---------|---------|---------|
-| Fixed-size core | `trace_id: u128, span_id: u64` | Predictable ring slot size |
-| Boxed variable data | `attributes: Box<HashMap<K,V>>` | Keeps struct small (~88 bytes) |
-| Owned strings | `name: String` (not `&str`) | No lifetime params, safe transfer |
-| Atomic counters | `AtomicU64` with `Relaxed` | Low-overhead observability |
-
-## Testing Conventions
-
-- **FIFO verification**: Use `(producer_id, sequence)` tuples, verify per-producer order ([tests/integration_tests.rs#L30](tests/integration_tests.rs#L30))
-- **Stress tests**: 8+ producers × 50K+ items, verify sum equals expected ([tests/integration_tests.rs#L77](tests/integration_tests.rs#L77))
-- **Loom tests**: Simplified ring in [tests/loom_tests.rs](tests/loom_tests.rs) for exhaustive interleaving
-- **Miri tests**: [tests/miri_tests.rs](tests/miri_tests.rs) catches UB in unsafe paths
-
-### Span Collector Testing Patterns
-
-```bash
-# Run span_collector tests
-cd examples/span_collector
-cargo test                    # Unit + integration tests
-cargo test --release          # Performance-sensitive tests
-```
-
-- **Ownership transfer**: Verify spans are moved (not cloned) through pipeline
-- **Backpressure**: Test slow consumer scenario - producers should await, not spin
-- **Graceful shutdown**: Verify all in-flight spans are drained and exported
-- **Metrics conservation**: `spans_submitted == spans_consumed` after full drain
+1. Create `crates/<name>/` with `Cargo.toml` and `src/lib.rs` (or `src/main.rs`)
+2. Add to workspace members in root `Cargo.toml`
+3. Create `crates/<name>/spec.md` documenting invariants
+4. Use `workspace = true` for shared dependencies
 
 ## Common Gotchas
 
-1. **Debug builds are broken**: Lock-free code requires `--release` optimizations
-2. **Reservation wrap-around**: Always check `slice.len()`, loop if needed
-3. **`MaybeUninit` writes**: Use `slot.write(value)` not direct assignment
-4. **Backpressure**: `reserve()`/`push()` returns `None`/`false` when full - caller must retry
-
-## Adding Features Checklist
-
-- [ ] Use `CacheAligned<T>` wrapper for hot atomic fields (128-byte alignment)
-- [ ] Add `// Safety:` comments on all unsafe blocks
-- [ ] Gate metrics behind `config.enable_metrics`
-- [ ] No mutexes or blocking in hot paths
-- [ ] Batch operations > single-item operations
-- [ ] Test with loom (`--features loom`) and miri (`+nightly miri`)
-- [ ] Verify invariants in [specs/](../specs/) are preserved
-
-## Specifications
-
-Formal invariants that implementations must satisfy:
-- [specs/ring-buffer-invariants.md](../specs/ring-buffer-invariants.md) - Memory layout, sequencing, ordering, drop safety
-- [examples/span_collector/specs/invariants.md](../examples/span_collector/specs/invariants.md) - Domain model, ownership transfer, backpressure
+1. **Debug builds break lock-free code** - always use `--release` for correctness testing
+2. **Reservation wrap-around** - `reserve(n)` may return `len() < n`, must loop
+3. **`MaybeUninit` writes** - use `slot.write(value)` not assignment
+4. **Backpressure** - ring full → caller must handle retry logic

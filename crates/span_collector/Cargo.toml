@@ -1,0 +1,27 @@
+[package]
+name = "span_collector"
+version = "0.1.0"
+edition = "2021"
+description = "Async OpenTelemetry tracing collector using ringmpsc-rs"
+license = "MIT"
+repository = "https://github.com/debasishg/ringmpsc-rs"
+
+[dependencies]
+ringmpsc-rs = { path = "../ringmpsc" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bin]]
+name = "demo"
+path = "bin/demo.rs"
+
+[[bin]]
+name = "span_generator"
+path = "bin/span_generator.rs"
