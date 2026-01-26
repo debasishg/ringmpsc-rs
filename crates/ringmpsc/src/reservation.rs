@@ -1,3 +1,4 @@
+use crate::invariants::debug_assert_valid_ring_ptr;
 use crate::Ring;
 use std::mem::MaybeUninit;
 use thiserror::Error;
@@ -137,8 +138,8 @@ impl<'a, T> Reservation<'a, T> {
     #[inline]
     unsafe fn commit_n_unchecked(self, n: usize) {
         // INV-RES-03: Pointer Validity - ring_ptr valid for lifetime 'a
-        debug_assert!(!self.ring_ptr.is_null(), "INV-RES-03 violated: null ring pointer");
-        
+        debug_assert_valid_ring_ptr!(self.ring_ptr);
+
         let ring = &*self.ring_ptr;
         ring.commit_internal(n);
     }

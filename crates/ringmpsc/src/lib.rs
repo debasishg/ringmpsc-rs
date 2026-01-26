@@ -41,6 +41,7 @@
 mod backoff;
 mod channel;
 mod config;
+mod invariants;
 mod metrics;
 mod reservation;
 mod ring;

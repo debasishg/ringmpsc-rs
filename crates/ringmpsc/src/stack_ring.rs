@@ -48,6 +48,11 @@
 //!
 //! For larger buffers, use the heap-based [`Ring<T>`] or `Box<StackRing<T, N>>`.
 
+use crate::invariants::{
+    debug_assert_bounded_count, debug_assert_head_not_past_tail, debug_assert_initialized_read,
+    debug_assert_monotonic, debug_assert_no_wrap,
+};
+
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -323,7 +328,19 @@ impl<T, const N: usize> StackRing<T, N> {
     #[inline]
     pub fn commit(&self, n: usize) {
         let tail = self.tail.load(Ordering::Relaxed);
-        self.tail.store(tail.wrapping_add(n as u64), Ordering::Release);
+        let new_tail = tail.wrapping_add(n as u64);
+        let head = self.head.load(Ordering::Relaxed);
+
+        // INV-SEQ-01: Bounded Count - items in ring never exceed capacity
+        debug_assert_bounded_count!(new_tail.wrapping_sub(head) as usize, N);
+
+        // INV-SEQ-02: Monotonic Progress - tail only increases
+        debug_assert_monotonic!("tail", tail, new_tail);
+
+        // INV-SEQ-03: No wrap-around (detects bugs, not real overflow)
+        debug_assert_no_wrap!("tail", tail, new_tail);
+
+        self.tail.store(new_tail, Ordering::Release);
     }
 
     // =========================================================================
@@ -379,7 +396,16 @@ impl<T, const N: usize> StackRing<T, N> {
     #[inline]
     pub fn advance(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
-        self.head.store(head.wrapping_add(n as u64), Ordering::Release);
+        let new_head = head.wrapping_add(n as u64);
+        let tail = self.tail.load(Ordering::Relaxed);
+
+        // INV-SEQ-01: Bounded Count - can't consume more than available
+        debug_assert_head_not_past_tail!(new_head, tail);
+
+        // INV-SEQ-02: Monotonic Progress - head only increases
+        debug_assert_monotonic!("head", head, new_head);
+
+        self.head.store(new_head, Ordering::Release);
     }
 
     /// Process ALL available items with a single head update.
@@ -420,6 +446,9 @@ impl<T, const N: usize> StackRing<T, N> {
 
         // Process all available items (no atomics in loop!)
         while pos != tail {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & Self::MASK;
             // SAFETY: Item was written by producer and published via Release.
             // The Acquire load on tail synchronizes with that Release.
@@ -459,6 +488,9 @@ impl<T, const N: usize> StackRing<T, N> {
         let mut pos = head;
 
         while pos != tail {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & Self::MASK;
             let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
             handler(item);
@@ -495,6 +527,9 @@ impl<T, const N: usize> StackRing<T, N> {
         let mut pos = head;
 
         while pos != end {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & Self::MASK;
             let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
             handler(&item);
@@ -611,7 +646,7 @@ mod tests {
         unsafe {
             ring.consume_up_to(4, |v| sum += v);
         }
-        assert_eq!(sum, 0 + 1 + 2 + 3);
+        assert_eq!(sum, 6); // 0 + 1 + 2 + 3
 
         // Add more (should wrap around)
         for i in 10..14 {
@@ -714,7 +749,7 @@ mod tests {
 
         static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-        struct DropTracker(u64);
+        struct DropTracker(#[allow(dead_code)] u64);
 
         impl Drop for DropTracker {
             fn drop(&mut self) {

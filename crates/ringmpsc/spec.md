@@ -193,11 +193,23 @@ Messages from a single producer are received in send order. No global ordering a
 
 ## Verification
 
-| Invariant | Test Coverage |
-|-----------|--------------|
-| INV-MEM-01 | Manual inspection (no runtime check possible) |
-| INV-SEQ-* | [tests/integration_tests.rs](../tests/integration_tests.rs) |
-| INV-INIT-* | [tests/miri_tests.rs](../tests/miri_tests.rs) (UB detection) |
-| INV-SW-* | [tests/loom_tests.rs](../tests/loom_tests.rs) (exhaustive interleavings) |
-| INV-ORD-* | [tests/loom_tests.rs](../tests/loom_tests.rs) |
-| INV-DROP-* | [tests/miri_tests.rs](../tests/miri_tests.rs) + manual review |
+| Invariant | Test Coverage | debug_assert! Location |
+|-----------|--------------|------------------------|
+| INV-MEM-01 | Manual inspection (no runtime check possible) | N/A (structural) |
+| INV-MEM-02 | Compile-time assertions | `config.rs`, `stack_ring.rs` |
+| INV-MEM-03 | Structural (no resize API) | N/A (structural) |
+| INV-SEQ-01 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
+| INV-SEQ-02 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
+| INV-SEQ-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
+| INV-INIT-01 | [tests/miri_tests.rs](tests/miri_tests.rs) (UB detection) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
+| INV-INIT-02 | [tests/miri_tests.rs](tests/miri_tests.rs) (UB detection) | N/A (reservation API prevents) |
+| INV-INIT-03 | Structural (borrow checker) | N/A (structural) |
+| INV-SW-* | [tests/loom_tests.rs](tests/loom_tests.rs) (exhaustive interleavings) | N/A (verified by Loom) |
+| INV-ORD-* | [tests/loom_tests.rs](tests/loom_tests.rs) | N/A (verified by Loom) |
+| INV-RES-01 | API design, tested | N/A (API design) |
+| INV-RES-02 | Structural (Drop impl) | N/A (structural) |
+| INV-RES-03 | [tests/miri_tests.rs](tests/miri_tests.rs) | `invariants.rs` → `reservation.rs` |
+| INV-DROP-* | [tests/miri_tests.rs](tests/miri_tests.rs) + manual review | N/A (verified by Miri) |
+| INV-CH-01 | Config validation | `config.rs` assertions |
+| INV-CH-02 | Structural (single consumer API) | N/A (structural) |
+| INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |

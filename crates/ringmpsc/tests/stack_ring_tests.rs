@@ -205,7 +205,7 @@ fn test_stack_ring_string_type() {
 
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    struct TrackedString(String);
+    struct TrackedString(#[allow(dead_code)] String);
 
     impl Drop for TrackedString {
         fn drop(&mut self) {

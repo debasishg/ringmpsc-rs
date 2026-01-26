@@ -1,3 +1,7 @@
+use crate::invariants::{
+    debug_assert_bounded_count, debug_assert_head_not_past_tail, debug_assert_initialized_read,
+    debug_assert_monotonic, debug_assert_no_wrap,
+};
 use crate::{Backoff, Config, Metrics, Reservation};
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
@@ -270,23 +274,16 @@ impl<T> Ring<T> {
         let tail = self.tail.load(Ordering::Relaxed);
         let new_tail = tail.wrapping_add(n as u64);
         let head = self.head.load(Ordering::Relaxed);
-        
+
         // INV-SEQ-01: Bounded Count - items in ring never exceed capacity
-        debug_assert!(
-            new_tail.wrapping_sub(head) as usize <= self.capacity(),
-            "INV-SEQ-01 violated: count {} exceeds capacity {}",
-            new_tail.wrapping_sub(head),
-            self.capacity()
-        );
-        
+        debug_assert_bounded_count!(new_tail.wrapping_sub(head) as usize, self.capacity());
+
         // INV-SEQ-02: Monotonic Progress - tail only increases
-        debug_assert!(
-            new_tail >= tail,
-            "INV-SEQ-02 violated: tail decreased from {} to {}",
-            tail,
-            new_tail
-        );
-        
+        debug_assert_monotonic!("tail", tail, new_tail);
+
+        // INV-SEQ-03: No wrap-around (detects bugs, not real overflow)
+        debug_assert_no_wrap!("tail", tail, new_tail);
+
         self.tail.store(new_tail, Ordering::Release);
 
         if self.config.enable_metrics {
@@ -346,23 +343,13 @@ impl<T> Ring<T> {
         let head = self.head.load(Ordering::Relaxed);
         let new_head = head.wrapping_add(n as u64);
         let tail = self.tail.load(Ordering::Relaxed);
-        
+
         // INV-SEQ-01: Bounded Count - can't consume more than available
-        debug_assert!(
-            new_head <= tail,
-            "INV-SEQ-01 violated: advancing head {} beyond tail {}",
-            new_head,
-            tail
-        );
-        
+        debug_assert_head_not_past_tail!(new_head, tail);
+
         // INV-SEQ-02: Monotonic Progress - head only increases
-        debug_assert!(
-            new_head >= head,
-            "INV-SEQ-02 violated: head decreased from {} to {}",
-            head,
-            new_head
-        );
-        
+        debug_assert_monotonic!("head", head, new_head);
+
         self.head.store(new_head, Ordering::Release);
 
         if self.config.enable_metrics {
@@ -431,6 +418,9 @@ impl<T> Ring<T> {
 
         // Process all available items (no atomics in loop!)
         while pos != tail {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & mask;
             // SAFETY: Buffer access is safe because:
             // 1. idx is within bounds (masked to capacity)
@@ -503,6 +493,9 @@ impl<T> Ring<T> {
 
         // Process all available items (no atomics in loop!)
         while pos != tail {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & mask;
             // SAFETY: Buffer access is safe because:
             // 1. idx is within bounds (masked to capacity)
@@ -557,6 +550,9 @@ impl<T> Ring<T> {
 
         // Process up to max_items
         while count < to_consume {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & mask;
             // SAFETY: Buffer access is safe because:
             // 1. idx is within bounds (masked to capacity)
@@ -615,6 +611,9 @@ impl<T> Ring<T> {
 
         // Process up to max_items
         while count < to_consume {
+            // INV-INIT-01: Verify we're reading from initialized range
+            debug_assert_initialized_read!(pos, head, tail);
+
             let idx = (pos as usize) & mask;
             // SAFETY: Buffer access is safe because:
             // 1. idx is within bounds (masked to capacity)
