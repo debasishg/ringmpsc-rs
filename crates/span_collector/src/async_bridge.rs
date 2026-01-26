@@ -1,6 +1,6 @@
 use crate::batch_processor::{BatchConfig, BatchProcessor};
 use crate::collector::{CollectorConfig, CollectorMetrics, SpanCollector, SubmitError};
-use crate::exporter::{ExportError, SpanExporter};
+use crate::exporter::{ExportError, SpanExporterBoxed};
 use crate::span::Span;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,7 +56,9 @@ pub struct AsyncSpanCollector {
 
 impl AsyncSpanCollector {
     /// Creates a new async span collector with the given configuration and exporter
-    pub async fn new(config: AsyncCollectorConfig, exporter: Arc<dyn SpanExporter>) -> Self {
+    ///
+    /// Uses `SpanExporterBoxed` for object safety with native async traits.
+    pub async fn new(config: AsyncCollectorConfig, exporter: Arc<dyn SpanExporterBoxed>) -> Self {
         let collector = Arc::new(SpanCollector::new(config.collector_config));
         let backpressure_notify = Arc::new(Notify::new());
 
@@ -86,11 +88,10 @@ impl AsyncSpanCollector {
                         }
 
                         // Flush batch if needed
-                        if batch_processor.should_flush() {
-                            if let Err(e) = batch_processor.flush().await {
+                        if batch_processor.should_flush()
+                            && let Err(e) = batch_processor.flush().await {
                                 eprintln!("Export error: {}", e);
                             }
-                        }
                     }
                     _ = &mut shutdown_rx => {
                         // Drain remaining spans (zero-copy transfer)

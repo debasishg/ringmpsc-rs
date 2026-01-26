@@ -4,6 +4,8 @@
 
 A high-performance distributed tracing span collector that combines ringmpsc-rs's lock-free MPSC channels with async Rust. Enables instrumented services to submit spans with <100ns latency while batching exports to tracing backends (Jaeger/Zipkin/OTLP).
 
+**Rust 2024 Edition**: This crate uses native async traits (no `#[async_trait]` macro), with `SpanExporterBoxed` and `RateLimiterBoxed` wrapper traits for object-safe dynamic dispatch.
+
 ## Architecture
 
 ```
@@ -212,53 +214,58 @@ impl BatchProcessor {
 ### 5. Span Exporter (`exporter.rs`)
 
 ```rust
-#[async_trait]
+// Native async trait (Rust 2024 edition - no #[async_trait] macro)
 pub trait SpanExporter: Send + Sync {
-    async fn export(&self, batch: SpanBatch) -> Result<(), ExportError>;
+    fn export(&self, batch: SpanBatch) -> impl Future<Output = Result<(), ExportError>> + Send;
+    fn name(&self) -> &str;
 }
 
-pub struct OtlpGrpcExporter {
-    client: TraceServiceClient<Channel>,  // tonic gRPC client
-    retry_config: RetryConfig,
+// Object-safe wrapper for dynamic dispatch
+pub trait SpanExporterBoxed: Send + Sync {
+    fn export_boxed(&self, batch: SpanBatch) 
+        -> Pin<Box<dyn Future<Output = Result<(), ExportError>> + Send + '_>>;
+    fn name(&self) -> &str;
 }
 
-impl SpanExporter for OtlpGrpcExporter {
-    async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
-        let request = ExportTraceServiceRequest {
-            resource_spans: vec![batch.to_otlp_resource_spans()],
-        };
-
-        // Retry with exponential backoff
-        let mut backoff = Duration::from_millis(100);
-        for attempt in 0..self.retry_config.max_attempts {
-            match self.client.export(request.clone()).await {
-                Ok(_) => return Ok(()),
-                Err(e) if e.is_retryable() => {
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-                Err(e) => return Err(ExportError::Transport(e)),
-            }
-        }
-        Err(ExportError::RetriesExhausted)
-    }
-}
-
-pub struct OtlpHttpExporter { /* Similar using reqwest */ }
-pub struct StdoutExporter { /* For testing */ }
+// Blanket impl: any SpanExporter can be used as SpanExporterBoxed
+impl<T: SpanExporter> SpanExporterBoxed for T { ... }
 ```
 
-**Export destinations**:
-- **OTLP gRPC** (primary) - Using `tonic` for efficient protobuf transport
-- **OTLP HTTP** (fallback) - Using `reqwest` for environments without gRPC
-- **Stdout** (testing) - JSON-formatted spans for local development
+### 6. Resilient Exporters (`resilient_exporter.rs`)
 
-**Retry strategy**:
-- Exponential backoff: 100ms → 200ms → 400ms → 800ms
-- Max 5 attempts
-- Only retry transient errors (network, 5xx)
+```rust
+/// Retry with exponential backoff
+pub struct RetryingExporter<E> {
+    inner: E,
+    config: RetryConfig,  // max_retries, initial_delay, max_delay, backoff_multiplier
+    total_retries: AtomicU64,
+    recovered_exports: AtomicU64,
+}
 
-### 6. Example Application (`main.rs`)
+/// Circuit breaker pattern - fail fast when backend unhealthy
+pub struct CircuitBreakerExporter<E> {
+    inner: E,
+    config: CircuitBreakerConfig,  // failure_threshold, reset_timeout, success_threshold
+    state: Mutex<CircuitBreakerState>,  // Closed -> Open -> HalfOpen -> Closed
+    times_opened: AtomicU32,
+}
+
+/// Rate limiting wrapper
+pub struct RateLimitedExporter<E, R> {
+    inner: E,
+    rate_limiter: tokio::sync::Mutex<R>,  // async Mutex to hold across await
+}
+
+/// Builder for composing resilience patterns
+pub struct ResilientExporterBuilder<E> { ... }
+```
+
+**Resilience patterns**:
+- **Retry**: Exponential backoff (100ms → 200ms → 400ms), max 3 attempts by default
+- **Circuit Breaker**: Opens after 5 failures, half-open after 30s, closes after 2 successes
+- **Rate Limiting**: Control export rate using `RateLimiter` trait implementations
+
+### 7. Rate Limiter (`rate_limiter.rs`)
 
 ```rust
 #[tokio::main]
@@ -465,21 +472,26 @@ CollectorConfig {
 ## Dependencies
 
 ```toml
+[package]
+edition = "2024"  # Required for native async traits
+
 [dependencies]
 ringmpsc-rs = { path = "../.." }
 tokio = { version = "1.35", features = ["full"] }
-tonic = "0.10"                      # OTLP gRPC
-prost = "0.12"                      # Protobuf
-opentelemetry-proto = "0.5"         # OTLP spec
-reqwest = { version = "0.11", features = ["json"] }  # OTLP HTTP
+tonic = "0.10"                      # OTLP gRPC (future)
+prost = "0.12"                      # Protobuf (future)
+opentelemetry-proto = "0.5"         # OTLP spec (future)
+reqwest = { version = "0.11", features = ["json"] }  # OTLP HTTP (future)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-async-trait = "0.1"
+thiserror = "2.0"                   # Error handling
 rand = "0.8"
 
 [dev-dependencies]
 criterion = "0.5"
 ```
+
+**Note**: `async-trait` is no longer needed with Rust 2024 edition's native async traits.
 
 ## Future Enhancements
 
@@ -514,8 +526,10 @@ criterion = "0.5"
 ## File Structure
 
 ```
-examples/span_collector/
+crates/span_collector/
 ├── DESIGN.md              # This file
+├── README.md              # Quick start guide
+├── spec.md                # Invariants specification
 ├── Cargo.toml             # Project manifest
 ├── src/
 │   ├── lib.rs             # Re-exports
@@ -523,9 +537,12 @@ examples/span_collector/
 │   ├── collector.rs       # Sync SpanCollector
 │   ├── async_bridge.rs    # AsyncSpanCollector
 │   ├── batch_processor.rs # Batching logic
-│   └── exporter.rs        # SpanExporter trait + impls
-├── examples/
-│   └── main.rs            # Demo application
+│   ├── exporter.rs        # SpanExporter trait + impls
+│   ├── resilient_exporter.rs  # Retry, circuit breaker wrappers
+│   └── rate_limiter.rs    # RateLimiter trait + impls
+├── bin/
+│   ├── demo.rs            # Demo application
+│   └── span_generator.rs  # Multi-producer stress test
 └── tests/
     └── integration.rs     # Integration tests
 ```

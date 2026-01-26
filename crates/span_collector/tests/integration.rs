@@ -3,7 +3,6 @@ use span_collector::{
 };
 use span_collector::span::SpanBatch;
 use span_collector::exporter::{ExportError, SpanExporter};
-use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,7 +36,7 @@ impl TestExporter {
     }
 }
 
-#[async_trait]
+// Rust 2024: Use native async fn in traits
 impl SpanExporter for TestExporter {
     async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
         self.spans.lock().unwrap().extend(batch.spans);
@@ -68,7 +67,7 @@ impl SlowExporter {
     }
 }
 
-#[async_trait]
+// Rust 2024: Use native async fn in traits
 impl SpanExporter for SlowExporter {
     async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
         tokio::time::sleep(self.delay).await;

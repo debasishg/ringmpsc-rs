@@ -1,9 +1,9 @@
 use crate::span::SpanBatch;
-use async_trait::async_trait;
+use std::future::Future;
 use thiserror::Error;
 
 /// Error types for span export operations
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ExportError {
     /// Transport-layer error (network, gRPC, HTTP)
     #[error("transport error: {0}")]
@@ -12,23 +12,58 @@ pub enum ExportError {
     #[error("serialization error: {0}")]
     Serialization(String),
     /// All retry attempts exhausted
-    #[error("all retry attempts exhausted")]
-    RetriesExhausted,
+    #[error("all retry attempts exhausted after {attempts} tries")]
+    RetriesExhausted { attempts: u32 },
     /// Export operation timed out
     #[error("export operation timed out")]
     Timeout,
+    /// Circuit breaker is open (backend unhealthy)
+    #[error("circuit breaker open: backend unavailable")]
+    CircuitOpen,
 }
 
-/// Trait for exporting span batches to various backends
-/// We need `#[async_trait]` because the code does use dynamic dispatch - 
-/// there are multiple places using `Arc<dyn SpanExporter>`
-#[async_trait]
+/// Trait for exporting span batches to various backends.
+///
+/// Uses native async fn in traits (Rust 2024 edition) instead of `#[async_trait]`.
+///
+/// # Note on Object Safety
+///
+/// This trait uses `impl Future` return types which are not object-safe.
+/// For dynamic dispatch, use the provided wrapper types or `Box<dyn SpanExporterBoxed>`.
 pub trait SpanExporter: Send + Sync {
-    /// Exports a batch of spans
-    async fn export(&self, batch: SpanBatch) -> Result<(), ExportError>;
+    /// Exports a batch of spans.
+    fn export(&self, batch: SpanBatch) -> impl Future<Output = Result<(), ExportError>> + Send;
 
-    /// Returns the exporter name for debugging
+    /// Returns the exporter name for debugging.
     fn name(&self) -> &str;
+}
+
+/// Object-safe version of SpanExporter for dynamic dispatch.
+///
+/// This trait uses `Pin<Box<dyn Future>>` to allow `dyn SpanExporterBoxed`.
+pub trait SpanExporterBoxed: Send + Sync {
+    /// Exports a batch of spans (boxed future for object safety).
+    fn export_boxed(
+        &self,
+        batch: SpanBatch,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ExportError>> + Send + '_>>;
+
+    /// Returns the exporter name for debugging.
+    fn name(&self) -> &str;
+}
+
+/// Blanket implementation: any SpanExporter can be used as SpanExporterBoxed
+impl<T: SpanExporter> SpanExporterBoxed for T {
+    fn export_boxed(
+        &self,
+        batch: SpanBatch,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ExportError>> + Send + '_>> {
+        Box::pin(self.export(batch))
+    }
+
+    fn name(&self) -> &str {
+        SpanExporter::name(self)
+    }
 }
 
 /// Stdout exporter for testing and debugging
@@ -43,7 +78,6 @@ impl StdoutExporter {
     }
 }
 
-#[async_trait]
 impl SpanExporter for StdoutExporter {
     async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
         if self.verbose {
@@ -80,7 +114,6 @@ impl JsonFileExporter {
     }
 }
 
-#[async_trait]
 impl SpanExporter for JsonFileExporter {
     async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
         let json = serde_json::to_string_pretty(&batch.spans)
@@ -113,7 +146,6 @@ impl Default for NullExporter {
     }
 }
 
-#[async_trait]
 impl SpanExporter for NullExporter {
     async fn export(&self, _batch: SpanBatch) -> Result<(), ExportError> {
         // Discard all spans
@@ -166,7 +198,6 @@ impl TestExporter {
 }
 
 #[cfg(test)]
-#[async_trait]
 impl SpanExporter for TestExporter {
     async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
         self.spans.lock().unwrap().extend(batch.spans);
@@ -200,7 +231,6 @@ impl SlowExporter {
 }
 
 #[cfg(test)]
-#[async_trait]
 impl SpanExporter for SlowExporter {
     async fn export(&self, batch: SpanBatch) -> Result<(), ExportError> {
         tokio::time::sleep(self.delay).await;

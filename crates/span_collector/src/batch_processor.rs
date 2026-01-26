@@ -1,4 +1,4 @@
-use crate::exporter::{ExportError, SpanExporter};
+use crate::exporter::{ExportError, SpanExporterBoxed};
 use crate::span::{Span, SpanBatch};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,8 +40,8 @@ pub struct BatchProcessor {
     pending: HashMap<u128, Vec<Span>>,
     /// Configuration
     config: BatchConfig,
-    /// Exporter for sending batches
-    exporter: Arc<dyn SpanExporter>,
+    /// Exporter for sending batches (uses boxed version for object safety)
+    exporter: Arc<dyn SpanExporterBoxed>,
     /// Metrics
     metrics: BatchMetrics,
     /// Last flush time
@@ -50,7 +50,7 @@ pub struct BatchProcessor {
 
 impl BatchProcessor {
     /// Creates a new batch processor
-    pub fn new(config: BatchConfig, exporter: Arc<dyn SpanExporter>) -> Self {
+    pub fn new(config: BatchConfig, exporter: Arc<dyn SpanExporterBoxed>) -> Self {
         Self {
             pending: HashMap::new(),
             config,
@@ -93,8 +93,8 @@ impl BatchProcessor {
         let span_count = spans.len();
         let batch = SpanBatch::with_spans(spans);
 
-        // Export the batch
-        match self.exporter.export(batch).await {
+        // Export the batch using the boxed method
+        match self.exporter.export_boxed(batch).await {
             Ok(()) => {
                 self.metrics.spans_exported += span_count as u64;
                 self.metrics.batches_exported += 1;

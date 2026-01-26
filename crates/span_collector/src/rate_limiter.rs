@@ -3,6 +3,10 @@
 //! Provides a trait-based rate limiting abstraction for controlling span generation
 //! rates in producer tasks. The design is decoupled to allow easy swapping of
 //! implementations (interval-based, token bucket, adaptive, etc.).
+//!
+//! # Rust 2024 Edition
+//!
+//! This module uses native async traits (no `#[async_trait]` macro required).
 
 use std::time::Duration;
 use tokio::time::{interval, Interval, MissedTickBehavior};
@@ -10,7 +14,7 @@ use tokio::time::{interval, Interval, MissedTickBehavior};
 /// Trait for rate limiting async operations.
 ///
 /// Implementors control the pacing of operations by awaiting `wait()` between
-/// each operation. The trait is object-safe to allow runtime polymorphism.
+/// each operation. Uses native async fn in traits (Rust 2024 edition).
 ///
 /// # Example
 ///
@@ -21,17 +25,49 @@ use tokio::time::{interval, Interval, MissedTickBehavior};
 ///     do_work();
 /// }
 /// ```
-#[async_trait::async_trait]
+///
+/// # Note on Send bounds
+///
+/// The `+ Send` bound on the return type ensures the future can be used in
+/// multi-threaded async runtimes like Tokio. This is required because `async fn`
+/// in traits doesn't automatically add `Send` bounds.
 pub trait RateLimiter: Send {
     /// Wait until the next operation is permitted.
     ///
     /// This method should be called before each rate-limited operation.
     /// It will complete immediately if within budget, or delay as needed.
-    async fn wait(&mut self);
+    fn wait(&mut self) -> impl Future<Output = ()> + Send;
 
     /// Returns the target rate in operations per second, if known.
     fn target_rate(&self) -> Option<f64> {
         None
+    }
+}
+
+use std::future::Future;
+use std::pin::Pin;
+
+/// Object-safe version of RateLimiter for dynamic dispatch.
+///
+/// This trait uses `Pin<Box<dyn Future>>` to allow `dyn RateLimiterBoxed`.
+pub trait RateLimiterBoxed: Send {
+    /// Wait until the next operation is permitted (boxed future for object safety).
+    fn wait_boxed(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Returns the target rate in operations per second, if known.
+    fn target_rate(&self) -> Option<f64> {
+        None
+    }
+}
+
+/// Blanket implementation: any RateLimiter can be used as RateLimiterBoxed
+impl<T: RateLimiter> RateLimiterBoxed for T {
+    fn wait_boxed(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(self.wait())
+    }
+
+    fn target_rate(&self) -> Option<f64> {
+        RateLimiter::target_rate(self)
     }
 }
 
@@ -65,7 +101,7 @@ impl IntervalRateLimiter {
                 rate_per_sec: f64::INFINITY,
             };
         }
-        
+
         let mut interval = interval(period);
         // Skip missed ticks to avoid queueing - if we fall behind, catch up by skipping
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -100,7 +136,6 @@ impl IntervalRateLimiter {
     }
 }
 
-#[async_trait::async_trait]
 impl RateLimiter for IntervalRateLimiter {
     async fn wait(&mut self) {
         match &mut self.interval {
@@ -130,7 +165,6 @@ impl RateLimiter for IntervalRateLimiter {
 /// other tasks.
 pub struct YieldingRateLimiter;
 
-#[async_trait::async_trait]
 impl RateLimiter for YieldingRateLimiter {
     async fn wait(&mut self) {
         tokio::task::yield_now().await;
@@ -186,9 +220,10 @@ mod tests {
     #[tokio::test]
     async fn test_target_rate() {
         let limiter = IntervalRateLimiter::from_rate(250.0);
-        assert_eq!(limiter.target_rate(), Some(250.0));
+        // Disambiguate between RateLimiter and RateLimiterBoxed traits
+        assert_eq!(RateLimiter::target_rate(&limiter), Some(250.0));
 
         let unlimited = IntervalRateLimiter::unlimited();
-        assert_eq!(unlimited.target_rate(), None);
+        assert_eq!(RateLimiter::target_rate(&unlimited), None);
     }
 }

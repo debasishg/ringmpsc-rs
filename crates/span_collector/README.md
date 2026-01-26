@@ -6,11 +6,20 @@ A high-performance distributed tracing span collector implementation combining r
 
 This project demonstrates how to build a production-ready span collector for OpenTelemetry-compatible distributed tracing systems, achieving <100ns span submission latency through lock-free ring buffers and efficient batching.
 
+## Rust 2024 Edition
+
+This crate uses **Rust 2024 edition** features:
+- **Native async traits** - No `#[async_trait]` macro needed
+- **`SpanExporterBoxed`** - Object-safe wrapper for dynamic dispatch
+- **`RateLimiterBoxed`** - Object-safe wrapper for rate limiters
+
 ## Features
 
 - **Lock-free span submission** - <100ns latency using ringmpsc-rs MPSC channels
 - **Async/await integration** - Tokio-based consumer with backpressure handling
 - **Batch processing** - Amortizes export overhead by grouping spans
+- **Resilient export** - Retry with exponential backoff, circuit breaker pattern
+- **Rate limiting** - Control export rate to avoid overwhelming backends
 - **Multiple exporters** - Stdout, JSON file, and null exporters included
 - **Graceful shutdown** - Ensures all spans are exported before termination
 - **Configurable** - Tune for low-latency or high-throughput scenarios
@@ -151,18 +160,21 @@ Based on ringmpsc-rs benchmarks (9.21B msgs/sec peak):
 
 ```
 src/
-├── lib.rs              # Re-exports
-├── span.rs             # Span data model
-├── collector.rs        # Sync SpanCollector (lock-free core)
-├── async_bridge.rs     # AsyncSpanCollector (Tokio integration)
-├── batch_processor.rs  # Batching logic
-└── exporter.rs         # SpanExporter trait + implementations
+├── lib.rs               # Re-exports
+├── span.rs              # Span data model
+├── collector.rs         # Sync SpanCollector (lock-free core)
+├── async_bridge.rs      # AsyncSpanCollector (Tokio integration)
+├── batch_processor.rs   # Batching logic
+├── exporter.rs          # SpanExporter trait + implementations
+├── resilient_exporter.rs # Retry, circuit breaker, rate limiting wrappers
+└── rate_limiter.rs      # RateLimiter trait + implementations
 
-examples/
-└── main.rs             # Demo application
+bin/
+├── demo.rs              # Demo application
+└── span_generator.rs    # Multi-producer stress test
 
 tests/
-└── integration.rs      # Integration tests
+└── integration.rs       # Integration tests
 ```
 
 ## Design Decisions
@@ -189,9 +201,48 @@ This means:
 - **Flexibility**: Consumer can be async (I/O) or sync (CPU-bound)
 - **Testability**: Sync core is deterministic and can be tested without async runtime
 
+## Resilient Export Patterns
+
+### Retry with Exponential Backoff
+
+```rust
+use span_collector::{RetryingExporter, RetryConfig, StdoutExporter};
+
+let base = StdoutExporter::new(true);
+let resilient = RetryingExporter::new(base, RetryConfig {
+    max_retries: 3,
+    initial_delay: Duration::from_millis(100),
+    max_delay: Duration::from_secs(10),
+    backoff_multiplier: 2.0,
+});
+```
+
+### Circuit Breaker
+
+```rust
+use span_collector::{CircuitBreakerExporter, CircuitBreakerConfig};
+
+let cb_exporter = CircuitBreakerExporter::new(base, CircuitBreakerConfig {
+    failure_threshold: 5,      // Open after 5 consecutive failures
+    reset_timeout: Duration::from_secs(30),  // Try again after 30s
+    success_threshold: 2,      // Close after 2 successes in half-open
+});
+```
+
+### Combined Resilience
+
+```rust
+use span_collector::ResilientExporterBuilder;
+
+let exporter = ResilientExporterBuilder::new(StdoutExporter::new(true))
+    .with_retry(RetryConfig::default())
+    .with_circuit_breaker(CircuitBreakerConfig::default())
+    .build_with_retry_and_circuit_breaker();
+```
+
 ## TODO
 
-- [ ] **OTLP Exporter** - Implement `OtlpExporter` to export spans to OpenTelemetry collectors via OTLP protocol (gRPC using `tonic` or HTTP using `reqwest`). This would convert the internal `Span` format to OTLP protobuf and support configurable endpoints, headers, and retry logic.
+- [ ] **OTLP Exporter** - Implement `OtlpExporter` to export spans to OpenTelemetry collectors via OTLP protocol
 
 ## Future Enhancements
 
@@ -200,6 +251,7 @@ This means:
 3. Multiple consumers (fan-out to backends)
 4. Adaptive batching based on latency
 5. Resource attributes (service metadata)
+6. Token bucket rate limiting
 
 ## References
 

@@ -2,6 +2,8 @@
 
 This document defines the domain and implementation invariants for the OpenTelemetry span collector built on ringmpsc-rs.
 
+**Rust 2024 Edition**: This crate uses native async traits. The `SpanExporter` and `RateLimiter` traits use `impl Future` return types for Send bounds, with companion `SpanExporterBoxed` and `RateLimiterBoxed` traits for object-safe dynamic dispatch.
+
 ## 1. Domain Invariants (OpenTelemetry Semantics)
 
 ### INV-DOM-01: Trace Identity
@@ -183,18 +185,143 @@ consumer_task.await           // 2. Wait for drain + final flush
 ### INV-ASYNC-03: Tokio Integration
 The bridge uses `tokio::sync::Notify` (not `std::sync::Condvar`) for async-aware signaling.
 
+## 8. Resilience Invariants
+
+### INV-RES-01: Retry Attempt Bound
+```
+attempts ≤ max_retries + 1
+```
+The total number of export attempts is bounded by configuration. After exhausting retries, `ExportError::RetriesExhausted` is returned.
+
+**Implementation**: [src/resilient_exporter.rs](src/resilient_exporter.rs) - `RetryingExporter::export()`
+
+### INV-RES-02: Exponential Backoff Delay
+```
+delay(attempt) = min(initial_delay × multiplier^(attempt-1), max_delay)
+```
+Retry delays grow exponentially but are capped at `max_delay` to prevent unbounded waits.
+
+### INV-RES-03: Circuit Breaker State Machine
+```
+Closed → Open:    consecutive_failures ≥ failure_threshold
+Open → HalfOpen:  elapsed ≥ reset_timeout
+HalfOpen → Closed: consecutive_successes ≥ success_threshold
+HalfOpen → Open:   any failure
+```
+Circuit breaker transitions follow a deterministic state machine.
+
+**Implementation**: [src/resilient_exporter.rs](src/resilient_exporter.rs) - `CircuitBreakerExporter`
+
+### INV-RES-04: Circuit Open Fail-Fast
+```
+state = Open ∧ elapsed < reset_timeout → return Err(CircuitOpen) immediately
+```
+When the circuit is open, export attempts fail immediately without calling the inner exporter.
+
+### INV-RES-05: Rate Limiter Pacing
+```
+∀ consecutive calls: time(call_n+1) - time(call_n) ≥ interval
+```
+Rate-limited operations are paced according to the configured interval.
+
+**Implementation**: [src/rate_limiter.rs](src/rate_limiter.rs) - `IntervalRateLimiter`
+
+### INV-RES-06: Async Mutex for Rate Limiter
+```rust
+// CORRECT: tokio::sync::Mutex holds across await
+let mut limiter = self.rate_limiter.lock().await;
+limiter.wait().await;
+// lock released here
+
+// WRONG: std::sync::Mutex cannot be held across await
+```
+`RateLimitedExporter` uses `tokio::sync::Mutex` because the rate limiter must be held across the async `wait()` call.
+
+**Implementation**: [src/resilient_exporter.rs](src/resilient_exporter.rs) - `RateLimitedExporter`
+
+## 9. Object Safety Invariants
+
+### INV-OBJ-01: Boxed Trait Pattern
+```rust
+// SpanExporter: not object-safe (impl Future return type)
+trait SpanExporter {
+    fn export(&self, batch: SpanBatch) -> impl Future<...> + Send;
+}
+
+// SpanExporterBoxed: object-safe wrapper
+trait SpanExporterBoxed {
+    fn export_boxed(&self, batch: SpanBatch) -> Pin<Box<dyn Future<...> + Send + '_>>;
+}
+
+// Blanket impl enables: Arc<dyn SpanExporterBoxed>
+impl<T: SpanExporter> SpanExporterBoxed for T { ... }
+```
+Native async traits with `impl Future` are not object-safe. The `*Boxed` traits provide object safety via `Pin<Box<dyn Future>>`.
+
+**Implementation**: [src/exporter.rs](src/exporter.rs), [src/rate_limiter.rs](src/rate_limiter.rs)
+
+### INV-OBJ-02: Dynamic Dispatch Consumers
+```rust
+// BatchProcessor and AsyncSpanCollector use SpanExporterBoxed
+exporter: Arc<dyn SpanExporterBoxed>
+
+// Calls use export_boxed() method
+self.exporter.export_boxed(batch).await
+```
+Components that need dynamic exporter dispatch use `SpanExporterBoxed`.
+
+## 10. Design Principles
+
+### PRIN-01: Trait Bounds on Domain-Specific Types
+
+For domain-specific wrapper types where the bound is fundamental to the type's identity, the bound belongs on the struct definition itself:
+
+```rust
+// ✅ CORRECT: Bound on struct - this type IS an exporter wrapper
+pub struct RetryingExporter<E: SpanExporter> { ... }
+pub struct CircuitBreakerExporter<E: SpanExporter> { ... }
+pub struct RateLimitedExporter<E: SpanExporter, R: RateLimiter> { ... }
+
+// ❌ INCORRECT for this use case: Bound only on impl
+pub struct RetryingExporter<E> { ... }  // Allows RetryingExporter<NotAnExporter>
+```
+
+**Rationale**: The guideline "don't put bounds on structs" applies to general-purpose containers like `Vec<T>` or `HashMap<K, V>`. For types where:
+1. The type name includes the trait concept ("Exporter" in `RetryingExporter`)
+2. The type only makes sense when wrapping that trait
+3. Using the type with a non-implementing type is always a bug
+
+...the bound should be on the struct to document intent and prevent misuse at the type level.
+
+**Applied to**: `RetryingExporter`, `CircuitBreakerExporter`, `RateLimitedExporter`, `ResilientExporterBuilder`
+
 ---
 
 ## Verification
 
 | Invariant | Verification Method |
 |-----------|-------------------|
-| INV-DOM-* | Unit tests in [tests/](../tests/) |
+| INV-DOM-* | Unit tests in [tests/](tests/) |
+| INV-DS-* | Compile-time (Rust type system) |
 | INV-OWN-* | Compile-time (Rust ownership) + Miri |
 | INV-BATCH-* | Integration tests |
 | INV-BP-* | Load tests with slow consumer |
 | INV-MET-* | Stress tests comparing counts |
 | INV-ASYNC-* | Tokio test runtime |
+| INV-RES-01 | `test_retry_exhausted` |
+| INV-RES-02 | `test_retry_succeeds_after_failures` |
+| INV-RES-03 | `test_circuit_breaker_opens_on_failures`, `test_circuit_breaker_half_open_recovery` |
+| INV-RES-04 | `test_circuit_breaker_opens_on_failures` (verifies CircuitOpen error) |
+| INV-RES-05 | `test_rate_limited_exporter` |
+| INV-RES-06 | Compile-time (async Mutex type) |
+| INV-OBJ-* | Compile-time (trait object rules) |
+
+## debug_assert! Coverage
+
+| Invariant | Location | Assertion |
+|-----------|----------|-----------|
+| INV-RES-01 | `resilient_exporter.rs` | `debug_assert!(attempt < max_attempts)` |
+| INV-RES-03 | `resilient_exporter.rs` | `debug_assert_circuit_state_valid!` |
 
 ## Related Specifications
 

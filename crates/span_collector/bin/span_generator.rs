@@ -10,8 +10,8 @@
 
 use rand::Rng;
 use span_collector::{
-    AsyncCollectorConfig, AsyncSpanCollector, AttributeValue,
-    IntervalRateLimiter, RateLimiter, Span, SpanKind, SpanStatus, StdoutExporter,
+    AsyncCollectorConfig, AsyncSpanCollector, AttributeValue, IntervalRateLimiter,
+    RateLimiterBoxed, Span, SpanKind, SpanStatus, StdoutExporter,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn producer_task(
     producer_id: usize,
     collector: Arc<AsyncSpanCollector>,
-    mut rate_limiter: Box<dyn RateLimiter>,
+    mut rate_limiter: Box<dyn RateLimiterBoxed>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<ProducerStats, String> {
     // Register this producer with the collector (gets dedicated SPSC ring)
@@ -198,8 +198,8 @@ async fn producer_task(
             break;
         }
 
-        // Rate limiting - wait for next permitted operation
-        rate_limiter.wait().await;
+        // Rate limiting - wait for next permitted operation (using boxed version for dyn dispatch)
+        rate_limiter.wait_boxed().await;
 
         // Generate and submit a random span
         let span = generate_random_span(producer_id, sequence);
@@ -246,12 +246,13 @@ fn generate_random_span(producer_id: usize, sequence: u64) -> Span {
     ];
 
     // Generate unique IDs incorporating producer_id for traceability
-    let trace_id: u128 = rng.gen();
+    // Note: `gen` is a reserved keyword in Rust 2024, so we use `r#gen`
+    let trace_id: u128 = rng.r#gen();
     let span_id = ((producer_id as u64) << 48) | sequence;
     let parent_span_id: u64 = if rng.gen_bool(0.3) {
         0 // 30% are root spans
     } else {
-        rng.gen() // 70% have a parent
+        rng.r#gen() // 70% have a parent
     };
 
     let operation = operations[rng.gen_range(0..operations.len())];

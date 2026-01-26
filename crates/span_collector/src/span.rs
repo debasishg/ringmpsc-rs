@@ -63,7 +63,7 @@ pub enum SpanKind {
 }
 
 /// Batch of spans for export
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SpanBatch {
     /// All spans in this batch
     pub spans: Vec<Span>,
