@@ -108,10 +108,40 @@ On shutdown, all remaining spans are consumed and exported:
 ```rust
 // In shutdown handler
 collector.consume_all(|span| batch_processor.add(span));
-batch_processor.flush().await;
+if let Some(batch) = batch_processor.take_batch() {
+    exporter.export_boxed(batch).await;  // Final flush is sequential
+}
+// Wait for in-flight exports to complete
+while let Some(result) = export_tasks.join_next().await { ... }
 ```
 
-**Location**: [src/async_bridge.rs#L91-L99](../src/async_bridge.rs#L91-L99)
+**Location**: [src/async_bridge.rs](src/async_bridge.rs)
+
+### INV-BATCH-04: Concurrent Export Bound
+```
+inflight_exports ≤ max_concurrent_exports  (always)
+```
+The number of concurrent export tasks is bounded by a `Semaphore`. This prevents unbounded memory growth when export latency exceeds span arrival rate.
+
+**Implementation**: [src/async_bridge.rs](src/async_bridge.rs) - `export_semaphore`
+
+### INV-BATCH-05: Separation of Concerns
+```rust
+// BatchProcessor: pure batching (no atomics, no Arc)
+BatchMetrics { spans_exported: u64, ... }  // Plain counters for sequential use
+
+// ExportMetrics: concurrent tracking (in async_bridge)
+ExportMetrics { spans_exported: AtomicU64, ... }  // Atomics for concurrent tasks
+```
+`BatchProcessor` is a pure batching abstraction with no concurrency overhead.
+`ExportMetrics` in async_bridge handles concurrent export tracking with atomics.
+
+**Implementation**: 
+- [src/batch_processor.rs](src/batch_processor.rs) - `BatchMetrics` (plain u64)
+- [src/async_bridge.rs](src/async_bridge.rs) - `ExportMetrics` (AtomicU64)
+`BatchMetrics` uses `AtomicU64` for all counters because concurrent export tasks update metrics simultaneously.
+
+**Implementation**: [src/batch_processor.rs](src/batch_processor.rs) - `BatchMetrics`
 
 ## 5. Backpressure Invariants
 
@@ -304,7 +334,11 @@ pub struct RetryingExporter<E> { ... }  // Allows RetryingExporter<NotAnExporter
 | INV-DOM-* | Unit tests in [tests/](tests/) |
 | INV-DS-* | Compile-time (Rust type system) |
 | INV-OWN-* | Compile-time (Rust ownership) + Miri |
-| INV-BATCH-* | Integration tests |
+| INV-BATCH-01 | Integration tests |
+| INV-BATCH-02 | Integration tests |
+| INV-BATCH-03 | `test_graceful_shutdown_with_inflight_spans` |
+| INV-BATCH-04 | Structural (Semaphore bounds concurrent tasks) |
+| INV-BATCH-05 | Structural (separate types: `BatchMetrics` vs `ExportMetrics`) |
 | INV-BP-* | Load tests with slow consumer |
 | INV-MET-* | Stress tests comparing counts |
 | INV-ASYNC-* | Tokio test runtime |

@@ -161,6 +161,69 @@ impl AsyncSpanProducer {
 }
 ```
 
+#### Concurrent Export Architecture
+
+The consumer loop spawns export tasks concurrently using a `Semaphore` to bound parallelism
+and a `JoinSet` to track in-flight tasks:
+
+```
+┌─────────────────┐     ┌─────────────────┐
+│ Consumer Loop   │     │ Export Tasks    │
+│                 │     │                 │
+│ • Polls rings   │     │ Task 1: export()│
+│ • Adds to batch │     │ Task 2: export()│
+│ • Spawns export │────▶│ Task 3: export()│
+│   (with permit) │     │ Task 4: export()│
+│                 │     │   ⋮ (max N)     │
+└─────────────────┘     └─────────────────┘
+         │                      │
+         └── Semaphore ─────────┘
+              (bounds concurrency)
+```
+
+```rust
+// In consumer task
+let export_semaphore = Arc::new(Semaphore::new(max_concurrent_exports));
+let mut export_tasks: JoinSet<Result<(), ExportError>> = JoinSet::new();
+
+loop {
+    tokio::select! {
+        // Reap completed export tasks (non-blocking)
+        Some(result) = export_tasks.join_next(), if !export_tasks.is_empty() => {
+            // Handle export result...
+        }
+
+        _ = interval.tick() => {
+            // Consume spans, add to batch...
+            
+            if batch_processor.should_flush() {
+                if let Some(batch) = batch_processor.take_batch() {
+                    let permit = export_semaphore.clone().acquire_owned().await;
+                    if let Ok(permit) = permit {
+                        export_tasks.spawn(async move {
+                            let result = exporter.export_boxed(batch).await;
+                            drop(permit); // Release semaphore
+                            result
+                        });
+                    }
+                }
+            }
+        }
+
+        _ = shutdown_rx => {
+            // Drain remaining, final flush, wait for in-flight exports
+            while let Some(result) = export_tasks.join_next().await { ... }
+            break;
+        }
+    }
+}
+```
+
+**Benefits**:
+- Overlaps export latency with span collection
+- Bounded memory: at most `max_concurrent_exports` batches in flight
+- Graceful shutdown waits for all in-flight exports
+
 **Key patterns**:
 - `tokio::spawn` for consumer task (async runtime integration)
 - `tokio::time::interval` for periodic polling (100ms = 10Hz)

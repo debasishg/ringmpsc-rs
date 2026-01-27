@@ -268,6 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_config: batch_config.clone(),
         consumer_interval: Duration::from_millis(50), // Poll 20 times/sec
         max_consume_per_poll: 1000,
+        max_concurrent_exports: 4,               // Up to 4 concurrent exports
     };
 
     println!("   Ring Buffer: {} slots ({} KB per ring)",
@@ -276,7 +277,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Max Producers: {}", collector_config.max_producers);
     println!("   Batch Size: {} spans", batch_config.batch_size_limit);
     println!("   Batch Timeout: {:?}", batch_config.batch_timeout);
+    println!("   Concurrent Exports: {}", async_config.max_concurrent_exports);
     println!("   Consumer Poll: {:?}", async_config.consumer_interval);
+    println!();
     println!();
 
     // Create the async collector

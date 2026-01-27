@@ -18,8 +18,8 @@ pub mod resilient_exporter;
 pub mod span;
 
 // Re-export main types
-pub use async_bridge::{AsyncCollectorConfig, AsyncSpanCollector, AsyncSpanProducer};
-pub use batch_processor::{BatchConfig, BatchProcessor};
+pub use async_bridge::{AsyncCollectorConfig, AsyncSpanCollector, AsyncSpanProducer, ExportMetrics};
+pub use batch_processor::{BatchConfig, BatchMetrics, BatchProcessor};
 pub use collector::{CollectorConfig, CollectorMetrics, SpanCollector, SpanProducer, SubmitError};
 pub use exporter::{ExportError, JsonFileExporter, NullExporter, SpanExporter, SpanExporterBoxed, StdoutExporter};
 pub use rate_limiter::{IntervalRateLimiter, RateLimiter, RateLimiterBoxed};
