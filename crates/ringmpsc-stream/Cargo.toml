@@ -1,0 +1,29 @@
+[package]
+name = "ringmpsc-stream"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors = ["Debasish Ghosh"]
+description = "Async Stream/Sink adapters for ringmpsc-rs with backpressure support"
+readme = "README.md"
+keywords = ["mpsc", "stream", "async", "backpressure", "pipeline"]
+categories = ["asynchronous", "concurrency"]
+
+[dependencies]
+ringmpsc-rs = { path = "../ringmpsc" }
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio-stream = "0.1"
+futures-core = "0.3"
+futures-sink = "0.3"
+futures-util = "0.3"
+pin-project-lite = "0.2"
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+futures = "0.3"
+
+[[bin]]
+name = "demo"
+path = "bin/demo.rs"
