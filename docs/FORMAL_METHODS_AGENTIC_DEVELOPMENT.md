@@ -93,19 +93,19 @@ This is **machine-checkable**. TLC will explore all reachable states and report 
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  FORMAL SPEC (Mathematical Truth)                                        │
 │                                                                          │
-│  ┌─────────────────┐         ┌─────────────────┐                        │
-│  │  RingSPSC.tla   │────────▶│  RingSPSC.qnt   │                        │
-│  │                 │ manual  │                 │                        │
-│  │  • Variables    │ transl. │  • var head     │                        │
-│  │  • Invariants   │         │  • boundedCount │                        │
-│  │  • Actions      │         │  • step action  │                        │
-│  └────────┬────────┘         └────────┬────────┘                        │
+│  ┌─────────────────┐         ┌─────────────────┐                         │
+│  │  RingSPSC.tla   │────────▶│  RingSPSC.qnt   │                         │
+│  │                 │ manual  │                 │                         │
+│  │  • Variables    │ transl. │  • var head     │                         │
+│  │  • Invariants   │         │  • boundedCount │                         │
+│  │  • Actions      │         │  • step action  │                         │
+│  └────────┬────────┘         └────────┬────────┘                         │
 │           │                           │                                  │
 │           ▼                           ▼                                  │
-│      TLC Model                   quint verify                           │
-│      Checker                     (Apalache)                             │
+│      TLC Model                   quint verify                            │
+│      Checker                     (Apalache)                              │
 │                                                                          │
-│  Exhaustively verifies spec is internally consistent                    │
+│  Exhaustively verifies spec is internally consistent                     │
 └──────────────────────────────────────────────────────────────────────────┘
                                     │
                                     │  Invariants & Actions
@@ -113,19 +113,19 @@ This is **machine-checkable**. TLC will explore all reachable states and report 
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  IMPLEMENTATION (Rust Code)                                              │
 │                                                                          │
-│  ┌─────────────────┐         ┌─────────────────┐                        │
-│  │  quint_mbt.rs   │         │  property_tests │                        │
-│  │                 │         │                 │                        │
-│  │  Execute spec   │         │  Random inputs  │                        │
-│  │  traces on      │         │  verify same    │                        │
-│  │  real Ring<T>   │         │  invariants     │                        │
-│  └────────┬────────┘         └────────┬────────┘                        │
+│  ┌─────────────────┐         ┌─────────────────┐                         │
+│  │  quint_mbt.rs   │         │  property_tests │                         │
+│  │                 │         │                 │                         │
+│  │  Execute spec   │         │  Random inputs  │                         │
+│  │  traces on      │         │  verify same    │                         │
+│  │  real Ring<T>   │         │  invariants     │                         │
+│  └────────┬────────┘         └────────┬────────┘                         │
 │           │                           │                                  │
 │           └───────────┬───────────────┘                                  │
 │                       ▼                                                  │
 │              Ring<T> Implementation                                      │
 │                                                                          │
-│  Verifies implementation satisfies spec invariants                      │
+│  Verifies implementation satisfies spec invariants                       │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -387,12 +387,12 @@ Agent: "Running quint verify on amended spec..."
 │  1. Agent proposes code change                                              │
 │                    │                                                        │
 │                    ▼                                                        │
-│  2. Extract affected invariants from git diff                              │
+│  2. Extract affected invariants from git diff                               │
 │                    │                                                        │
 │                    ▼                                                        │
 │  3. Run targeted formal verification                                        │
-│     • quint verify --invariant=<affected>                                  │
-│     • cargo test --test quint_mbt                                          │
+│     • quint verify --invariant=<affected>                                   │
+│     • cargo test --test quint_mbt                                           │
 │                    │                                                        │
 │                    ▼                                                        │
 │  4. Pass/Fail gates merge                                                   │
@@ -446,12 +446,12 @@ fn commit_internal(&self, count: usize) {
 ┌─────────────────────────────────────────────────────────────────┐
 │  Verification Layer Stack                                       │
 ├─────────────────────────────────────────────────────────────────┤
-│  TLA+/Quint Model Checking    │ Spec correctness               │
-│  Quint MBT (quint_mbt.rs)     │ Spec-implementation conformance│
-│  Property Tests (proptest)     │ Random input coverage          │
-│  Loom Tests                    │ Concurrency correctness        │
-│  Miri Tests                    │ Memory safety                  │
-│  debug_assert! macros          │ Runtime invariant checks       │
+│  TLA+/Quint Model Checking    │ Spec correctness                │
+│  Quint MBT (quint_mbt.rs)     │ Spec-implementation conformance │
+│  Property Tests (proptest)    │ Random input coverage           │
+│  Loom Tests                   │ Concurrency correctness         │
+│  Miri Tests                   │ Memory safety                   │
+│  debug_assert! macros         │ Runtime invariant checks        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -480,13 +480,13 @@ When modifying ringmpsc core:
 
 Formal methods provide the missing link in agentic development:
 
-| Without Formal Methods | With Formal Methods |
-|------------------------|---------------------|
-| Specs are ambiguous | Specs are mathematical |
-| Agents guess intent | Agents verify against spec |
-| Regressions in PRs | Violations caught mechanically |
-| Manual review required | Automated verification |
-| "It works on my machine" | "It satisfies the invariants" |
+| Without Formal Methods   | With Formal Methods            |
+|--------------------------|--------------------------------|
+| Specs are ambiguous      | Specs are mathematical         |
+| Agents guess intent      | Agents verify against spec     |
+| Regressions in PRs       | Violations caught mechanically |
+| Manual review required   | Automated verification         |
+| "It works on my machine" | "It satisfies the invariants"  |
 
 The combination of:
 - **TLA+/Quint** for formal specification
