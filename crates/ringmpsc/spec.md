@@ -213,3 +213,91 @@ Messages from a single producer are received in send order. No global ordering a
 | INV-CH-01 | Config validation | `config.rs` assertions |
 | INV-CH-02 | Structural (single consumer API) | N/A (structural) |
 | INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |
+
+---
+
+## 9. Formal Specification (TLA+)
+
+The lock-free protocol is formally specified in TLA+ for model checking. This complements the runtime `debug_assert!` checks and Loom tests.
+
+**Location**: [tla/RingSPSC.tla](tla/RingSPSC.tla)
+
+### Invariant Mapping
+
+| Spec Invariant | TLA+ Element | Description |
+|----------------|--------------|-------------|
+| INV-SEQ-01 | `BoundedCount` | `(tail - head) <= Capacity` |
+| INV-SEQ-02 | Action constraints | Tail/head only increase (monotonic) |
+| INV-ORD-01 | `ProducerWrite` | Release store publishes writes |
+| INV-ORD-02 | `ConsumerRefreshCache`, `ConsumerAdvance` | Acquire load synchronizes reads |
+| INV-ORD-03 | `HappensBefore` | `head <= tail` (consumer never reads ahead) |
+| INV-SW-01 | Structural | Producer actions only modify `tail`, `cached_head` |
+| INV-SW-02 | Structural | Consumer actions only modify `head`, `cached_tail` |
+
+### Refinement Mapping (TLA+ → Rust)
+
+| TLA+ Action | Rust Function |
+|-------------|---------------|
+| `ProducerReserveFast` | `ring.rs: reserve()` fast path |
+| `ProducerRefreshCache` | `ring.rs: reserve()` slow path (Acquire load) |
+| `ProducerWrite` | `ring.rs: commit_internal()` |
+| `ConsumerRefreshCache` | `ring.rs: consume_batch()` slow path |
+| `ConsumerAdvance` | `ring.rs: advance()` |
+
+### Running the Model Checker
+
+```bash
+cd crates/ringmpsc/tla
+tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+```
+
+See [tla/README.md](tla/README.md) for prerequisites and detailed instructions.
+
+### Design Decision: Unbounded Naturals
+
+The TLA+ spec uses unbounded `Nat` instead of `u64` wrap-around because:
+1. Invariants (bounded count, monotonicity) don't depend on overflow behavior
+2. TLC state space is bounded by `MaxItems` configuration anyway
+3. Wrap-around correctness is a separate concern tested via Loom
+
+At 10 billion msg/sec, `u64` wrap-around takes ~58 years—practically infinite.
+
+### Property-Based Testing (Proptest)
+
+The TLA+ invariants are also encoded as proptest properties in [tests/property_tests.rs](tests/property_tests.rs):
+
+| TLA+ Invariant | Proptest Function | Coverage |
+|----------------|-------------------|----------|
+| `BoundedCount` | `prop_bounded_count_ring`, `prop_bounded_count_stack_ring` | Ring, StackRing |
+| Monotonic (action constraints) | `prop_monotonic_progress`, `prop_monotonic_progress_stack_ring` | Ring, StackRing |
+| `HappensBefore` | `prop_happens_before`, `prop_happens_before_stack_ring` | Ring, StackRing |
+| INV-RES-01 | `prop_partial_reservation` | Ring |
+
+Run with:
+```bash
+cargo test -p ringmpsc-rs --test property_tests --release
+cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
+```
+
+### Quint Model-Based Testing
+
+The TLA+ spec is also translated to [Quint](https://quint-lang.org/) in [tla/RingSPSC.qnt](tla/RingSPSC.qnt). The [tests/quint_mbt.rs](tests/quint_mbt.rs) driver executes action traces against the real `Ring<T>`:
+
+| Quint Test | Description |
+|------------|-------------|
+| `test_init_satisfies_invariant` | Initial state valid |
+| `test_produce_consume_cycle` | Basic produce-consume |
+| `test_fill_to_capacity` | Fill ring to max |
+| `test_cache_refresh_scenario` | Stale cache recovery |
+| `test_alternating_produce_consume` | Interleaved operations |
+| `test_producer_starvation_recovery` | Full→empty→refill |
+
+Run with:
+```bash
+# Rust driver tests
+cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
+
+# Quint CLI (if installed)
+cd crates/ringmpsc/tla
+quint test RingSPSC.qnt --main=RingSPSC
+```

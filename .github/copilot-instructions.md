@@ -1,140 +1,118 @@
 # RingMPSC-RS Workspace Instructions
 
-This file defines **global** conventions for the entire workspace. Crate-specific details belong in each crate's `spec.md`.
+Lock-free MPSC channel achieving **6+ billion msg/sec** via ring decomposition (each producer gets a dedicated SPSC ring).
 
-## Workspace Structure
+## Architecture
 
-```
-ringmpsc-rs/
-├── Cargo.toml                    # Workspace manifest
-├── .github/copilot-instructions.md  # This file (global conventions)
-├── crates/
-│   ├── ringmpsc/                 # Lock-free ring buffer library
-│   │   ├── Cargo.toml
-│   │   ├── spec.md               # Ring buffer invariants
-│   │   └── src/
-│   └── span_collector/           # Async tracing collector (binary)
-│       ├── Cargo.toml
-│       ├── spec.md               # Collector invariants
-│       └── src/
-```
+| Crate | Purpose | Spec |
+|-------|---------|------|
+| `ringmpsc` | Core lock-free SPSC rings + MPSC channel | [spec.md](../crates/ringmpsc/spec.md) |
+| `ringmpsc-stream` | Async `Stream`/`Sink` adapters with backpressure | [spec.md](../crates/ringmpsc-stream/spec.md) |
+| `span_collector` | OpenTelemetry collector example (async batching, resilience) | [spec.md](../crates/span_collector/spec.md) |
 
-## Crate Specifications
+**Key design**: Ring decomposition eliminates producer-producer contention. Each `Producer` owns one `Ring<T>`. Channel polls all rings sequentially on single consumer thread.
 
-Each crate has a `spec.md` documenting its invariants:
-- [crates/ringmpsc/spec.md](../crates/ringmpsc/spec.md) - Memory layout, sequencing, ordering, drop safety
-- [crates/span_collector/spec.md](../crates/span_collector/spec.md) - Domain model, ownership transfer, backpressure
+## Critical Patterns
 
-## Global Coding Standards
-
-### Error Handling
-
-| Context | Rule |
-|---------|------|
-| Library code | **Never use `.unwrap()`** - return `Result` or `Option` |
-| Test code | `.unwrap()` and `.expect()` are acceptable |
-| Binary entry points | `.expect("descriptive message")` for unrecoverable failures |
-| Panics | Only for logic errors that indicate bugs, never for recoverable conditions |
-
+### Invariants Module Pattern
+Each crate has `src/invariants.rs` with `debug_assert!` macros referencing spec IDs:
 ```rust
-// ❌ BAD (library code)
-let config = Config::new(bits).unwrap();
-
-// ✅ GOOD (library code)
-let config = Config::new(bits)?;
-
-// ✅ GOOD (test code)
-let config = Config::new(bits).expect("test config should be valid");
+// In invariants.rs
+macro_rules! debug_assert_bounded_count {
+    ($count:expr, $capacity:expr) => {
+        debug_assert!($count <= $capacity, "INV-SEQ-01 violated: count {} > capacity {}", $count, $capacity)
+    };
+}
+// Usage in ring.rs:
+debug_assert_bounded_count!(count, self.capacity());
 ```
 
-### Unsafe Code
-
-1. **Minimize unsafe blocks** - wrap smallest possible scope
-2. **Document invariants** - every `unsafe` block must have a `// Safety:` comment
-3. **Validate with Miri** - run `cargo +nightly miri test` before merging
-
+### Unsafe Code - Always Document
+Every `unsafe` block requires `// Safety:` comment explaining why invariants hold:
 ```rust
-// ✅ GOOD
-// Safety: idx is bounded by mask (power-of-2 capacity), and the slot
-// at this index is initialized (head ≤ idx < tail per INV-INIT-01)
+// Safety: idx bounded by mask, slot initialized (head ≤ idx < tail per INV-INIT-01)
 unsafe { buffer[idx].assume_init_read() }
 ```
 
-### Memory Ordering
+### Memory Ordering (Minimum Required)
+| Pattern | Ordering | Example |
+|---------|----------|---------|
+| Metrics | `Relaxed` | `spans_submitted.fetch_add(1, Relaxed)` |
+| Single-writer cache | `UnsafeCell` | `cached_head` (producer-only) |
+| Publish data | `Release` | `tail.store(new_tail, Release)` |
+| Read published | `Acquire` | `tail.load(Acquire)` |
 
-Use the minimum ordering required:
-
-| Pattern | Ordering | Use Case |
-|---------|----------|----------|
-| Counters/metrics | `Relaxed` | No synchronization needed |
-| Single-writer cache | `UnsafeCell` | Thread-local optimization |
-| Publish data | `Release` | Writer publishes to readers |
-| Read published data | `Acquire` | Reader synchronizes with writer |
-| Read-modify-write | `AcqRel` | Concurrent updates (rare) |
-
-### Performance
-
-- **Release builds only** for lock-free code - debug builds break optimizations
-- **Batch operations** preferred over single-item operations
-- **No mutexes** in hot paths - use lock-free primitives
-- **128-byte alignment** for hot atomics (prevent false sharing)
-
-## Development Workflows
-
-```bash
-# Build entire workspace
-cargo build --release
-
-# Test specific crate
-cargo test -p ringmpsc-rs
-cargo test -p span_collector
-
-# Concurrency testing (ringmpsc)
-cargo test -p ringmpsc-rs --features loom --test loom_tests --release
-
-# UB detection (ringmpsc)
-cargo +nightly miri test -p ringmpsc-rs --test miri_tests
-
-# Benchmarks (ringmpsc)
-cargo bench -p ringmpsc-rs
-
-# Run span_collector demo
-cargo run -p span_collector --bin demo
+### Reservation API (Zero-Copy)
+**Critical**: `reserve(n)` may return `len() < n` due to wrap-around. Always loop:
+```rust
+while remaining > 0 {
+    if let Some(mut r) = ring.reserve(remaining) {
+        remaining -= r.len();  // MAY BE < remaining
+        r.as_mut_slice()[0] = MaybeUninit::new(item);
+        r.commit();
+    }
+}
 ```
 
-## Test Organization
+### Async Traits (span_collector pattern)
+Native async traits (`impl Future`) aren't object-safe. Use boxed trait pattern:
+```rust
+trait SpanExporter { fn export(&self, batch: SpanBatch) -> impl Future<...> + Send; }
+trait SpanExporterBoxed { fn export_boxed(&self, batch: SpanBatch) -> Pin<Box<dyn Future<...>>>; }
+impl<T: SpanExporter> SpanExporterBoxed for T { ... }  // Blanket impl
+```
 
-| Location | Purpose |
-|----------|---------|
-| `crates/*/src/**` | Unit tests (`#[cfg(test)]` modules) |
-| `crates/*/tests/` | Integration tests |
-| `crates/ringmpsc/tests/loom_tests.rs` | Exhaustive concurrency testing |
-| `crates/ringmpsc/tests/miri_tests.rs` | UB detection |
-| `crates/*/benches/` | Performance benchmarks (criterion) |
+## Development Commands
 
-### Test Naming
+```bash
+# Full workspace
+cargo build --release && cargo test --workspace --release
 
-- `test_*` - standard unit/integration tests
-- `*_stress` - high-volume concurrency tests
-- `*_fifo` - ordering verification tests
+# Crate-specific
+cargo test -p ringmpsc-rs --features stack-ring --release
+cargo test -p ringmpsc-stream --release
+cargo test -p span_collector --release
 
-## Git Conventions
+# Concurrency verification (ringmpsc only)
+cargo test -p ringmpsc-rs --features loom --test loom_tests --release
+cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 
-- Feature branches: `feature/description`
-- Bug fixes: `fix/description`
-- Commits: imperative mood ("Add feature" not "Added feature")
-- PRs must pass: `cargo test --all`, `cargo clippy`, `cargo fmt --check`
+# Benchmarks
+cargo bench -p ringmpsc-rs
+cargo bench -p ringmpsc-rs --features stack-ring --bench stack_vs_heap
+```
+
+### Concurrency Testing Requirements
+- **Run loom tests** whenever changing atomic operations, memory ordering, or synchronization logic
+- **Run miri tests** when modifying `unsafe` code or `MaybeUninit` handling
+- Both loom and miri tests are **mandatory in CI/CD** before merge
+
+### TLA+ Model Checking (ringmpsc only)
+Formal specs in `crates/ringmpsc/tla/` verify lock-free invariants:
+```bash
+cd crates/ringmpsc/tla && tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+```
+
+## Error Handling Rules
+
+| Context | Rule |
+|---------|------|
+| Library code | Return `Result`/`Option`, never `.unwrap()` |
+| Tests | `.expect("reason")` acceptable |
+| Binary entry | `.expect("fatal: reason")` for unrecoverable |
 
 ## Adding New Crates
 
-1. Create `crates/<name>/` with `Cargo.toml` and `src/lib.rs` (or `src/main.rs`)
-2. Add to workspace members in root `Cargo.toml`
-3. Create `crates/<name>/spec.md` documenting invariants
-4. Use `workspace = true` for shared dependencies
+1. Create `crates/<name>/` with `Cargo.toml`, `src/lib.rs`
+2. Add to `[workspace.members]` in root `Cargo.toml`
+3. **Create `spec.md`** documenting invariants with `INV-*` naming
+4. **Create `src/invariants.rs`** with `debug_assert!` macros per spec
+5. Use `workspace = true` for shared deps
 
-## Common Gotchas
+## Gotchas
 
-1. **Debug builds break lock-free code** - always use `--release` for correctness testing
-2. **Reservation wrap-around** - `reserve(n)` may return `len() < n`, must loop
-3. **`MaybeUninit` writes** - use `slot.write(value)` not assignment
-4. **Backpressure** - ring full → caller must handle retry logic
+- **Debug builds break lock-free code** - always `--release` for correctness
+- **128-byte alignment** required for hot atomics (cache line = 64B, Intel prefetches 2)
+- **`MaybeUninit` writes** - use `slot.write(value)` not `*slot = value`
+- **Backpressure** - ring full returns `None`, caller must retry with backoff
+- **Stack rings** (`StackRing<T, N>`) are 2-3× faster but require compile-time capacity

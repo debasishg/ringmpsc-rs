@@ -201,6 +201,10 @@ impl<T> Ring<T> {
     ///
     /// Fast path uses cached head to avoid cross-core reads.
     /// Slow path refreshes the cache only when needed.
+    ///
+    /// # TLA+ Actions
+    /// - Fast path: `ProducerReserveFast` (check cached_head)
+    /// - Slow path: `ProducerRefreshCache` (Acquire load on head)
     #[allow(clippy::cast_possible_truncation)]
     pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T>> {
         if n == 0 || n > self.capacity() {
@@ -270,6 +274,10 @@ impl<T> Ring<T> {
     }
 
     /// Internal: Commit n slots after writing. Called by Reservation.
+    ///
+    /// # TLA+ Action: `ProducerWrite`
+    /// Pre:  `(tail - head) < Capacity`
+    /// Post: `tail' = tail + n`, data published via Release store
     pub(crate) fn commit_internal(&self, n: usize) {
         let tail = self.tail.load(Ordering::Relaxed);
         let new_tail = tail.wrapping_add(n as u64);
@@ -338,6 +346,10 @@ impl<T> Ring<T> {
     }
 
     /// Advance head after reading n items.
+    ///
+    /// # TLA+ Action: `ConsumerAdvance`
+    /// Pre:  `head < tail` (items available)
+    /// Post: `head' = head + n`, consumption published via Release store
     #[inline]
     pub fn advance(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
@@ -383,6 +395,10 @@ impl<T> Ring<T> {
     ///
     /// This is the key optimization: amortizes atomic operations by processing
     /// the entire batch before updating the head pointer once.
+    ///
+    /// # TLA+ Actions
+    /// - Cache refresh: `ConsumerRefreshCache` (Acquire load on tail)
+    /// - Batch advance: `ConsumerAdvance` (Release store on head)
     ///
     /// # When to Use
     ///
