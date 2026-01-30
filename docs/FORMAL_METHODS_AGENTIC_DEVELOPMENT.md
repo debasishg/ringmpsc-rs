@@ -10,9 +10,9 @@ Modern agentic development operates within a layered context hierarchy:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              RULES LAYER                                    │
 │                                                                             │
-│  copilot-instructions.md, AGENTS.md, workspace conventions                 │
+│  copilot-instructions.md, AGENTS.md, workspace conventions                  │
 │                                                                             │
-│  "How to write code in this project"                                       │
+│  "How to write code in this project"                                        │
 │  - Memory ordering patterns                                                 │
 │  - Error handling rules                                                     │
 │  - Invariant module pattern                                                 │
@@ -23,24 +23,24 @@ Modern agentic development operates within a layered context hierarchy:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              SPEC LAYER                                     │
 │                                                                             │
-│  spec.md - domain invariants with INV-* identifiers                        │
+│  spec.md - domain invariants with INV-* identifiers                         │
 │                                                                             │
-│  "What properties must always hold"                                        │
-│  - INV-SEQ-01: Bounded Count                                               │
-│  - INV-ORD-03: Happens-Before                                              │
-│  - INV-SW-01: Single-Writer Ownership                                      │
+│  "What properties must always hold"                                         │
+│  - INV-SEQ-01: Bounded Count                                                │
+│  - INV-ORD-03: Happens-Before                                               │
+│  - INV-SW-01: Single-Writer Ownership                                       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              CODE LAYER                                     │
 │                                                                             │
-│  Rust implementation with debug_assert! referencing INV-* IDs              │
+│  Rust implementation with debug_assert! referencing INV-* IDs               │
 │                                                                             │
-│  "How properties are implemented and verified"                             │
-│  - ring.rs: reserve(), commit_internal(), consume_batch()                  │
-│  - invariants.rs: debug_assert_bounded_count!                              │
-│  - Tests: loom, miri, proptest, MBT                                        │
+│  "How properties are implemented and verified"                              │
+│  - ring.rs: reserve(), commit_internal(), consume_batch()                   │
+│  - invariants.rs: debug_assert_bounded_count!                               │
+│  - Tests: loom, miri, proptest, MBT                                         │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -467,13 +467,12 @@ When modifying ringmpsc core:
 1. **Identify affected invariants** in spec.md
 2. **Check formal spec** in tla/RingSPSC.tla or tla/RingSPSC.qnt
 3. **Run verification**:
-   ```bash
-   quint test tla/RingSPSC.qnt --main=RingSPSC
-   cargo test --test quint_mbt --features quint-mbt --release
-   cargo test --test property_tests --features stack-ring --release
-   ```
-4. **Never bypass invariants** - if a change requires violating an invariant,
-   the invariant must be formally amended first
+       ```bash
+       quint test tla/RingSPSC.qnt --main=RingSPSC
+       cargo test --test quint_mbt --features quint-mbt --release
+       cargo test --test property_tests --features stack-ring --release
+       ```
+4. **Never bypass invariants** - if a change requires violating an invariant, the invariant must be formally amended first
 ```
 
 ## Conclusion
