@@ -113,6 +113,27 @@ impl<T: Send + 'static> RingSender<T> {
             // INV-SINK-01: Item preserved (still in Option)
             #[cfg(debug_assertions)]
             debug_assert_item_preserved!(true, item.is_some());
+
+            // BACKPRESSURE FLOW:
+            // ==================
+            // Both RingSender and RingReceiver hold `Arc<Notify>` pointing to the SAME
+            // heap-allocated Notify instance (created once in channel.rs, then Arc::clone'd).
+            //
+            // Thread-safe coordination:
+            // 1. SENDER (here): Calls `notified().await` which:
+            //    - Atomically registers this task as a waiter inside the Notify
+            //    - Suspends until a permit is available (returns Poll::Pending)
+            //
+            // 2. RECEIVER (in poll_next): After draining items from the ring, calls
+            //    `backpressure_notify.notify_waiters()` which:
+            //    - Atomically grants permits to ALL currently registered waiters
+            //    - Wakes their wakers so the executor re-polls them
+            //
+            // 3. SENDER (resumed): `notified().await` completes (Poll::Ready), we retry
+            //    the reserve() since space should now be available.
+            //
+            // The Notify internally uses atomic operations (no mutex) to manage the
+            // waiter list, making this coordination lock-free and safe across threads.
             self.backpressure_notify.notified().await;
 
             // After waking, check if we should give up
@@ -138,6 +159,28 @@ impl<T: Send + 'static> RingSender<T> {
 impl<T: Send + 'static> Sink<T> for RingSender<T> {
     type Error = StreamError;
 
+    /// Checks if the sink is ready to accept an item.
+    ///
+    /// # When is this called?
+    ///
+    /// This is called by combinators like `SinkExt::send()`, `SinkExt::send_all()`,
+    /// and `SinkExt::feed()` BEFORE calling `start_send()`. The typical pattern is:
+    ///
+    /// ```ignore
+    /// // SinkExt::send() internally does:
+    /// futures::future::poll_fn(|cx| sink.poll_ready(cx)).await?;
+    /// sink.start_send(item)?;
+    /// futures::future::poll_fn(|cx| sink.poll_flush(cx)).await?;
+    /// ```
+    ///
+    /// # Behavior
+    ///
+    /// - Returns `Poll::Ready(Ok(()))` when the sink can accept a new item
+    /// - Returns `Poll::Pending` if there's a pending item waiting for ring space
+    /// - Returns `Poll::Ready(Err(...))` if the channel is closed
+    ///
+    /// If a previous `start_send()` stored a pending item (ring was full), this
+    /// method attempts to flush it before declaring readiness.
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
@@ -177,6 +220,29 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
         Poll::Ready(Ok(()))
     }
 
+    /// Begins the process of sending an item to the sink.
+    ///
+    /// # When is this called?
+    ///
+    /// Called by combinators AFTER `poll_ready()` returns `Poll::Ready(Ok(()))`.
+    /// This is a synchronous method that should not block.
+    ///
+    /// ```ignore
+    /// // Used by SinkExt::send(), SinkExt::feed(), SinkExt::send_all()
+    /// sink.poll_ready(cx).await?;  // Wait until ready
+    /// sink.start_send(item)?;       // <-- THIS METHOD
+    /// ```
+    ///
+    /// # Behavior
+    ///
+    /// - If ring has space: reserves, commits item, notifies receiver via `data_notify`
+    /// - If ring is full: stores item in `pending_item` for later flush
+    /// - Never blocks - always returns immediately
+    ///
+    /// # Note
+    ///
+    /// The item is NOT guaranteed to be in the ring after this call returns.
+    /// It may be buffered in `pending_item`. Call `poll_flush()` to ensure delivery.
     fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
         let this = self.project();
 
@@ -198,6 +264,34 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
         }
     }
 
+    /// Flushes any pending item to the ring buffer.
+    ///
+    /// # When is this called?
+    ///
+    /// Called by `SinkExt::send()` and `SinkExt::flush()` after `start_send()`
+    /// to ensure the item is actually committed to the ring.
+    ///
+    /// ```ignore
+    /// // SinkExt::send() does:
+    /// sink.poll_ready(cx).await?;
+    /// sink.start_send(item)?;
+    /// sink.poll_flush(cx).await?;  // <-- THIS METHOD
+    ///
+    /// // SinkExt::feed() skips flush (batching optimization)
+    /// // SinkExt::flush() explicitly calls this
+    /// ```
+    ///
+    /// # Behavior
+    ///
+    /// - If no pending item: returns `Poll::Ready(Ok(()))` immediately
+    /// - If pending item exists and ring has space: commits it, returns Ready
+    /// - If pending item exists and ring is full: waits on `backpressure_notify`
+    ///
+    /// # Backpressure
+    ///
+    /// When the ring is full, this method registers for backpressure notification
+    /// and returns `Poll::Pending`. The receiver will call `notify_waiters()` after
+    /// draining items, which wakes this task to retry.
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
 
@@ -233,6 +327,30 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
         Poll::Ready(Ok(()))
     }
 
+    /// Closes the sink, flushing any pending item first.
+    ///
+    /// # When is this called?
+    ///
+    /// Called by `SinkExt::close()` to gracefully shut down the sink.
+    ///
+    /// ```ignore
+    /// // SinkExt::close() does:
+    /// sink.poll_close(cx).await?;  // <-- THIS METHOD
+    ///
+    /// // Also called when a Sink is dropped in some combinator contexts
+    /// ```
+    ///
+    /// # Behavior
+    ///
+    /// 1. First calls `poll_flush()` to ensure any pending item is committed
+    /// 2. Then closes the underlying producer ring
+    /// 3. After close, further sends will fail with `StreamError::Closed`
+    ///
+    /// # Note
+    ///
+    /// This only closes THIS sender's ring. Other senders (from `factory.register()`)
+    /// and the receiver continue operating. The channel itself remains open until
+    /// `factory.close()` is called or all senders are dropped.
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         // First flush any pending item
         match self.as_mut().poll_flush(cx) {

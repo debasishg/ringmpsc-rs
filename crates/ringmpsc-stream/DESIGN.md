@@ -199,6 +199,82 @@ let stream = rx.take_until(token.cancelled());
 - **data_notify**: Sender → Receiver (item available)
 - **backpressure_notify**: Receiver → Sender (space available)
 
+**Shared Ownership via Arc**:
+
+Both `RingSender` and `RingReceiver` hold `Arc<Notify>` pointing to the **same** heap-allocated `Notify` instance. The `Notify` is created once during channel construction in `channel.rs`:
+
+```rust
+let backpressure_notify = Arc::new(Notify::new());  // ONE instance created
+
+// Receiver gets a clone of the Arc pointer (not a new Notify)
+let receiver = RingReceiver::new(
+    Arc::clone(&backpressure_notify),  // Points to same Notify
+    ...
+);
+
+// Each sender also gets a clone of the Arc pointer
+Ok(RingSender::new(
+    Arc::clone(&self.backpressure_notify),  // Points to same Notify
+    ...
+))
+```
+
+**Thread-Safe Coordination Flow**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Step 1: SENDER - Ring Full, Wait for Space                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   producer.reserve(1) returns None (ring is full)                       │
+│                     │                                                   │
+│                     ▼                                                   │
+│   backpressure_notify.notified().await                                  │
+│     │                                                                   │
+│     ├─► Atomically registers this task as a waiter inside the Notify   │
+│     └─► Suspends execution (returns Poll::Pending to executor)          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ (task suspended, waiting)
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Step 2: RECEIVER - Drain Items, Signal Space Available                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   channel.consume_all_up_to_owned(batch_limit, |item| { ... });        │
+│                     │                                                   │
+│                     ▼                                                   │
+│   backpressure_notify.notify_waiters()                                  │
+│     │                                                                   │
+│     ├─► Atomically grants permits to ALL currently registered waiters  │
+│     └─► Wakes their wakers so the executor re-polls them                │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ (permit granted, waker invoked)
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Step 3: SENDER - Resume and Retry                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   notified().await completes (Poll::Ready)                              │
+│                     │                                                   │
+│                     ▼                                                   │
+│   Loop continues: retry producer.reserve(1)                             │
+│   (Space should now be available since receiver drained items)          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why `notify_waiters()` instead of `notify_one()`?**
+
+The receiver uses `notify_waiters()` because multiple senders (each with their own ring) might be blocked waiting for backpressure relief. Using `notify_waiters()` wakes **all** currently waiting tasks, ensuring no sender remains unnecessarily blocked after space becomes available.
+
+**Lock-Free Coordination**:
+
+The `Notify` internally uses atomic operations (no mutex) to manage the waiter list. This makes the sender-receiver coordination lock-free and safe across threads without serialization overhead.
+
 ## Components
 
 ### 1. SenderFactory (`channel.rs`)
