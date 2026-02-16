@@ -1,6 +1,6 @@
 # Invariant Validation Pipeline: From Spec to Verification
 
-## A Visual Journey of INV-SEQ-01 Through the Agentic Code Generation Pipeline
+## A Visual Journey of a domain invariant Through the Agentic Code Generation Pipeline
 
 ---
 
