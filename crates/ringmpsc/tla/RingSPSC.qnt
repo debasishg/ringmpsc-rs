@@ -4,13 +4,15 @@
 // This module models the lock-free single-producer single-consumer ring buffer
 // implemented in ringmpsc-rs. It verifies the core invariants from spec.md:
 //
-//   - INV-SEQ-01: Bounded Count (0 ≤ tail - head ≤ Capacity)
-//   - INV-SEQ-02: Monotonic Progress (head/tail only increase)
-//   - INV-ORD-03: Happens-Before Chain (head ≤ tail)
-//   - INV-SW-01:  Producer-Owned Fields (tail, cached_head)
-//   - INV-SW-02:  Consumer-Owned Fields (head, cached_tail)
+//   - INV-SEQ-01: Bounded Count (0 ≤ tl - hd ≤ Capacity)
+//   - INV-SEQ-02: Monotonic Progress (hd/tl only increase)
+//   - INV-ORD-03: Happens-Before Chain (hd ≤ tl)
+//   - INV-SW-01:  Producer-Owned Fields (tl, cached_head)
+//   - INV-SW-02:  Consumer-Owned Fields (hd, cached_tail)
 //
 // Run with: quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
+//
+// Note: `head`/`tail` are Quint built-in names (list ops), so we use `hd`/`tl`.
 
 module RingSPSC {
     // =========================================================================
@@ -18,25 +20,25 @@ module RingSPSC {
     // =========================================================================
     
     /// Ring buffer capacity (power of 2 in Rust impl, any positive here)
-    const CAPACITY: int = 4
+    val CAPACITY = 4
     
     /// Maximum items to produce (bounds state space for model checking)
-    const MAX_ITEMS: int = 8
+    val MAX_ITEMS = 8
 
     // =========================================================================
     // STATE VARIABLES  
     // =========================================================================
     
     /// Consumer's read position (only consumer writes) - INV-SW-02
-    var head: int
+    var hd: int
     
     /// Producer's write position (only producer writes) - INV-SW-01
-    var tail: int
+    var tl: int
     
-    /// Producer's cached view of head (optimization modeling)
+    /// Producer's cached view of hd (optimization modeling)
     var cached_head: int
     
-    /// Consumer's cached view of tail (optimization modeling)
+    /// Consumer's cached view of tl (optimization modeling)
     var cached_tail: int
     
     /// Total items produced (for termination bound)
@@ -47,7 +49,7 @@ module RingSPSC {
     // =========================================================================
     
     /// Current number of items in ring
-    pure def count(): int = tail - head
+    pure def count(t: int, h: int): int = t - h
     
     /// Check if producer has space (fast path using cached_head)
     pure def producerHasSpace(t: int, ch: int): bool = (t - ch) < CAPACITY
@@ -60,12 +62,12 @@ module RingSPSC {
     // =========================================================================
     
     /// INV-SEQ-01: Bounded Count
-    /// "0 ≤ (tail - head) ≤ capacity"
+    /// "0 ≤ (tl - hd) ≤ capacity"
     val boundedCount: bool = 
-        tail >= head and (tail - head) <= CAPACITY
+        tl >= hd and (tl - hd) <= CAPACITY
     
     /// INV-ORD-03: Happens-Before (consumer never reads ahead of producer)
-    val happensBefore: bool = head <= tail
+    val happensBefore: bool = hd <= tl
     
     /// Combined safety invariant
     val safetyInvariant: bool = boundedCount and happensBefore
@@ -75,8 +77,8 @@ module RingSPSC {
     // =========================================================================
     
     action init = all {
-        head' = 0,
-        tail' = 0,
+        hd' = 0,
+        tl' = 0,
         cached_head' = 0,
         cached_tail' = 0,
         items_produced' = 0,
@@ -89,26 +91,26 @@ module RingSPSC {
     /// ProducerReserveFast: Check cached_head for space (no state change)
     /// Rust: ring.rs reserve() fast path
     action producerReserveFast = all {
-        producerHasSpace(tail, cached_head),
+        producerHasSpace(tl, cached_head),
         items_produced < MAX_ITEMS,
         // No state change - reservation returned but not committed
-        head' = head,
-        tail' = tail,
+        hd' = hd,
+        tl' = tl,
         cached_head' = cached_head,
         cached_tail' = cached_tail,
         items_produced' = items_produced,
     }
     
-    /// ProducerRefreshCache: Reload head when cache is stale
+    /// ProducerRefreshCache: Reload hd when cache is stale
     /// Rust: ring.rs reserve() slow path - load head with Acquire
     /// Models INV-ORD-01 Acquire semantics
     action producerRefreshCache = all {
-        not(producerHasSpace(tail, cached_head)),  // Fast path failed
-        cached_head < head,                         // Cache is stale
-        cached_head' = head,                        // Refresh cache
+        not(producerHasSpace(tl, cached_head)),  // Fast path failed
+        cached_head < hd,                         // Cache is stale
+        cached_head' = hd,                        // Refresh cache
         // Unchanged
-        head' = head,
-        tail' = tail,
+        hd' = hd,
+        tl' = tl,
         cached_tail' = cached_tail,
         items_produced' = items_produced,
     }
@@ -117,12 +119,12 @@ module RingSPSC {
     /// Rust: ring.rs commit_internal() - store tail with Release
     /// Models INV-ORD-01 Release semantics (publishes writes)
     action producerWrite = all {
-        (tail - head) < CAPACITY,                   // Actual space check
+        (tl - hd) < CAPACITY,                      // Actual space check
         items_produced < MAX_ITEMS,                 // Bound for model checking
-        tail' = tail + 1,                           // Release store
+        tl' = tl + 1,                              // Release store
         items_produced' = items_produced + 1,
         // Unchanged
-        head' = head,
+        hd' = hd,
         cached_head' = cached_head,
         cached_tail' = cached_tail,
     }
@@ -134,25 +136,25 @@ module RingSPSC {
     /// ConsumerReadFast: Check cached_tail for items (no state change)
     /// Rust: ring.rs consume_batch() fast path
     action consumerReadFast = all {
-        consumerHasItems(cached_tail, head),
+        consumerHasItems(cached_tail, hd),
         // No state change - just checking
-        head' = head,
-        tail' = tail,
+        hd' = hd,
+        tl' = tl,
         cached_head' = cached_head,
         cached_tail' = cached_tail,
         items_produced' = items_produced,
     }
     
-    /// ConsumerRefreshCache: Reload tail when cache is stale
+    /// ConsumerRefreshCache: Reload tl when cache is stale
     /// Rust: ring.rs consume_batch() slow path - load tail with Acquire
     /// Models INV-ORD-02 Acquire semantics (synchronizes with producer's Release)
     action consumerRefreshCache = all {
-        not(consumerHasItems(cached_tail, head)),   // Fast path failed
-        cached_tail < tail,                          // Cache is stale
-        cached_tail' = tail,                         // Refresh cache
+        not(consumerHasItems(cached_tail, hd)),     // Fast path failed
+        cached_tail < tl,                            // Cache is stale
+        cached_tail' = tl,                           // Refresh cache
         // Unchanged
-        head' = head,
-        tail' = tail,
+        hd' = hd,
+        tl' = tl,
         cached_head' = cached_head,
         items_produced' = items_produced,
     }
@@ -161,10 +163,10 @@ module RingSPSC {
     /// Rust: ring.rs advance() / end of consume_batch()
     /// Models INV-ORD-02 Release semantics on head
     action consumerAdvance = all {
-        head < tail,                                // Items available
-        head' = head + 1,                           // Release store
+        hd < tl,                                    // Items available
+        hd' = hd + 1,                               // Release store
         // Unchanged
-        tail' = tail,
+        tl' = tl,
         cached_head' = cached_head,
         cached_tail' = cached_tail,
         items_produced' = items_produced,
@@ -191,13 +193,22 @@ module RingSPSC {
     /// No deadlock: some action is always enabled (or system terminated)
     val noDeadlock: bool = or {
         items_produced < MAX_ITEMS,              // Producer can still write
-        head < tail,                              // Consumer can still read
-        items_produced == MAX_ITEMS and head == tail,  // Terminated normally
+        hd < tl,                                  // Consumer can still read
+        items_produced == MAX_ITEMS and hd == tl,  // Terminated normally
     }
 
     // =========================================================================
     // TESTS (for quint test)
     // =========================================================================
+
+    /// Stutter step: no state change (used in assertion-only test steps)
+    action stutter = all {
+        hd' = hd,
+        tl' = tl,
+        cached_head' = cached_head,
+        cached_tail' = cached_tail,
+        items_produced' = items_produced,
+    }
     
     /// Test: Initial state satisfies invariants
     run initSatisfiesInvariant = {
@@ -205,6 +216,7 @@ module RingSPSC {
             assert(safetyInvariant),
             assert(boundedCount),
             assert(happensBefore),
+            stutter,
         })
     }
     
@@ -214,8 +226,9 @@ module RingSPSC {
         .then(producerWrite)
         .then(all {
             assert(boundedCount),
-            assert(tail == 1),
+            assert(tl == 1),
             assert(items_produced == 1),
+            stutter,
         })
     }
     
@@ -226,8 +239,9 @@ module RingSPSC {
         .then(consumerAdvance)
         .then(all {
             assert(happensBefore),
-            assert(head == 1),
-            assert(tail == 1),
+            assert(hd == 1),
+            assert(tl == 1),
+            stutter,
         })
     }
     
@@ -240,8 +254,8 @@ module RingSPSC {
         .then(producerWrite)
         .then(all {
             assert(boundedCount),
-            assert(tail - head == CAPACITY),
-            // Cannot write more (ring full)
+            assert(tl - hd == CAPACITY),
+            stutter,
         })
     }
 
@@ -256,12 +270,13 @@ module RingSPSC {
         // Consumer advances but producer cache is stale
         .then(consumerAdvance)
         .then(consumerAdvance)
-        // Producer's cached_head is still 0, actual head is 2
+        // Producer's cached_head is still 0, actual hd is 2
         // producerHasSpace(4, 0) = false, but producerHasSpace(4, 2) = true
         .then(producerRefreshCache)
         .then(all {
             assert(cached_head == 2),
-            assert(producerHasSpace(tail, cached_head)),
+            assert(producerHasSpace(tl, cached_head)),
+            stutter,
         })
     }
 }

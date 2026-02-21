@@ -343,21 +343,85 @@ fn execute_trace(actions: &[QuintAction]) -> Result<(), String> {
 
 ## Future Developments
 
-### Near-Term: Automated Trace Generation
+### ✅ Implemented: Automated Trace Generation via `quint-connect`
 
-Currently, MBT traces are hand-crafted. Future integration:
+MBT traces are now **automatically generated** from the Quint spec using `quint-connect` v0.1.1.
+The `#[quint_run]` macro invokes `quint run --mbt` to produce ITF traces with action metadata,
+then replays each trace against the real `Ring<T>` implementation with state comparison at every step.
 
 ```bash
-# Generate traces from Quint simulation
-quint run RingSPSC.qnt --out-itf=traces.json
+# Run all automated MBT tests (generates traces + replays against Ring<T>)
+cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 
-# Automatically execute on Rust implementation
-cargo test --test quint_mbt  # Parses traces.json
+# With verbose trace output (shows actions & state at each step)
+QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
+
+# Reproduce a specific failing trace
+QUINT_SEED=42 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 ```
 
-This requires:
-- Stable ITF (Informal Trace Format) output from Quint
-- `quint-connect` crate maturity for Rust integration
+**Architecture:**
+```
+RingSPSC.qnt ──▶ quint run --mbt ──▶ ITF traces ──▶ quint-connect Driver ──▶ Ring<T>
+ (spec)           (simulation)        (states +      (action dispatch +       (real impl)
+                                      actions)       state comparison)
+```
+
+**Key design notes:**
+- Uses `#[quint_run]` (not `#[quint_test]`) because `quint test` doesn't support `--mbt`
+- Quint v0.30.0 required renaming `head`/`tail` → `hd`/`tl` (built-in name conflict)
+- Multiple seeds (`1729`, `314159`, random) for diverse trace coverage
+- The Quint spec's `run` declarations remain useful for standalone `quint test` verification
+
+#### quint-connect: Value Over the Previous Approach
+
+The earlier MBT implementation used **hand-crafted traces** — each test was a manually authored
+sequence of `QuintAction` enums with Rust re-implementations of Quint invariants
+(`check_bounded_count()`, `check_happens_before()`) called explicitly after every step. This had
+two fundamental limitations: trace coverage was limited to what a human thought to write, and the
+invariant checks could themselves diverge from the spec.
+
+`quint-connect` eliminates both problems:
+
+| Capability | Impact |
+|---|---|
+| **Automated trace generation** | `quint run --mbt` produces hundreds of random simulation traces from the spec — no hand-crafting needed |
+| **Automatic state comparison** | After every step, expected state is deserialized from the ITF trace and compared to `State::from_driver()` — any divergence is caught, not just invariant violations |
+| **Action dispatch via `switch!`** | `mbt::actionTaken` metadata tells the framework which action was taken; the driver dispatches automatically |
+| **Eliminates redundant invariant code** | No need to re-code `boundedCount` or `happensBefore` in Rust — the spec IS the oracle |
+| **Diverse coverage with minimal code** | Multiple `#[quint_run]` with different seeds explore different corners of the state space — 3 lines of Rust per test |
+
+**The core shift:** the old approach asked *"Does Ring\<T\> satisfy invariants I re-implemented in
+Rust?"* — the new approach asks *"Does Ring\<T\>'s state match exactly what the formal Quint model
+says it should be after every action?"*. This is strictly stronger: it catches not only invariant
+violations but also cases where the implementation produces a valid-but-wrong state (e.g., advancing
+head by 2 instead of 1 while still satisfying `head ≤ tail`).
+
+#### quint-connect MBT vs Deterministic Simulation Testing
+
+quint-connect MBT and Deterministic Simulation Testing (DST, as in FoundationDB/TigerBeetle/Antithesis)
+share a surface similarity — both replay deterministic sequences — but differ fundamentally:
+
+| Dimension | DST | quint-connect MBT |
+|---|---|---|
+| **What executes** | The real system under a controlled scheduler that captures all nondeterminism | The Quint simulator generates traces; the Rust driver replays actions sequentially |
+| **Oracle** | Assertions/invariants embedded in the code (you write them) | The formal spec itself (state comparison is automatic) |
+| **Concurrency** | Primary strength — finds races, deadlocks, ordering bugs | Does not test concurrency (that's loom's job) |
+| **Bug class: logic errors** | Can miss if no assertion covers it | Catches any state divergence from spec |
+| **Bug class: concurrency** | Primary strength | Not tested |
+| **Abstraction level** | System-level (real threads, real I/O) | Protocol-level (abstract state transitions) |
+
+In ringmpsc-rs, the verification stack uses **both paradigms** complementarily:
+
+```
+quint-connect MBT     → "Does the logic match the spec?"        (protocol correctness)
+Property tests        → "Do random inputs preserve invariants?"  (input coverage)
+Loom tests            → "Do all thread interleavings work?"      (≈ mini-DST for atomics)
+Miri tests            → "Is there undefined behavior?"           (memory safety)
+```
+
+A system can pass MBT perfectly (correct logic) and still fail under DST (race condition in the
+implementation of that logic). The two approaches answer orthogonal questions.
 
 ### Medium-Term: Agent-Driven Spec Evolution
 
@@ -408,8 +472,8 @@ Agent: "Running quint verify on amended spec..."
 | `quint test` | ✅ Stable | Embedded spec tests |
 | `quint run` | ✅ Stable | Simulation traces |
 | `quint verify` | ✅ Stable | Exhaustive verification |
-| ITF trace export | 🔄 Developing | Automated MBT |
-| `quint-connect` | 🔄 Experimental | Rust integration |
+| ITF trace export | ✅ Stable | Automated MBT |
+| `quint-connect` | ✅ Stable (v0.1.1) | Rust integration |
 | Language Server | 🔄 Developing | IDE support for agents |
 | Property synthesis | 📋 Planned | Auto-generate invariants |
 
@@ -495,4 +559,4 @@ The combination of:
 
 Creates a verification pipeline where AI agents can confidently modify complex concurrent code knowing that invariant violations will be caught before merge.
 
-As the Quint ecosystem matures with better Rust integration and automated trace generation, this workflow will become increasingly seamless—enabling agents to propose, verify, and implement changes to critical systems with mathematical confidence.
+With `quint-connect` v0.1.1 now providing stable Rust integration and automated trace generation from Quint simulations, this workflow is increasingly seamless—enabling agents to propose, verify, and implement changes to critical systems with mathematical confidence.

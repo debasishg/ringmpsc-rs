@@ -8,26 +8,26 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        Async Application Layer                           │
+│                        Async Application Layer                          │
 ├─────────────────────────────────────────────────────────────────────────┤
 │   Task 1         Task 2         Task 3             Task N               │
-│   ┌──────┐       ┌──────┐       ┌──────┐           ┌──────┐            │
-│   │Sender│       │Sender│       │Sender│    ...    │Sender│            │
-│   └──┬───┘       └──┬───┘       └──┬───┘           └──┬───┘            │
+│   ┌──────┐       ┌──────┐       ┌──────┐           ┌──────┐             │
+│   │Sender│       │Sender│       │Sender│    ...    │Sender│             │
+│   └──┬───┘       └──┬───┘       └──┬───┘           └──┬───┘             │
 │      │              │              │                  │                 │
-│      │ send()       │ send()       │ send()          │ send()          │
-│      │ (await on    │ (await on    │ (await on       │ (await on       │
+│      │ send()       │ send()       │ send()          │ send()           │
+│      │ (await on    │ (await on    │ (await on       │ (await on        │
 │      │  backpressure)│  backpressure)│  backpressure) │  backpressure)  │
 └──────┼──────────────┼──────────────┼──────────────────┼─────────────────┘
        │              │              │                  │
        ▼              ▼              ▼                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     Lock-Free MPSC Ring Buffers                          │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   ┌─────────────┐     │
-│  │   Ring 0    │ │   Ring 1    │ │   Ring 2    │...│   Ring N    │     │
-│  │ [Item|Item] │ │ [Item|Item] │ │ [Item|Item] │   │ [Item|Item] │     │
-│  └─────────────┘ └─────────────┘ └─────────────┘   └─────────────┘     │
-│                                                                          │
+│                     Lock-Free MPSC Ring Buffers                         │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   ┌─────────────┐      │
+│  │   Ring 0    │ │   Ring 1    │ │   Ring 2    │...│   Ring N    │      │
+│  │ [Item|Item] │ │ [Item|Item] │ │ [Item|Item] │   │ [Item|Item] │      │
+│  └─────────────┘ └─────────────┘ └─────────────┘   └─────────────┘      │
+│                                                                         │
 │  Each RingSender owns exactly one ring (INV-SINK-02)                    │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │
@@ -35,23 +35,23 @@
                                  │ (hybrid polling)
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          RingReceiver                                    │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  poll_next()                                                     │   │
-│  │  ┌─────────────────────────────────────────────────────────────┐│   │
-│  │  │ tokio::select! {                                            ││   │
-│  │  │     _ = data_notify.notified() => { drain(); yield; }       ││   │
-│  │  │     _ = poll_timer.tick() => { drain(); yield; }  (safety)  ││   │
-│  │  │     _ = shutdown_rx => { final_drain(); return None; }      ││   │
-│  │  │ }                                                           ││   │
-│  │  └─────────────────────────────────────────────────────────────┘│   │
-│  └─────────────────────────────────────────────────────────────────┘   │
+│                          RingReceiver                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  poll_next()                                                    │    │
+│  │  ┌─────────────────────────────────────────────────────────────┐│    │
+│  │  │ tokio::select! {                                            ││    │
+│  │  │     _ = data_notify.notified() => { drain(); yield; }       ││    │
+│  │  │     _ = poll_timer.tick() => { drain(); yield; }  (safety)  ││    │
+│  │  │     _ = shutdown_rx => { final_drain(); return None; }      ││    │
+│  │  │ }                                                           ││    │
+│  │  └─────────────────────────────────────────────────────────────┘│    │
+│  └─────────────────────────────────────────────────────────────────┘    │
 └────────────────────────────────┬────────────────────────────────────────┘
                                  │
                                  │ Stream<Item=T>
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     Downstream Processing                                │
+│                     Downstream Processing                               │
 │  .map(transform) → .filter(predicate) → .chunks(N) → collect/process    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -66,7 +66,7 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│           Hybrid Polling Strategy            │
+│           Hybrid Polling Strategy           │
 ├─────────────────────────────────────────────┤
 │                                             │
 │   Event-Driven Path (fast)                  │
@@ -121,24 +121,24 @@ let tx2 = factory.register()?;  // Gets Ring 1
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Send with Backpressure                        │
+│                    Send with Backpressure                       │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   1. Try reserve(1)                                              │
+│                                                                 │
+│   1. Try reserve(1)                                             │
 │      ┌────────────────────────────────────────────────────────┐ │
 │      │ if let Some(reservation) = producer.reserve(1) {       │ │
 │      │     reservation.as_mut_slice()[0] = MaybeUninit::new();│ │
 │      │     reservation.commit();  // Item now in ring         │ │
-│      │ }                                                       │ │
+│      │ }                                                      │ │
 │      └────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│   2. If reserve returns None (ring full):                        │
+│                                                                 │
+│   2. If reserve returns None (ring full):                       │
 │      ┌────────────────────────────────────────────────────────┐ │
 │      │ // Item is STILL OWNED by caller (not consumed!)       │ │
 │      │ backpressure_notify.notified().await;  // Wait         │ │
-│      │ // Retry with same item                                 │ │
+│      │ // Retry with same item                                │ │
 │      └────────────────────────────────────────────────────────┘ │
-│                                                                  │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -149,21 +149,21 @@ let tx2 = factory.register()?;  // Gets Ring 1
 ```
 Phase 1: Close for new registrations
 ┌─────────────────────────────────────────┐
-│ factory.close()                          │
-│   → shutdown_state.close()               │
-│   → channel.close()                      │
-│   → New register() calls return Closed   │
-│   → Existing senders continue working    │
+│ factory.close()                         │
+│   → shutdown_state.close()              │
+│   → channel.close()                     │
+│   → New register() calls return Closed  │
+│   → Existing senders continue working   │
 └─────────────────────────────────────────┘
 
 Phase 2: Drain and terminate
 ┌─────────────────────────────────────────┐
-│ receiver.shutdown()                      │
-│   → shutdown_tx.send(())                 │
-│   → Consumer loop receives signal        │
-│   → consume_all_owned() - final drain    │
-│   → notify_waiters() - wake senders      │
-│   → Stream returns None                  │
+│ receiver.shutdown()                     │
+│   → shutdown_tx.send(())                │
+│   → Consumer loop receives signal       │
+│   → consume_all_owned() - final drain   │
+│   → notify_waiters() - wake senders     │
+│   → Stream returns None                 │
 └─────────────────────────────────────────┘
 ```
 
@@ -191,7 +191,7 @@ let stream = rx.take_until(token.cancelled());
 │             │  .notify_one()     │ wakes       │
 │             │                    │             │
 │             │  backpressure_     │             │
-│  awaits ◀───┼───────────────────│ drain()     │
+│  awaits ◀───┼─────────────────── │ drain()     │
 │             │  .notify_waiters() │ signals     │
 └─────────────┘                    └─────────────┘
 ```
@@ -231,7 +231,7 @@ Ok(RingSender::new(
 │                     ▼                                                   │
 │   backpressure_notify.notified().await                                  │
 │     │                                                                   │
-│     ├─► Atomically registers this task as a waiter inside the Notify   │
+│     ├─► Atomically registers this task as a waiter inside the Notify    │
 │     └─► Suspends execution (returns Poll::Pending to executor)          │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -242,12 +242,12 @@ Ok(RingSender::new(
 │  Step 2: RECEIVER - Drain Items, Signal Space Available                 │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│   channel.consume_all_up_to_owned(batch_limit, |item| { ... });        │
+│   channel.consume_all_up_to_owned(batch_limit, |item| { ... });         │
 │                     │                                                   │
 │                     ▼                                                   │
 │   backpressure_notify.notify_waiters()                                  │
 │     │                                                                   │
-│     ├─► Atomically grants permits to ALL currently registered waiters  │
+│     ├─► Atomically grants permits to ALL currently registered waiters   │
 │     └─► Wakes their wakers so the executor re-polls them                │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘

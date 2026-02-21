@@ -152,17 +152,19 @@ quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 
 ### Model-Based Testing
 
-The [quint_mbt.rs](../tests/quint_mbt.rs) driver executes traces against the real `Ring<T>`:
+The [quint_mbt.rs](../tests/quint_mbt.rs) driver uses `quint-connect` v0.1.1 to
+automatically generate traces from the Quint spec and replay them against the real `Ring<T>`:
 
 ```bash
-# Run model-based tests
+# Run model-based tests (automated trace generation via quint run --mbt)
 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 ```
 
 The driver:
-1. Defines action sequences matching Quint transitions
-2. Executes each action on the real `Ring<T>` implementation
-3. Verifies invariants hold after each step
+1. `quint-connect` invokes `quint run --mbt` to simulate the spec and produce ITF traces
+2. Each trace (sequence of named actions + state snapshots) is deserialized automatically
+3. The `switch!` macro dispatches each action to the corresponding `Ring<T>` operation
+4. After each step, `quint-connect` compares the driver's state with the spec's expected state
 
 ### Quint ↔ TLA+ Mapping
 
@@ -182,5 +184,5 @@ The driver:
 - [ ] Add liveness checking with fairness constraints
 - [x] ~~Translate `RingSPSC.tla` to `RingSPSC.qnt` for Quint tooling~~
 - [x] ~~Implement `quint-connect` driver for model-based testing~~
+- [x] ~~ITF trace parsing for automated test generation~~ (via `quint-connect` v0.1.1)
 - [ ] Loom trace export → Quint/TLA+ verification
-- [ ] ITF trace parsing for automated test generation

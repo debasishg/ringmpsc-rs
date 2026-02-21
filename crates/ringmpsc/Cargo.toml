@@ -16,17 +16,21 @@ loom = ["dep:loom"]
 # Enable stack-allocated ring buffer variants (StackRing, StackChannel)
 stack-ring = []
 # Enable Quint model-based testing (cargo test --features quint-mbt)
-quint-mbt = []
+quint-mbt = ["dep:quint-connect", "dep:serde", "dep:anyhow"]
 
 [dependencies]
 crossbeam-utils.workspace = true
 loom = { workspace = true, optional = true }
 thiserror.workspace = true
+quint-connect = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
+bumpalo = "3"
 criterion.workspace = true
 proptest = "1.4"
-# quint-connect = "0.1"  # Uncomment when RingSPSC.qnt is ready
+# quint-connect is now a regular (optional) dependency, gated behind `quint-mbt` feature
 
 [[bench]]
 name = "throughput"
@@ -36,6 +40,10 @@ harness = false
 name = "stack_vs_heap"
 harness = false
 required-features = ["stack-ring"]
+
+[[bench]]
+name = "intrusive"
+harness = false
 
 [[bin]]
 name = "bench_final"

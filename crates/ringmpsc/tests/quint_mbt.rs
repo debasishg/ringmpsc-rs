@@ -1,10 +1,16 @@
 //! Quint Model-Based Testing Driver
 //!
-//! This module connects the Quint formal specification (RingSPSC.qnt) to
-//! the actual Rust implementation for model-based testing.
+//! Connects the Quint formal specification (RingSPSC.qnt) to the actual Rust
+//! Ring<T> implementation using `quint-connect` for **automated trace generation**
+//! and conformance checking.
 //!
-//! The quint-connect crate generates test traces from Quint and executes
-//! them against the real Ring<T> implementation to verify conformance.
+//! # How It Works
+//!
+//! 1. `quint-connect` invokes the Quint CLI to simulate / run the RingSPSC.qnt spec
+//! 2. Generated traces (sequences of named actions + state snapshots in ITF format)
+//!    are replayed against the real `Ring<T>` implementation
+//! 3. After each step the framework compares the driver's state with the spec's
+//!    expected state, catching any divergence automatically
 //!
 //! # Prerequisites
 //!
@@ -19,12 +25,14 @@
 //! # Running
 //!
 //! ```bash
-//! # Run model-based tests
+//! # Run all quint-connected tests (spec-defined + random simulation)
 //! cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 //!
-//! # Generate traces only (for debugging)
-//! cd crates/ringmpsc/tla
-//! quint run RingSPSC.qnt --main=RingSPSC --max-steps=50 --out-itf=traces.json
+//! # With verbose trace output (shows actions & state at each step)
+//! QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
+//!
+//! # Reproduce a specific failing trace
+//! QUINT_SEED=42 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 //! ```
 //!
 //! # Architecture
@@ -36,287 +44,215 @@
 //! └─────────────────┘     └─────────────────┘     └─────────────────┘
 //!         │                       │                       │
 //!         ▼                       ▼                       ▼
-//!    Model states           Execute trace          Verify invariants
-//!    & transitions          on real Ring           match spec
+//!    Simulation traces      Execute actions         Verify state
+//!    from spec model        on real Ring            matches spec
 //! ```
+//!
+//! # State Mapping
+//!
+//! | Quint variable   | Rust driver field | Ring<T> correspondence         |
+//! |------------------|-------------------|--------------------------------|
+//! | `head`           | `consumed`        | `Ring.head` (AtomicU64)        |
+//! | `tail`           | `produced`        | `Ring.tail` (AtomicU64)        |
+//! | `cached_head`    | `cached_head`     | `Ring.cached_head` (UnsafeCell)|
+//! | `cached_tail`    | `cached_tail`     | `Ring.cached_tail` (UnsafeCell)|
+//! | `items_produced` | `items_produced`  | (external counter)             |
 
 #![cfg(feature = "quint-mbt")]
 
-// Note: quint-connect is currently experimental (v0.1.x)
-// This module provides the structure for when the crate stabilizes
-//
-// For now, we implement a manual trace-based approach that:
-// 1. Reads ITF (Informal Trace Format) JSON from Quint
-// 2. Executes each action on the real Ring<T>
-// 3. Verifies invariants match the spec
-
+use quint_connect::*;
 use ringmpsc_rs::{Config, Ring};
+use serde::Deserialize;
 use std::mem::MaybeUninit;
 
-/// System under test - wraps Ring<T> with state tracking
-struct RingSUT {
-    ring: Ring<u64>,
-    /// Track head position (Ring doesn't expose this directly)
-    consumed: u64,
-    /// Track tail position 
-    produced: u64,
-    /// Producer's cached head (simulated)
-    cached_head: u64,
-    /// Consumer's cached tail (simulated)  
-    cached_tail: u64,
+// =============================================================================
+// STATE — Mirrors Quint's RingSPSC module variables
+// =============================================================================
+
+/// State representation matching the five Quint state variables in RingSPSC.qnt.
+///
+/// Deserialized from ITF trace output by `quint-connect` and also constructed
+/// from the driver's internal tracking via [`State::from_driver`] for comparison.
+///
+/// Note: Quint built-in names `head`/`tail` (list ops) required renaming to
+/// `hd`/`tl` in the spec. We use `#[serde(rename)]` to keep Rust field names
+/// readable while matching the Quint variable names in ITF traces.
+#[derive(Eq, PartialEq, Deserialize, Debug)]
+struct RingSPSCState {
+    /// Consumer's read position (Quint: `hd`)
+    #[serde(rename = "hd")]
+    head: i64,
+    /// Producer's write position (Quint: `tl`)
+    #[serde(rename = "tl")]
+    tail: i64,
+    /// Producer's cached view of head (Quint: `cached_head`)
+    cached_head: i64,
+    /// Consumer's cached view of tail (Quint: `cached_tail`)
+    cached_tail: i64,
+    /// Total items produced (Quint: `items_produced`)
+    items_produced: i64,
 }
 
-impl RingSUT {
-    fn new(capacity_bits: u8) -> Self {
-        let config = Config::new(capacity_bits, 1, false);
+impl State<RingSPSCDriver> for RingSPSCState {
+    fn from_driver(driver: &RingSPSCDriver) -> quint_connect::Result<Self> {
+        Ok(RingSPSCState {
+            head: driver.consumed as i64,
+            tail: driver.produced as i64,
+            cached_head: driver.cached_head as i64,
+            cached_tail: driver.cached_tail as i64,
+            items_produced: driver.items_produced as i64,
+        })
+    }
+}
+
+// =============================================================================
+// DRIVER — Connects Ring<T> to Quint spec actions
+// =============================================================================
+
+/// Test driver connecting the `Ring<u64>` implementation to the Quint spec.
+///
+/// Maintains **two layers**:
+/// - A real `Ring<u64>` exercised on each produce/consume action (conformance)
+/// - Abstract state tracking that mirrors Quint's variables (state comparison)
+///
+/// The abstract tracking follows the Quint model's logic exactly, while the
+/// real Ring verifies that the Rust implementation accepts every operation the
+/// spec says should succeed.
+struct RingSPSCDriver {
+    /// The real ring buffer under test
+    ring: Ring<u64>,
+    /// Tracks consumer position — matches Quint's `head`
+    consumed: u64,
+    /// Tracks producer position — matches Quint's `tail`
+    produced: u64,
+    /// Tracks producer's cached head — matches Quint's `cached_head`
+    cached_head: u64,
+    /// Tracks consumer's cached tail — matches Quint's `cached_tail`
+    cached_tail: u64,
+    /// Total items produced — matches Quint's `items_produced`
+    items_produced: u64,
+}
+
+impl Default for RingSPSCDriver {
+    fn default() -> Self {
+        // capacity = 2^2 = 4, matching CAPACITY = 4 in RingSPSC.qnt
+        let config = Config::new(2, 1, false);
         Self {
             ring: Ring::new(config),
             consumed: 0,
             produced: 0,
             cached_head: 0,
             cached_tail: 0,
+            items_produced: 0,
         }
-    }
-
-    /// Execute ProducerWrite action
-    fn producer_write(&mut self) -> bool {
-        if let Some(mut reservation) = self.ring.reserve(1) {
-            reservation.as_mut_slice()[0] = MaybeUninit::new(self.produced);
-            reservation.commit();
-            self.produced += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Execute ProducerRefreshCache action
-    fn producer_refresh_cache(&mut self) {
-        // In real impl, this is: cached_head = head.load(Acquire)
-        // We simulate by updating our tracked cache
-        self.cached_head = self.consumed;
-    }
-
-    /// Execute ConsumerAdvance action  
-    fn consumer_advance(&mut self) -> bool {
-        let consumed = self.ring.consume_batch(|_item| {
-            // Item consumed
-        });
-        if consumed > 0 {
-            self.consumed += consumed as u64;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Execute ConsumerRefreshCache action
-    fn consumer_refresh_cache(&mut self) {
-        // In real impl, this is: cached_tail = tail.load(Acquire)
-        self.cached_tail = self.produced;
-    }
-
-    // =========================================================================
-    // INVARIANT CHECKS - must match Quint spec
-    // =========================================================================
-
-    /// INV-SEQ-01: Bounded Count
-    fn check_bounded_count(&self, capacity: u64) -> bool {
-        let count = self.produced - self.consumed;
-        count <= capacity
-    }
-
-    /// INV-ORD-03: Happens-Before
-    fn check_happens_before(&self) -> bool {
-        self.consumed <= self.produced
-    }
-
-    /// Combined safety invariant
-    fn check_safety_invariant(&self, capacity: u64) -> bool {
-        self.check_bounded_count(capacity) && self.check_happens_before()
     }
 }
 
-/// Actions from Quint spec
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuintAction {
-    ProducerReserveFast,
-    ProducerRefreshCache,
-    ProducerWrite,
-    ConsumerReadFast,
-    ConsumerRefreshCache,
-    ConsumerAdvance,
-}
+impl Driver for RingSPSCDriver {
+    type State = RingSPSCState;
 
-/// Execute a trace of actions and verify invariants hold at each step
-fn execute_trace(actions: &[QuintAction], capacity_bits: u8) -> Result<(), String> {
-    let capacity = 1u64 << capacity_bits;
-    let mut sut = RingSUT::new(capacity_bits);
+    fn step(&mut self, step: &Step) -> quint_connect::Result {
+        switch!(step {
+            init => {
+                *self = Self::default();
+            },
 
-    // Initial state satisfies invariant
-    if !sut.check_safety_invariant(capacity) {
-        return Err("Initial state violates safety invariant".to_string());
-    }
+            // -----------------------------------------------------------------
+            // PRODUCER ACTIONS
+            // -----------------------------------------------------------------
 
-    for (i, action) in actions.iter().enumerate() {
-        match action {
-            QuintAction::ProducerReserveFast => {
-                // No state change, just a check
-            }
-            QuintAction::ProducerRefreshCache => {
-                sut.producer_refresh_cache();
-            }
-            QuintAction::ProducerWrite => {
-                sut.producer_write();
-            }
-            QuintAction::ConsumerReadFast => {
-                // No state change, just a check
-            }
-            QuintAction::ConsumerRefreshCache => {
-                sut.consumer_refresh_cache();
-            }
-            QuintAction::ConsumerAdvance => {
-                sut.consumer_advance();
-            }
-        }
+            producerReserveFast => {
+                // Guard-only action — no state mutation in Quint.
+                // The guard `producerHasSpace(tail, cached_head)` was verified
+                // during trace generation. Nothing to execute.
+            },
 
-        // Verify invariant after each action
-        if !sut.check_safety_invariant(capacity) {
-            return Err(format!(
-                "Safety invariant violated after action {}: {:?} (produced={}, consumed={})",
-                i, action, sut.produced, sut.consumed
-            ));
-        }
-    }
+            producerRefreshCache => {
+                // Quint: cached_head' = head
+                // Models the slow-path Acquire load of head in reserve().
+                self.cached_head = self.consumed;
+            },
 
-    Ok(())
-}
+            producerWrite => {
+                // Quint: tail' = tail + 1, items_produced' = items_produced + 1
+                // Drive the real Ring to verify conformance.
+                let mut reserved = self.ring.reserve(1)
+                    .expect("reserve(1) should succeed: Quint guard ensures (tail-head) < CAPACITY");
+                // Safety-note: write value then commit (zero-copy reservation pattern)
+                reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
+                reserved.commit();
+                self.produced += 1;
+                self.items_produced += 1;
+            },
 
-// =============================================================================
-// TESTS - Manual traces derived from Quint spec
-// =============================================================================
+            // -----------------------------------------------------------------
+            // CONSUMER ACTIONS
+            // -----------------------------------------------------------------
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+            consumerReadFast => {
+                // Guard-only action — no state mutation in Quint.
+                // The guard `consumerHasItems(cached_tail, head)` was verified
+                // during trace generation. Nothing to execute.
+            },
 
-    /// Test: Empty trace (init only)
-    #[test]
-    fn test_init_satisfies_invariant() {
-        execute_trace(&[], 2).expect("Init should satisfy invariant");
-    }
+            consumerRefreshCache => {
+                // Quint: cached_tail' = tail
+                // Models the slow-path Acquire load of tail in consume_batch().
+                self.cached_tail = self.produced;
+            },
 
-    /// Test: Simple produce-consume cycle
-    #[test]
-    fn test_produce_consume_cycle() {
-        let trace = vec![
-            QuintAction::ProducerWrite,
-            QuintAction::ConsumerAdvance,
-        ];
-        execute_trace(&trace, 2).expect("Produce-consume should satisfy invariant");
-    }
-
-    /// Test: Fill ring to capacity
-    #[test]
-    fn test_fill_to_capacity() {
-        // Capacity = 2^2 = 4
-        let trace = vec![
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-        ];
-        execute_trace(&trace, 2).expect("Fill to capacity should satisfy invariant");
-    }
-
-    /// Test: Cache refresh scenario
-    #[test]
-    fn test_cache_refresh_scenario() {
-        let trace = vec![
-            // Fill ring
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            // Consumer advances
-            QuintAction::ConsumerAdvance,
-            QuintAction::ConsumerAdvance,
-            // Producer refreshes cache
-            QuintAction::ProducerRefreshCache,
-            // Producer can write again
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-        ];
-        execute_trace(&trace, 2).expect("Cache refresh scenario should work");
-    }
-
-    /// Test: Alternating produce-consume
-    #[test]
-    fn test_alternating_produce_consume() {
-        let mut trace = Vec::new();
-        for _ in 0..20 {
-            trace.push(QuintAction::ProducerWrite);
-            trace.push(QuintAction::ConsumerAdvance);
-        }
-        execute_trace(&trace, 2).expect("Alternating should satisfy invariant");
-    }
-
-    /// Test: Consumer refresh when empty
-    #[test]
-    fn test_consumer_refresh_when_empty() {
-        let trace = vec![
-            QuintAction::ConsumerRefreshCache,  // Empty, cache stays 0
-            QuintAction::ProducerWrite,
-            QuintAction::ConsumerRefreshCache,  // Now sees tail=1
-            QuintAction::ConsumerAdvance,
-        ];
-        execute_trace(&trace, 2).expect("Consumer refresh should work");
-    }
-
-    /// Test: Producer starvation recovery
-    #[test]
-    fn test_producer_starvation_recovery() {
-        let trace = vec![
-            // Fill ring completely
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-            // Producer's cache says full, consumer drains
-            QuintAction::ConsumerAdvance,
-            QuintAction::ConsumerAdvance,
-            QuintAction::ConsumerAdvance,
-            QuintAction::ConsumerAdvance,
-            // Producer refreshes and recovers
-            QuintAction::ProducerRefreshCache,
-            QuintAction::ProducerWrite,
-            QuintAction::ProducerWrite,
-        ];
-        execute_trace(&trace, 2).expect("Producer recovery should work");
+            consumerAdvance => {
+                // Quint: head' = head + 1
+                // Drive the real Ring — consume exactly 1 item.
+                let consumed = self.ring.consume_up_to(1, |_item| {});
+                assert_eq!(
+                    consumed, 1,
+                    "consume_up_to(1) should return 1: Quint guard ensures head < tail"
+                );
+                self.consumed += 1;
+            },
+        })
     }
 }
 
 // =============================================================================
-// FUTURE: ITF Trace Parser (when quint-connect stabilizes)
-// =============================================================================
+// SIMULATION-BASED TESTS (automated trace generation)
 //
-// The full quint-connect integration would parse ITF JSON traces:
+// `#[quint_run]` invokes `quint run --mbt` to generate random simulation traces
+// covering diverse action interleavings, then replays each trace against the
+// real Ring<T> implementation with state comparison at every step.
 //
-// ```rust
-// use quint_connect::{ItfTrace, TraceRunner};
-// 
-// #[test]
-// fn test_quint_generated_traces() {
-//     let traces = ItfTrace::from_file("traces.json").unwrap();
-//     for trace in traces {
-//         let mut sut = RingSUT::new(2);
-//         for state in trace.states() {
-//             // Map Quint state to Rust state
-//             // Execute action
-//             // Verify invariants
-//         }
-//     }
-// }
-// ```
+// NOTE: We use `#[quint_run]` exclusively because `quint test` does not support
+// the `--mbt` flag needed to embed `mbt::actionTaken` metadata in traces.
+// The Quint spec's `run` declarations (testInitSatisfiesInvariant, etc.) remain
+// useful for standalone `quint test` verification of the spec itself.
 //
-// For now, we use manually-crafted traces that exercise the same paths.
+// This is the key capability enabled by quint-connect: traces are generated
+// automatically from the formal spec rather than hand-crafted.
+//
+// Set QUINT_SEED=<n> to reproduce a specific trace.
+// =============================================================================
+
+/// Default random simulation — broad coverage of action interleavings.
+///
+/// Generates multiple traces with varying step lengths. Verifies that
+/// every reachable action sequence produces matching state in the real Ring.
+#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC")]
+fn simulation() -> impl Driver {
+    RingSPSCDriver::default()
+}
+
+/// Longer traces for deeper state-space exploration.
+///
+/// Uses a fixed seed for reproducibility and more samples to increase
+/// coverage of rare action sequences (e.g., multiple cache refreshes).
+#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "1729", max_samples = 20)]
+fn simulation_deep() -> impl Driver {
+    RingSPSCDriver::default()
+}
+
+/// Another seed for broader coverage across CI runs.
+#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "314159")]
+fn simulation_seed_variation() -> impl Driver {
+    RingSPSCDriver::default()
+}
