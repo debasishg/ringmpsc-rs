@@ -35,7 +35,11 @@
 //! # the test harness doesn't swallow stderr.
 //! QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
 //!
-//! # Reproduce a specific failing trace
+//! # Reproduce a specific trace (e.g., a failing one) with a fixed seed.
+//! # NOTE: Like QUINT_VERBOSE, QUINT_SEED is checked at *runtime* by the
+//! # test driver. The `simulation` test uses `runtime_seed()` instead of
+//! # the library's compile-time `gen_random_seed()`. The other two tests
+//! # have seeds hardcoded in their `#[quint_run]` attribute.
 //! QUINT_SEED=42 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 //! ```
 //!
@@ -81,6 +85,21 @@ fn is_verbose() -> bool {
         std::env::var("QUINT_VERBOSE")
             .map(|v| v != "0" && !v.is_empty())
             .unwrap_or(false)
+    })
+}
+
+/// Returns a seed for Quint simulation, checking `QUINT_SEED` **at runtime**.
+///
+/// Falls back to a timestamp-derived seed when the env var is absent. This
+/// works around the same `option_env!` compile-time limitation that affects
+/// `QUINT_VERBOSE` in `quint-connect`'s `gen_random_seed()`.
+fn runtime_seed() -> String {
+    std::env::var("QUINT_SEED").unwrap_or_else(|_| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .subsec_nanos();
+        format!("0x{:x}", nanos)
     })
 }
 
@@ -273,22 +292,47 @@ impl Driver for RingSPSCDriver {
 // This is the key capability enabled by quint-connect: traces are generated
 // automatically from the formal spec rather than hand-crafted.
 //
-// Set QUINT_SEED=<n> to reproduce a specific trace.
+// Set QUINT_SEED=<n> to reproduce a specific trace (checked at runtime).
 // =============================================================================
 
 /// Default random simulation — broad coverage of action interleavings.
 ///
 /// Generates multiple traces with varying step lengths. Verifies that
 /// every reachable action sequence produces matching state in the real Ring.
-#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC")]
-fn simulation() -> impl Driver {
-    RingSPSCDriver::default()
+///
+/// Uses [`runtime_seed()`] so `QUINT_SEED` is honoured at runtime (unlike
+/// `#[quint_run]` without `seed =`, which would call `gen_random_seed()`
+/// and hit the compile-time `option_env!` bug).
+#[test]
+fn simulation() {
+    let driver = RingSPSCDriver::default();
+    let seed = runtime_seed();
+    let config = quint_connect::runner::Config {
+        test_name: "simulation".to_string(),
+        gen_config: quint_connect::runner::RunConfig {
+            spec: "tla/RingSPSC.qnt".to_string(),
+            main: Some("RingSPSC".to_string()),
+            init: None,
+            step: None,
+            max_samples: None,
+            max_steps: None,
+            seed,
+        },
+    };
+    if let Err(err) = quint_connect::runner::run_test(driver, config) {
+        panic!("{}", err);
+    }
 }
 
-/// Longer traces for deeper state-space exploration.
+/// Broader state-space exploration via more samples (`max_samples = 20`).
 ///
-/// Uses a fixed seed for reproducibility and more samples to increase
-/// coverage of rare action sequences (e.g., multiple cache refreshes).
+/// Each sample is one independent simulation trace (a random walk through
+/// the spec's state space). More samples means more diverse action
+/// interleavings are covered. Uses a fixed seed (`1729`) so the set of 20
+/// traces is fully reproducible across runs.
+///
+/// Note: this is *wider* exploration (more traces), not longer traces —
+/// `max_steps` is left at the default.
 #[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "1729", max_samples = 20)]
 fn simulation_deep() -> impl Driver {
     RingSPSCDriver::default()

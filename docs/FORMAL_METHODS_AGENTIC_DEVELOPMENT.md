@@ -360,7 +360,10 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 # harness doesn't swallow stderr.
 QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
 
-# Reproduce a specific failing trace
+# Reproduce a specific trace (e.g., a failing one) with a fixed seed.
+# NOTE: Like QUINT_VERBOSE, QUINT_SEED is also checked at *runtime* by the
+# test driver (runtime_seed()). It only affects the `simulation` test —
+# the other two tests have seeds hardcoded in their #[quint_run] attribute.
 QUINT_SEED=42 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 ```
 
