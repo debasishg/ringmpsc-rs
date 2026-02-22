@@ -41,10 +41,6 @@ name = "stack_vs_heap"
 harness = false
 required-features = ["stack-ring"]
 
-[[bench]]
-name = "intrusive"
-harness = false
-
 [[bin]]
 name = "bench_final"
 path = "bin/bench_final.rs"

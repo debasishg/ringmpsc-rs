@@ -122,16 +122,16 @@ impl<T> Channel<T> {
         let mut total = 0;
         let count = self.inner.producer_count.load(Ordering::Acquire);
 
-        for (producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             let consumed = ring.consume_batch(&mut handler);
 
             // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
             #[cfg(debug_assertions)]
             {
-                let old_count = self.inner.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
                 let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.inner.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
             }
 
             total += consumed;
@@ -159,7 +159,7 @@ impl<T> Channel<T> {
         let mut total = 0;
         let count = self.inner.producer_count.load(Ordering::Acquire);
 
-        for (producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             if total >= max_total {
                 break;
             }
@@ -169,10 +169,10 @@ impl<T> Channel<T> {
             // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
             #[cfg(debug_assertions)]
             {
-                let old_count = self.inner.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
                 let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.inner.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
             }
 
             total += consumed;
@@ -205,16 +205,16 @@ impl<T> Channel<T> {
         let mut total = 0;
         let count = self.inner.producer_count.load(Ordering::Acquire);
 
-        for (producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             let consumed = ring.consume_batch_owned(&mut handler);
 
             // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
             #[cfg(debug_assertions)]
             {
-                let old_count = self.inner.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
                 let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.inner.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
             }
 
             total += consumed;
@@ -235,7 +235,7 @@ impl<T> Channel<T> {
         let mut total = 0;
         let count = self.inner.producer_count.load(Ordering::Acquire);
 
-        for (producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             if total >= max_total {
                 break;
             }
@@ -245,10 +245,10 @@ impl<T> Channel<T> {
             // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
             #[cfg(debug_assertions)]
             {
-                let old_count = self.inner.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
                 let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.inner.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
             }
 
             total += consumed;

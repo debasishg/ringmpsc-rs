@@ -140,6 +140,7 @@ macro_rules! debug_assert_valid_ring_ptr {
 /// We verify this by tracking consumption count per producer.
 ///
 /// Used in: `Channel::consume_all()` with `#[cfg(debug_assertions)]`
+#[allow(unused_macros)]
 macro_rules! debug_assert_fifo_count {
     ($producer_id:expr, $old_count:expr, $new_count:expr) => {
         debug_assert!(
@@ -157,6 +158,7 @@ macro_rules! debug_assert_fifo_count {
 // =============================================================================
 
 pub(crate) use debug_assert_bounded_count;
+#[allow(unused_imports)]
 pub(crate) use debug_assert_fifo_count;
 pub(crate) use debug_assert_head_not_past_tail;
 pub(crate) use debug_assert_initialized_read;

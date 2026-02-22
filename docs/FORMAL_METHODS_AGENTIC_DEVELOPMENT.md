@@ -354,6 +354,10 @@ then replays each trace against the real `Ring<T>` implementation with state com
 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 
 # With verbose trace output (shows actions & state at each step)
+# NOTE: QUINT_VERBOSE is checked at *runtime* by the test driver, not by
+# quint-connect (which uses compile-time option_env! and never sees the
+# variable when installed from crates.io). Pass --nocapture so the test
+# harness doesn't swallow stderr.
 QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
 
 # Reproduce a specific failing trace

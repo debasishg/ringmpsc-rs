@@ -29,6 +29,10 @@
 //! cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 //!
 //! # With verbose trace output (shows actions & state at each step)
+//! # NOTE: QUINT_VERBOSE is checked at *runtime* by the test driver (not by
+//! # quint-connect, which uses compile-time option_env! and therefore never
+//! # sees the variable when installed from crates.io). Pass --nocapture so
+//! # the test harness doesn't swallow stderr.
 //! QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
 //!
 //! # Reproduce a specific failing trace
@@ -64,6 +68,21 @@ use quint_connect::*;
 use ringmpsc_rs::{Config, Ring};
 use serde::Deserialize;
 use std::mem::MaybeUninit;
+use std::sync::OnceLock;
+
+/// Returns true when `QUINT_VERBOSE` is set to a non-zero value **at runtime**.
+///
+/// Note: `quint-connect`'s built-in `option_env!("QUINT_VERBOSE")` is evaluated
+/// at *compile time* of the library crate, so it is always `None` when the
+/// library comes from crates.io. We re-check the variable at runtime here.
+fn is_verbose() -> bool {
+    static VERBOSE: OnceLock<bool> = OnceLock::new();
+    *VERBOSE.get_or_init(|| {
+        std::env::var("QUINT_VERBOSE")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false)
+    })
+}
 
 // =============================================================================
 // STATE — Mirrors Quint's RingSPSC module variables
@@ -152,9 +171,15 @@ impl Driver for RingSPSCDriver {
     type State = RingSPSCState;
 
     fn step(&mut self, step: &Step) -> quint_connect::Result {
+        let verbose = is_verbose();
+        let action = &step.action_taken;
+
         switch!(step {
             init => {
                 *self = Self::default();
+                if verbose {
+                    eprintln!("  [init] head=0 tail=0 cached_head=0 cached_tail=0 items_produced=0");
+                }
             },
 
             // -----------------------------------------------------------------
@@ -165,12 +190,18 @@ impl Driver for RingSPSCDriver {
                 // Guard-only action — no state mutation in Quint.
                 // The guard `producerHasSpace(tail, cached_head)` was verified
                 // during trace generation. Nothing to execute.
+                if verbose {
+                    eprintln!("  [{action}] (guard-only, no state change)");
+                }
             },
 
             producerRefreshCache => {
                 // Quint: cached_head' = head
                 // Models the slow-path Acquire load of head in reserve().
                 self.cached_head = self.consumed;
+                if verbose {
+                    eprintln!("  [{action}] cached_head <- head = {}", self.cached_head);
+                }
             },
 
             producerWrite => {
@@ -183,6 +214,9 @@ impl Driver for RingSPSCDriver {
                 reserved.commit();
                 self.produced += 1;
                 self.items_produced += 1;
+                if verbose {
+                    eprintln!("  [{action}] tail={} items_produced={}", self.produced, self.items_produced);
+                }
             },
 
             // -----------------------------------------------------------------
@@ -193,12 +227,18 @@ impl Driver for RingSPSCDriver {
                 // Guard-only action — no state mutation in Quint.
                 // The guard `consumerHasItems(cached_tail, head)` was verified
                 // during trace generation. Nothing to execute.
+                if verbose {
+                    eprintln!("  [{action}] (guard-only, no state change)");
+                }
             },
 
             consumerRefreshCache => {
                 // Quint: cached_tail' = tail
                 // Models the slow-path Acquire load of tail in consume_batch().
                 self.cached_tail = self.produced;
+                if verbose {
+                    eprintln!("  [{action}] cached_tail <- tail = {}", self.cached_tail);
+                }
             },
 
             consumerAdvance => {
@@ -210,6 +250,9 @@ impl Driver for RingSPSCDriver {
                     "consume_up_to(1) should return 1: Quint guard ensures head < tail"
                 );
                 self.consumed += 1;
+                if verbose {
+                    eprintln!("  [{action}] head={}", self.consumed);
+                }
             },
         })
     }
