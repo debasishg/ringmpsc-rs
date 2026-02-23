@@ -1,10 +1,12 @@
 # Evolution of Model-Based Testing with `quint-connect`
 
-This document traces the evolution of Model-Based Testing (MBT) in the `ringmpsc` crate — from hand-crafted trace sequences with manually re-implemented invariants, to fully automated trace generation and state comparison powered by [`quint-connect`](https://crates.io/crates/quint-connect).
+[Quint](https://quint-lang.org/) is a modern specification language designed as an accessible alternative to TLA+, combining TLA+'s rigorous state-machine semantics with a TypeScript-inspired syntax that feels natural to working programmers. Its toolchain — `quint typecheck`, `quint run` (simulation), `quint test`, and `quint verify` (symbolic model checking via Apalache) — enables formal verification workflows without leaving a familiar development environment. The [`quint-connect`](https://crates.io/crates/quint-connect) crate bridges this ecosystem into Rust: it invokes the Quint CLI to generate simulation traces in ITF (Informal Trace Format), then replays those traces against a user-defined Rust `Driver`, automatically comparing the implementation's state with the spec's expected state at every step. This tight integration means Rust projects can adopt model-based testing with minimal boilerplate — a `#[quint_run]` attribute, a `Driver` impl, and a `State` struct are all that's needed to connect a formal specification to a real implementation.
+
+This document traces the evolution of Model-Based Testing (MBT) in the `ringmpsc` crate — from hand-crafted trace sequences with manually re-implemented invariants, to fully automated trace generation and state comparison powered by `quint-connect`.
 
 ---
 
-## 1. Introduction: `quint-connect` and the Rust Ecosystem
+## 1. `quint-connect` Integration Details
 
 [Quint](https://quint-lang.org/) is a modern specification language with TLA+ semantics and TypeScript-like syntax. It provides a formal model of a system's state transitions that can be **machine-checked** (`quint verify`) and **simulated** (`quint run`).
 
