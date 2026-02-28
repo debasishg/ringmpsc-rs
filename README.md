@@ -141,6 +141,46 @@ Producer 3 ──→ [Ring 3] ──┘
 - **Batch consumption** - single atomic update for N items (Disruptor pattern)
 - **Zero-copy API** - `reserve()` → write → `commit()` avoids intermediate copies
 
+## Formal Verification
+
+The SPSC ring buffer protocol is formally specified in both TLA+ and [Quint](https://quint-lang.org/), with model-based testing bridging the spec to the real implementation via [`quint-connect`](https://crates.io/crates/quint-connect).
+
+### Quint 0.31.0 Improvements
+
+Since [Quint 0.31.0](https://github.com/informalsystems/quint/releases/tag/v0.31.0) (2026-02-27), the verification workflow has been significantly streamlined:
+
+| Capability | What changed | Impact |
+|------------|-------------|--------|
+| **Rust backend is default** | `quint run` / `quint test` now use the Rust backend | ~10× faster simulation and MBT trace generation |
+| **`quint verify --backend=tlc`** | TLC model checking directly from `.qnt` files | `.qnt` becomes single source of truth — no need to maintain a separate `.tla` file |
+| **`--invariant` in simulation** | `quint run --invariant=safetyInvariant` | Quick invariant checking across thousands of random traces |
+| **`--mbt` in Rust backend** | `quint run --mbt` natively supported | Faster trace generation for `quint-connect` model-based tests |
+
+```bash
+cd crates/ringmpsc/tla
+
+# Fast simulation with invariant checking (Rust backend, default)
+quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Exhaustive model checking via TLC (requires JDK 17+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Run embedded spec tests
+quint test RingSPSC.qnt --main=RingSPSC
+
+# Model-based testing — replay spec traces against real Ring<T>
+cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
+```
+
+### Next Steps
+
+- **Upgrade JDK to 17+** to unlock `quint verify --backend=tlc` for exhaustive model checking from `.qnt`
+- **Deprecate standalone `RingSPSC.tla`** once TLC-via-Quint is validated in CI (`.qnt` becomes single source of truth)
+- **Add `q::debug` diagnostics** to the Quint spec for richer per-step tracing during MBT
+- **Add CI workflow** for `quint verify --backend=tlc` + MBT tests (`.github/workflows/quint.yml`)
+
+See [FORMAL_VERIFICATION_WORKFLOW.md](docs/FORMAL_VERIFICATION_WORKFLOW.md) and [tla/README.md](crates/ringmpsc/tla/README.md) for details.
+
 ## License
 
 MIT

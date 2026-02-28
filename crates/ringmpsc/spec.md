@@ -248,6 +248,11 @@ The lock-free protocol is formally specified in TLA+ for model checking. This co
 
 ```bash
 cd crates/ringmpsc/tla
+
+# Preferred: Exhaustive model checking via Quint CLI (requires Quint ≥ 0.31.0, JDK 17+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Alternative: Standalone TLC (any JDK)
 tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 ```
 
@@ -297,7 +302,10 @@ Run with:
 # Rust driver tests
 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 
-# Quint CLI (if installed)
+# Quint CLI — embedded tests (Rust backend, default since Quint 0.31.0)
 cd crates/ringmpsc/tla
 quint test RingSPSC.qnt --main=RingSPSC
+
+# Quint CLI — simulation with invariant checking
+quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 ```

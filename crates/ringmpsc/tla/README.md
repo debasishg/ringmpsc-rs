@@ -113,7 +113,13 @@ Edit [RingSPSC.cfg](RingSPSC.cfg) to change:
 
 ## Quint Integration
 
-[Quint](https://quint-lang.org/) is a modern specification language with TypeScript-like syntax, built on the same TLA+ foundations.
+[Quint](https://quint-lang.org/) (≥ 0.31.0) is a modern specification language with TypeScript-like syntax, built on the same TLA+ foundations.
+
+> **Quint 0.31.0 highlights** (2026-02-27):
+> - **Rust backend is now the default** for `quint run` and `quint test` — ~10× faster simulation
+> - **TLC available as a backend** for `quint verify --backend=tlc` — exhaustive model checking directly from `.qnt` files
+> - `--mbt`, `--invariants`, `--n-traces`, `--witnesses` flags all supported by the Rust backend
+> - Better error reporting: seed + trace printed on errors/panics, per-step `q::debug` diagnostics
 
 ### Files
 
@@ -128,7 +134,7 @@ Edit [RingSPSC.cfg](RingSPSC.cfg) to change:
 # Via npm (recommended)
 npm install -g @informalsystems/quint
 
-# Verify installation
+# Verify installation (should be ≥ 0.31.0)
 quint --version
 ```
 
@@ -140,15 +146,43 @@ cd crates/ringmpsc/tla
 # Typecheck the spec
 quint typecheck RingSPSC.qnt
 
-# Run simulation (random traces)
+# Run simulation (Rust backend, default since 0.31.0)
 quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
 
-# Run the embedded tests
+# Simulation with invariant checking
+quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Run the embedded tests (Rust backend, default since 0.31.0)
 quint test RingSPSC.qnt --main=RingSPSC
 
-# Verify invariants via Apalache backend (optional)
+# Exhaustive model checking via TLC backend (requires JDK 17+)
+# This verifies invariants over ALL reachable states — equivalent to running
+# TLC on the .tla file, but directly from the .qnt spec.
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Symbolic model checking via Apalache backend (requires JDK 17+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Explicitly use the TypeScript backend (slower, supports BigInts)
+quint run RingSPSC.qnt --main=RingSPSC --backend=ts
 ```
+
+### Exhaustive Model Checking: `quint verify --backend=tlc`
+
+Since Quint 0.31.0, the TLC model checker can be invoked directly from a `.qnt` file:
+
+```bash
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+```
+
+This is **equivalent to running TLC on `RingSPSC.tla`** but eliminates the need to:
+- Maintain a separate `.tla` file alongside the `.qnt` spec
+- Manage a `.cfg` file for TLC configuration
+- Install and invoke `tla2tools.jar` manually
+
+The `.qnt` spec is now the **single source of truth** for simulation, testing, MBT trace generation, *and* exhaustive model checking.
+
+> **Note**: The `--backend=tlc` flag requires JDK 17+ (it uses Apalache for the Quint → TLA+ translation step, then runs TLC). If you only have JDK 11, use the standalone TLC approach documented above.
 
 ### Model-Based Testing
 
@@ -162,9 +196,10 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 
 The driver:
 1. `quint-connect` invokes `quint run --mbt` to simulate the spec and produce ITF traces
-2. Each trace (sequence of named actions + state snapshots) is deserialized automatically
-3. The `switch!` macro dispatches each action to the corresponding `Ring<T>` operation
-4. After each step, `quint-connect` compares the driver's state with the spec's expected state
+2. Since Quint 0.31.0, the Rust backend handles `--mbt` natively — faster trace generation
+3. Each trace (sequence of named actions + state snapshots) is deserialized automatically
+4. The `switch!` macro dispatches each action to the corresponding `Ring<T>` operation
+5. After each step, `quint-connect` compares the driver's state with the spec's expected state
 
 ### Quint ↔ TLA+ Mapping
 
@@ -179,10 +214,13 @@ The driver:
 
 ## Future Work
 
-- [ ] Add TLC to CI (`.github/workflows/tla.yml`) when CI/CD is set up
-- [ ] Add MPSC channel specification (`RingMPSC.tla`) modeling multiple producers
+- [ ] Add `quint verify --backend=tlc` + MBT to CI (`.github/workflows/quint.yml`) when CI/CD is set up
+- [ ] Add MPSC channel specification (`RingMPSC.qnt`) modeling multiple producers
 - [ ] Add liveness checking with fairness constraints
+- [ ] Deprecate standalone `RingSPSC.tla` once `quint verify --backend=tlc` is validated in CI (`.qnt` becomes single source of truth)
 - [x] ~~Translate `RingSPSC.tla` to `RingSPSC.qnt` for Quint tooling~~
 - [x] ~~Implement `quint-connect` driver for model-based testing~~
 - [x] ~~ITF trace parsing for automated test generation~~ (via `quint-connect` v0.1.1)
+- [x] ~~TLC model checking via `.qnt` file~~ (via `quint verify --backend=tlc`, Quint 0.31.0)
+- [x] ~~Rust backend for faster simulation~~ (default since Quint 0.31.0)
 - [ ] Loom trace export → Quint/TLA+ verification

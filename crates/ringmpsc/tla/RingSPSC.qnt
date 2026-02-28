@@ -10,7 +10,16 @@
 //   - INV-SW-01:  Producer-Owned Fields (tl, cached_head)
 //   - INV-SW-02:  Consumer-Owned Fields (hd, cached_tail)
 //
-// Run with: quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
+// Run with:
+//   quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
+//   quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant   (simulation + invariant checking)
+//   quint test RingSPSC.qnt --main=RingSPSC                             (run embedded tests)
+//   quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc  (exhaustive model checking)
+//
+// Since Quint 0.31.0 the Rust backend is the default for `quint run` and `quint test`,
+// giving ~10× faster simulation than the TypeScript backend. TLC is now available as an
+// alternative backend for `quint verify` via `--backend=tlc`, enabling exhaustive model
+// checking directly from this .qnt file without maintaining a separate .tla file.
 //
 // Note: `head`/`tail` are Quint built-in names (list ops), so we use `hd`/`tl`.
 

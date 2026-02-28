@@ -15,7 +15,7 @@
 //! # Prerequisites
 //!
 //! ```bash
-//! # Install Quint CLI
+//! # Install Quint CLI (≥ 0.31.0 recommended — Rust backend is default, --mbt supported natively)
 //! npm install -g @informalsystems/quint
 //!
 //! # Verify installation
@@ -283,6 +283,10 @@ impl Driver for RingSPSCDriver {
 // `#[quint_run]` invokes `quint run --mbt` to generate random simulation traces
 // covering diverse action interleavings, then replays each trace against the
 // real Ring<T> implementation with state comparison at every step.
+//
+// Since Quint 0.31.0 (2026-02-27), the Rust backend is the default for
+// `quint run` and supports `--mbt` natively, giving ~10× faster trace
+// generation compared to the TypeScript backend.
 //
 // NOTE: We use `#[quint_run]` exclusively because `quint test` does not support
 // the `--mbt` flag needed to embed `mbt::actionTaken` metadata in traces.

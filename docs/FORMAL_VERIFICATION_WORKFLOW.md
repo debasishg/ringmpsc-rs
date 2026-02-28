@@ -8,9 +8,9 @@ The verification strategy uses multiple complementary layers:
 
 | Layer | Tool | Purpose |
 |-------|------|---------|
-| Formal Spec | TLA+ | Mathematical model of the protocol |
-| Modern Spec | Quint | Same semantics, better tooling |
-| Model Checking | TLC / Apalache | Exhaustive state space exploration |
+| Formal Spec | TLA+ / Quint | Mathematical model of the protocol |
+| Modern Spec | Quint (≥ 0.31.0) | Same semantics, Rust backend, TLC integration |
+| Model Checking | `quint verify --backend=tlc` / Apalache | Exhaustive state space exploration |
 | Model-Based Testing | quint_mbt.rs | Execute spec traces on real code |
 | Property Testing | proptest | Random input verification |
 | Concurrency Testing | Loom | Exhaustive thread interleaving |
@@ -111,19 +111,26 @@ action producerWrite = all {
 ### Running Quint
 
 ```bash
-# Install Quint
+# Install Quint (≥ 0.31.0)
 npm install -g @informalsystems/quint
 
 # Typecheck
 quint typecheck RingSPSC.qnt
 
-# Run embedded tests
+# Run embedded tests (Rust backend, default since 0.31.0)
 quint test RingSPSC.qnt --main=RingSPSC
 
-# Simulate random traces
+# Simulate random traces (Rust backend, default since 0.31.0)
 quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
 
-# Formal verification (via Apalache)
+# Simulation with invariant checking (Rust backend)
+quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Exhaustive model checking via TLC backend (requires JDK 17+)
+# Equivalent to running TLC on the .tla file, but directly from .qnt
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Symbolic model checking via Apalache backend (requires JDK 17+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 ```
 
@@ -273,20 +280,22 @@ cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
 ### Development Workflow
 
 ```
-1. Write/Update TLA+ spec (RingSPSC.tla)
+1. Write/Update Quint spec (RingSPSC.qnt) — single source of truth
    ↓
-2. Run TLC for exhaustive model checking
+2. Run quint test / quint run --invariant=safetyInvariant (fast, Rust backend)
    ↓
-3. Translate to Quint (RingSPSC.qnt)
+3. Run quint verify --backend=tlc (exhaustive model checking)
    ↓
-4. Run quint test / quint verify
+4. Update MBT driver traces (quint_mbt.rs)
    ↓
-5. Update MBT driver traces (quint_mbt.rs)
+5. Update proptest properties (property_tests.rs)
    ↓
-6. Update proptest properties (property_tests.rs)
-   ↓
-7. Run all tests
+6. Run all tests
 ```
+
+> **Note**: The TLA+ spec (`RingSPSC.tla`) is retained as a reference but the
+> Quint spec is the primary artifact. Since Quint 0.31.0, `quint verify --backend=tlc`
+> enables exhaustive model checking directly from `.qnt` files.
 
 ### CI/CD Commands
 
@@ -297,11 +306,18 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
 cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 
-# TLA+ model checking (manual or CI with TLA+ Toolbox)
+# TLA+ model checking via Quint CLI (preferred, requires Quint ≥ 0.31.0 + JDK 17+)
+cd crates/ringmpsc/tla
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# TLA+ model checking via standalone TLC (alternative, any JDK)
 cd crates/ringmpsc/tla
 tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 
-# Quint verification (if installed)
+# Quint simulation with invariant checking (Rust backend, fast)
+quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Quint embedded tests
 quint test RingSPSC.qnt --main=RingSPSC
 ```
 
@@ -430,8 +446,8 @@ The formal verification workflow provides defense-in-depth:
 
 | What | How | Catches |
 |------|-----|---------|
-| **Spec correctness** | TLC model checking | Logical errors in protocol design |
-| **Spec completeness** | Quint simulation | Missing edge cases |
+| **Spec correctness** | TLC model checking (`quint verify --backend=tlc`) | Logical errors in protocol design |
+| **Spec completeness** | Quint simulation (Rust backend) | Missing edge cases |
 | **Implementation conformance** | MBT driver | Divergence from spec |
 | **Random input handling** | Proptest | Unexpected input combinations |
 | **Concurrency correctness** | Loom | Data races, ordering bugs |
