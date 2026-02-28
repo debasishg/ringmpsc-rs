@@ -249,10 +249,13 @@ The lock-free protocol is formally specified in TLA+ for model checking. This co
 ```bash
 cd crates/ringmpsc/tla
 
-# Preferred: Exhaustive model checking via Quint CLI (requires Quint ≥ 0.31.0, JDK 17+)
+# Exhaustive model checking via TLC (955 states, requires Quint ≥ 0.31.0, JDK 21+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 
-# Alternative: Standalone TLC (any JDK)
+# Symbolic model checking via Apalache (complementary, requires JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Standalone TLC for liveness checking (EventuallyConsumed temporal property)
 tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 ```
 

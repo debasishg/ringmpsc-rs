@@ -162,8 +162,11 @@ cd crates/ringmpsc/tla
 # Fast simulation with invariant checking (Rust backend, default)
 quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 
-# Exhaustive model checking via TLC (requires JDK 17+)
+# Exhaustive model checking via TLC (955 states, requires JDK 21+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Symbolic model checking via Apalache (complementary, requires JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 
 # Run embedded spec tests
 quint test RingSPSC.qnt --main=RingSPSC
@@ -174,10 +177,10 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 
 ### Next Steps
 
-- **Upgrade JDK to 17+** to unlock `quint verify --backend=tlc` for exhaustive model checking from `.qnt`
-- **Deprecate standalone `RingSPSC.tla`** once TLC-via-Quint is validated in CI (`.qnt` becomes single source of truth)
+- ~~**Upgrade JDK to 17+**~~ Done: JDK 21 LTS installed; both `quint verify` backends operational
+- **Retain `RingSPSC.tla` for liveness** — `EventuallyConsumed` temporal property (`~>`) has no Quint equivalent; `.tla` kept for liveness, `.qnt` is single source of truth for safety
 - **Add `q::debug` diagnostics** to the Quint spec for richer per-step tracing during MBT
-- **Add CI workflow** for `quint verify --backend=tlc` + MBT tests (`.github/workflows/quint.yml`)
+- **Add CI workflow** for `quint verify` (both backends) + MBT tests (`.github/workflows/quint.yml`)
 
 See [FORMAL_VERIFICATION_WORKFLOW.md](docs/FORMAL_VERIFICATION_WORKFLOW.md) and [tla/README.md](crates/ringmpsc/tla/README.md) for details.
 

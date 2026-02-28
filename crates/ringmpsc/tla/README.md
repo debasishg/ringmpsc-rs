@@ -155,12 +155,12 @@ quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 # Run the embedded tests (Rust backend, default since 0.31.0)
 quint test RingSPSC.qnt --main=RingSPSC
 
-# Exhaustive model checking via TLC backend (requires JDK 17+)
-# This verifies invariants over ALL reachable states — equivalent to running
-# TLC on the .tla file, but directly from the .qnt spec.
+# Exhaustive model checking via TLC backend (requires JDK 21+, see .java-version)
+# Explores ALL reachable states — 955 states for default parameters.
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 
-# Symbolic model checking via Apalache backend (requires JDK 17+)
+# Symbolic model checking via Apalache backend (requires JDK 21+)
+# Complementary to TLC — works well at larger parameter values.
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 
 # Explicitly use the TypeScript backend (slower, supports BigInts)
@@ -182,7 +182,18 @@ This is **equivalent to running TLC on `RingSPSC.tla`** but eliminates the need 
 
 The `.qnt` spec is now the **single source of truth** for simulation, testing, MBT trace generation, *and* exhaustive model checking.
 
-> **Note**: The `--backend=tlc` flag requires JDK 17+ (it uses Apalache for the Quint → TLA+ translation step, then runs TLC). If you only have JDK 11, use the standalone TLC approach documented above.
+> **Prerequisite**: JDK 21+ is required for both `quint verify` backends (see [`.java-version`](.java-version)). Install via `brew install openjdk@21`.
+
+#### Two-Backend Strategy
+
+| Backend | Command | Approach | Best for |
+|---------|---------|----------|----------|
+| **TLC** | `quint verify --backend=tlc` | Explicit enumeration of all reachable states | Small parameters (Capacity ≤ 8); exhaustive guarantees |
+| **Apalache** | `quint verify` (default) | Symbolic model checking via SMT solver | Larger parameters; finds deep bugs without full state enumeration |
+
+Both backends use the same `.qnt` spec as input. Use them together for complementary coverage.
+
+> **Note**: `RingSPSC.tla` is retained for the `EventuallyConsumed` liveness property (`~>` temporal operator), which has no Quint equivalent yet. For all safety verification, use the `.qnt` spec.
 
 ### Model-Based Testing
 
@@ -217,7 +228,7 @@ The driver:
 - [ ] Add `quint verify --backend=tlc` + MBT to CI (`.github/workflows/quint.yml`) when CI/CD is set up
 - [ ] Add MPSC channel specification (`RingMPSC.qnt`) modeling multiple producers
 - [ ] Add liveness checking with fairness constraints
-- [ ] Deprecate standalone `RingSPSC.tla` once `quint verify --backend=tlc` is validated in CI (`.qnt` becomes single source of truth)
+- [ ] Retain `RingSPSC.tla` for `EventuallyConsumed` liveness property (`~>` not yet in Quint); safety checking fully moved to `.qnt`
 - [x] ~~Translate `RingSPSC.tla` to `RingSPSC.qnt` for Quint tooling~~
 - [x] ~~Implement `quint-connect` driver for model-based testing~~
 - [x] ~~ITF trace parsing for automated test generation~~ (via `quint-connect` v0.1.1)

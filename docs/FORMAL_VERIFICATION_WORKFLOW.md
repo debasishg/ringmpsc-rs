@@ -376,7 +376,9 @@ debug_assert_head_le_tail!(head, tail);
 ┌─────────────────────────────────────────────────────────────────┐
 │  HIGHEST TRUST: TLA+ / Quint Spec                               │
 │  - Mathematical model, machine-checkable                        │
-│  - TLC explores ALL reachable states                            │
+│  - quint verify --backend=tlc: exhaustive (955 states verified) │
+│  - quint verify (Apalache): symbolic model checking via SMT     │
+│  - .tla retained for EventuallyConsumed liveness (~>)           │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
