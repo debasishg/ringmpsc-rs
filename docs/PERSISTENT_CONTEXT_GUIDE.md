@@ -199,7 +199,7 @@ Link back to parent specs:
 - [ ] Link specs to test files
 - [ ] Include verification matrix
 - [ ] Keep subproject specs co-located
-- [ ] **Establish context update triggers (see §10)**
+- [ ] **Establish context update triggers (see §10, 'When to Update Context')**
 - [ ] **Define pruning schedule for context maintenance**
 
 ---
@@ -212,7 +212,7 @@ When a project uses `unsafe` for performance (as ringmpsc-rs does for lock-free 
 
 Add a dedicated section to your specs:
 
-```markdown
+~~~markdown
 ## Safety Invariants (UNSAFE CODE)
 
 These invariants protect memory safety. Violating ANY of these causes undefined behavior.
@@ -243,7 +243,7 @@ UnsafeCell fields (cached_head, cached_tail) accessed by ONE thread only
 raw pointers derived from &self valid only while &self borrowed
 ```
 **Never**: Store raw pointers beyond the borrow scope.
-```
+~~~
 
 ### Code Annotation Pattern
 

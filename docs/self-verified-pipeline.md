@@ -1,6 +1,6 @@
 # Invariant Validation Pipeline: From Spec to Verification
 
-## A Visual Journey of a domain invariant Through the Agentic Code Generation Pipeline
+## A Visual Journey of a Domain Invariant Through the Agentic Code Generation Pipeline
 
 ---
 
@@ -125,8 +125,8 @@ The LLM translates the English spec into a machine-checkable Quint model:
 
 ```quint
 module RingSPSC {
-    // Note: Quint v0.30.0 uses `val` (not `const`), and `head`/`tail` are
-    // reserved built-in names (list ops), so we use `hd`/`tl` instead.
+    // Note: Quint uses `val` (not `const`), and `head`/`tail` are
+    // reserved built-in names (list ops) since v0.30.0, so we use `hd`/`tl` instead.
     val CAPACITY = 4
     val MAX_ITEMS = 8
 
@@ -734,7 +734,7 @@ cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 │                    │                                                     │
 │  quint verify      │  ❌ Invariant boundedCount is violated.             │
 │                    │  State N: tail=5, head=0, CAPACITY=4                │
-│                    │  Counterexample: Init→Write→Write→Write→Write→Writ e│
+│                    │  Counterexample: Init→Write→Write→Write→Write→Write│
 │                    │                                                     │
 ├────────────────────┼─────────────────────────────────────────────────────┤
 │                    │                                                     │

@@ -59,7 +59,7 @@ This is a classic example of why UB is dangerous — **it doesn't always crash**
 
 In debug builds, Rust/LLVM:
 
-1. **Initializes memory with poison patterns** (e.g., `0xAA`, `0xDEADBEEF`) to help detect use of uninitialized memory
+1. **May insert unexpected bit patterns in uninitialized memory** — LLVM can leave stack or heap slots in arbitrary states that differ from zero (the OS default), making it more likely that reading uninitialized memory crashes rather than silently succeeds
 2. **Doesn't optimize away reads** — every memory access actually happens
 3. **Inserts additional checks** and doesn't elide unused operations
 

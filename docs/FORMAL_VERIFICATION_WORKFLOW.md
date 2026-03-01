@@ -2,6 +2,10 @@
 
 This document explains the complete workflow for formal verification of the ringmpsc lock-free ring buffer, from TLA+ specifications through Quint model-based testing to actual Rust implementation verification.
 
+> **Naming note**: The formal specification files are named `RingSPSC` because the spec models the
+> single-producer single-consumer (SPSC) base protocol. The repository name `ringmpsc-rs` reflects
+> the multi-producer extension built on top. See `QUINT_0_31_UPGRADE.md` for planned MPSC spec work.
+
 ## Overview
 
 The verification strategy uses multiple complementary layers:
@@ -11,14 +15,14 @@ The verification strategy uses multiple complementary layers:
 | Formal Spec | TLA+ / Quint | Mathematical model of the protocol |
 | Modern Spec | Quint (≥ 0.31.0) | Same semantics, Rust backend, TLC integration |
 | Model Checking | `quint verify --backend=tlc` / Apalache | Exhaustive state space exploration |
-| Model-Based Testing | quint_mbt.rs | Execute spec traces on real code |
+| Model-Based Testing | quint_mbt.rs + `quint-connect` | Execute auto-generated spec traces on real code |
 | Property Testing | proptest | Random input verification |
 | Concurrency Testing | Loom | Exhaustive thread interleaving |
 | Memory Safety | Miri | Undefined behavior detection |
 
 ## 1. TLA+ Specification (Source of Truth)
 
-**File**: [tla/RingSPSC.tla](tla/RingSPSC.tla)
+**File**: [tla/RingSPSC.tla](../crates/ringmpsc/tla/RingSPSC.tla)
 
 TLA+ is a formal specification language for concurrent and distributed systems. Our spec models the SPSC ring buffer protocol.
 
@@ -37,7 +41,7 @@ VARIABLES
 
 ```tla
 \* INV-SEQ-01: Bounded Count
-BoundedCount == 
+BoundedCount ==
     /\ tail >= head
     /\ (tail - head) <= Capacity
 
@@ -67,7 +71,7 @@ java -jar "/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar" \
 
 ## 2. Quint Translation
 
-**File**: [tla/RingSPSC.qnt](tla/RingSPSC.qnt)
+**File**: [tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt)
 
 Quint is a modern specification language with TLA+ semantics but TypeScript-like syntax. It provides better tooling and IDE support.
 
@@ -79,17 +83,21 @@ Quint is a modern specification language with TLA+ semantics but TypeScript-like
 | `x' = expr` | `x' = expr` | Same primed notation |
 | `\/ A \/ B` | `any { A, B }` | Nondeterministic choice |
 | `/\ A /\ B` | `all { A, B }` | Conjunction |
-| `Nat` | `int` | Quint uses bounded ints |
+| `Nat` | `int` | Quint uses bounded ints; note `int` includes negatives — add `x >= 0` guards if non-negativity is required |
+
+> **Variable renaming**: Quint (≥ 0.30.0) reserves `head` and `tail` as built-in list operation
+> names. The spec therefore uses `hd` (for `head`) and `tl` (for `tail`). All Quint examples
+> in this document use the renamed variables.
 
 ### Quint Invariants
 
 ```quint
 /// INV-SEQ-01: Bounded Count
-val boundedCount: bool = 
-    tail >= head and (tail - head) <= CAPACITY
+val boundedCount: bool =
+    tl >= hd and (tl - hd) <= CAPACITY
 
 /// INV-ORD-03: Happens-Before
-val happensBefore: bool = head <= tail
+val happensBefore: bool = hd <= tl
 ```
 
 ### Quint Actions
@@ -97,12 +105,12 @@ val happensBefore: bool = head <= tail
 ```quint
 /// ProducerWrite: Commit item to ring
 action producerWrite = all {
-    (tail - head) < CAPACITY,
+    (tl - hd) < CAPACITY,
     items_produced < MAX_ITEMS,
-    tail' = tail + 1,
+    tl' = tl + 1,
     items_produced' = items_produced + 1,
     // Unchanged
-    head' = head,
+    hd' = hd,
     cached_head' = cached_head,
     cached_tail' = cached_tail,
 }
@@ -136,89 +144,102 @@ quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 
 ## 3. Model-Based Testing (MBT)
 
-**File**: [tests/quint_mbt.rs](tests/quint_mbt.rs)
+**File**: [tests/quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs)
 
-Model-based testing bridges the gap between specification and implementation. We execute action traces from the spec against the real `Ring<T>`.
+Model-based testing bridges the gap between specification and implementation. The current approach uses
+[`quint-connect`](https://crates.io/crates/quint-connect) to **automatically generate** simulation
+traces from the Quint spec and replay them against the real `Ring<T>`, with full state comparison at
+every step.
+
+> **Historical note**: An earlier approach used hand-crafted action sequences and manually
+> re-implemented invariant checks in Rust. That approach has been superseded. See
+> `model-based-testing-in-agentic-development.md` for the full evolution and rationale.
 
 ### Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  RingSPSC.qnt   │────▶│  quint_mbt.rs   │────▶│    Ring<T>      │
-│  (Quint spec)   │     │  (trace driver) │     │  (Rust impl)    │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                       │                       │
-        ▼                       ▼                       ▼
-   Generate action        Execute each           Verify invariants
-   sequences              action on Ring         after each step
+RingSPSC.qnt ──▶ quint run --mbt ──▶ ITF traces ──▶ quint-connect Driver ──▶ Ring<T>
+ (spec)           (simulation)        (states +      (action dispatch +       (real impl)
+                                      actions)       state comparison)
 ```
 
-### Action Mapping
+### State Struct (deserialized from ITF traces)
 
-The driver maps Quint actions to Rust method calls:
+The `RingSPSCState` struct is automatically deserialized from Quint's ITF trace output.
+After each step, `quint-connect` compares the driver's state with the expected trace state:
 
 ```rust
-enum QuintAction {
-    ProducerReserveFast,
-    ProducerRefreshCache,
-    ProducerWrite,
-    ConsumerReadFast,
-    ConsumerRefreshCache,
-    ConsumerAdvance,
+#[derive(Eq, PartialEq, Deserialize, Debug)]
+struct RingSPSCState {
+    #[serde(rename = "hd")]
+    head: i64,          // Quint variable: hd
+    #[serde(rename = "tl")]
+    tail: i64,          // Quint variable: tl
+    cached_head: i64,
+    cached_tail: i64,
+    items_produced: i64,
 }
 
-fn execute_action(sut: &mut RingSUT, action: QuintAction) {
-    match action {
-        ProducerWrite => {
-            if let Some(mut r) = sut.ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(sut.produced);
-                r.commit();
-                sut.produced += 1;
-            }
-        }
-        ConsumerAdvance => {
-            sut.ring.consume_batch(|_| {});
-            sut.consumed += 1;
-        }
-        // ...
+impl State<RingSPSCDriver> for RingSPSCState {
+    fn from_driver(driver: &RingSPSCDriver) -> Result<Self> {
+        Ok(RingSPSCState {
+            head: driver.consumed as i64,
+            tail: driver.produced as i64,
+            cached_head: driver.cached_head as i64,
+            cached_tail: driver.cached_tail as i64,
+            items_produced: driver.items_produced as i64,
+        })
     }
 }
 ```
 
-### Invariant Verification
-
-After each action, we verify the spec invariants hold:
+### Driver (connects Ring\<T\> to Quint actions)
 
 ```rust
-fn check_safety_invariant(&self, capacity: u64) -> bool {
-    // INV-SEQ-01: Bounded Count
-    let bounded = (self.produced - self.consumed) <= capacity;
-    
-    // INV-ORD-03: Happens-Before
-    let happens_before = self.consumed <= self.produced;
-    
-    bounded && happens_before
+impl Driver for RingSPSCDriver {
+    type State = RingSPSCState;
+
+    fn step(&mut self, step: &Step) -> Result {
+        switch!(step {
+            init => { *self = Self::default(); },
+
+            producerWrite => {
+                // Quint: tl' = tl + 1, items_produced' = items_produced + 1
+                let mut reserved = self.ring.reserve(1)
+                    .expect("Quint guard ensures capacity available");
+                reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
+                reserved.commit();
+                self.produced += 1;
+                self.items_produced += 1;
+            },
+
+            consumerAdvance => {
+                // Quint: hd' = hd + 1
+                let consumed = self.ring.consume_up_to(1, |_| {});
+                assert_eq!(consumed, 1, "Quint guard ensures items exist");
+                self.consumed += 1;
+            },
+
+            // ... other actions ...
+        })
+    }
 }
 ```
 
-### Test Traces
+### Automated Trace Generation
 
-We craft traces that exercise specific scenarios:
+Traces are **automatically generated** by the Quint simulator via `#[quint_run]`. Multiple seeds
+provide diverse coverage:
 
 ```rust
+// Default random simulation (seed controllable via QUINT_SEED env var)
 #[test]
-fn test_cache_refresh_scenario() {
-    let trace = vec![
-        // Fill ring to capacity
-        ProducerWrite, ProducerWrite, ProducerWrite, ProducerWrite,
-        // Consumer drains
-        ConsumerAdvance, ConsumerAdvance,
-        // Producer's cache is stale, must refresh
-        ProducerRefreshCache,
-        // Now producer can write again
-        ProducerWrite, ProducerWrite,
-    ];
-    execute_trace(&trace, 2).expect("Should pass");
+fn simulation() { /* uses runtime_seed() for reproducibility */ }
+
+// Broader exploration with fixed seeds
+#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "1729", max_samples = 20)]
+fn simulation_deep() -> impl Driver {
+    RingSPSCDriver::default()
 }
 ```
 
@@ -226,11 +247,17 @@ fn test_cache_refresh_scenario() {
 
 ```bash
 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
+
+# Verbose trace output
+QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release -- --nocapture
+
+# Reproduce a specific failing trace
+QUINT_SEED=42 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 ```
 
 ## 4. Property-Based Testing (Proptest)
 
-**File**: [tests/property_tests.rs](tests/property_tests.rs)
+**File**: [tests/property_tests.rs](../crates/ringmpsc/tests/property_tests.rs)
 
 Property tests complement MBT by using random inputs to verify invariants hold under arbitrary conditions.
 
@@ -242,14 +269,14 @@ proptest! {
     #[test]
     fn prop_bounded_count_ring(writes in 0usize..100) {
         let ring = Ring::<u64>::new(Config::default());
-        
+
         for i in 0..writes {
             if let Some(mut r) = ring.reserve(1) {
                 r.as_mut_slice()[0] = MaybeUninit::new(i as u64);
                 r.commit();
             }
         }
-        
+
         // Invariant must hold
         prop_assert!(ring.len() <= capacity);
     }
@@ -286,7 +313,8 @@ cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
    ↓
 3. Run quint verify --backend=tlc (exhaustive model checking)
    ↓
-4. Update MBT driver traces (quint_mbt.rs)
+4. Update Driver::step dispatch table if new Quint actions were added (quint_mbt.rs)
+   (Traces are auto-generated by quint-connect — no manual trace authoring needed)
    ↓
 5. Update proptest properties (property_tests.rs)
    ↓
@@ -295,7 +323,8 @@ cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
 
 > **Note**: The TLA+ spec (`RingSPSC.tla`) is retained as a reference but the
 > Quint spec is the primary artifact. Since Quint 0.31.0, `quint verify --backend=tlc`
-> enables exhaustive model checking directly from `.qnt` files.
+> enables exhaustive model checking directly from `.qnt` files. The `.tla` file is
+> additionally used for liveness properties (`~>` leads-to) not yet supported by Quint.
 
 ### CI/CD Commands
 
@@ -339,25 +368,18 @@ State N: <ProducerWrite>
   head = 0, tail = 5  ← VIOLATION: 5 > Capacity(4)
 ```
 
-### At Implementation Level (MBT/Proptest)
+### At Implementation Level (quint-connect MBT)
 
-If the Rust implementation diverges from the spec:
+If the Rust implementation diverges from the spec, `quint-connect` catches it immediately
+with a state diff:
 
-```rust
-// In quint_mbt.rs
-fn execute_trace(actions: &[QuintAction], capacity_bits: u8) -> Result<(), String> {
-    for (i, action) in actions.iter().enumerate() {
-        execute_action(&mut sut, *action);
-        
-        if !sut.check_safety_invariant(capacity) {
-            return Err(format!(
-                "Safety invariant violated after action {}: {:?}",
-                i, action
-            ));
-        }
-    }
-    Ok(())
-}
+```
+Expected state from Quint spec:
+  RingSPSCState { head: 0, tail: 4, cached_head: 0, ... }
+
+Actual state from Ring<T> driver:
+  RingSPSCState { head: 0, tail: 5, cached_head: 0, ... }
+                                    ^^^^^^ divergence detected after step: producerWrite
 ```
 
 ### At Runtime (debug_assert!)
@@ -367,7 +389,7 @@ The implementation includes `debug_assert!` macros that check invariants in debu
 ```rust
 // In ring.rs
 debug_assert_bounded_count!(count, capacity);
-debug_assert_head_le_tail!(head, tail);
+debug_assert_head_not_past_tail!(head, tail);
 ```
 
 ## 7. Trust Hierarchy
@@ -419,15 +441,11 @@ debug_assert_head_le_tail!(head, tail);
    val safetyInvariant: bool = ... and newInvariant
    ```
 
-3. **Add to MBT driver**:
-   ```rust
-   fn check_new_invariant(&self) -> bool { ... }
-   fn check_safety_invariant(&self) -> bool {
-       ... && self.check_new_invariant()
-   }
-   ```
+3. **quint-connect picks it up automatically**: No Rust invariant re-implementation
+   needed — the spec IS the oracle. `State::from_driver()` comparison will catch any
+   violation for the new invariant across all auto-generated traces.
 
-4. **Add proptest**:
+4. **Add proptest** for targeted random coverage:
    ```rust
    proptest! {
        #[test]
@@ -439,8 +457,9 @@ debug_assert_head_le_tail!(head, tail);
 
 1. **TLA+**: Add action predicate to `Next`
 2. **Quint**: Add action to `step`
-3. **MBT**: Add enum variant and execution logic
-4. **Tests**: Add traces exercising the new action
+3. **MBT**: Add a new arm to the `switch!` in `Driver::step()` — traces that include
+   the new action will be generated automatically by `quint run --mbt`
+4. **Tests**: Run the MBT suite; the new action will appear in auto-generated traces
 
 ## Summary
 
@@ -450,7 +469,7 @@ The formal verification workflow provides defense-in-depth:
 |------|-----|---------|
 | **Spec correctness** | TLC model checking (`quint verify --backend=tlc`) | Logical errors in protocol design |
 | **Spec completeness** | Quint simulation (Rust backend) | Missing edge cases |
-| **Implementation conformance** | MBT driver | Divergence from spec |
+| **Implementation conformance** | `quint-connect` MBT | Divergence from spec (full state comparison) |
 | **Random input handling** | Proptest | Unexpected input combinations |
 | **Concurrency correctness** | Loom | Data races, ordering bugs |
 | **Memory safety** | Miri | Undefined behavior |

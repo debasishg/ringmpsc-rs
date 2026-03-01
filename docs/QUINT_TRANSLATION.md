@@ -15,11 +15,16 @@ This document explains how to manually translate TLA+ specifications to Quint. T
 | `\/ A \/ B` | `any { A, B }` | Disjunction/choice |
 | `~P` | `not(P)` | Negation |
 | `P => Q` | `P implies Q` | Implication |
-| `\in` | `contains` or pattern | Set membership |
-| `Nat` | `int` | Natural numbers |
+| `\in` | `S.contains(x)` (membership) or `\E x \in S` → `S.exists(x, ...)` (quantification) | Set membership and existential quantification map differently |
+| `Nat` | `int` | Quint's `int` includes negatives; add an explicit `x >= 0` guard if the spec relies on non-negativity |
 | `IF c THEN a ELSE b` | `if (c) a else b` | Conditional |
 
 ## Concrete Examples from RingSPSC
+
+> **Reserved name caveat**: Quint (≥ 0.30.0) reserves `head` and `tail` as built-in list
+> operation names. When translating `RingSPSC.tla`, these variables must be renamed. The
+> actual spec uses `hd` (for `head`) and `tl` (for `tail`). The examples below reflect the
+> real spec names.
 
 ### 1. Variables
 
@@ -29,9 +34,9 @@ VARIABLES head, tail, cached_head, cached_tail, items_produced
 ```
 
 ```quint
-// Quint
-var head: int
-var tail: int
+// Quint — note: hd/tl instead of head/tail (reserved names in Quint ≥ 0.30.0)
+var hd: int
+var tl: int
 var cached_head: int
 var cached_tail: int
 var items_produced: int
@@ -63,10 +68,10 @@ HappensBefore == head <= tail
 
 ```quint
 // Quint
-val boundedCount: bool = 
-    tail >= head and (tail - head) <= CAPACITY
+val boundedCount: bool =
+    tl >= hd and (tl - hd) <= CAPACITY
 
-val happensBefore: bool = head <= tail
+val happensBefore: bool = hd <= tl
 ```
 
 ### 4. Actions
@@ -84,12 +89,12 @@ ProducerWrite ==
 ```quint
 // Quint
 action producerWrite = all {
-    (tail - head) < CAPACITY,
+    (tl - hd) < CAPACITY,
     items_produced < MAX_ITEMS,
-    tail' = tail + 1,
+    tl' = tl + 1,
     items_produced' = items_produced + 1,
     // UNCHANGED becomes explicit assignments
-    head' = head,
+    hd' = hd,
     cached_head' = cached_head,
     cached_tail' = cached_tail,
 }
@@ -110,8 +115,8 @@ Init ==
 ```quint
 // Quint
 action init = all {
-    head' = 0,
-    tail' = 0,
+    hd' = 0,
+    tl' = 0,
     cached_head' = 0,
     cached_tail' = 0,
     items_produced' = 0,
@@ -231,16 +236,16 @@ module RingSPSC {
     const CAPACITY: int = 4
     const MAX_ITEMS: int = 8
 
-    // State variables
-    var head: int
-    var tail: int
+    // State variables — hd/tl instead of head/tail (reserved names in Quint ≥ 0.30.0)
+    var hd: int
+    var tl: int
     var cached_head: int
     var cached_tail: int
     var items_produced: int
 
     // Invariants
     val boundedCount: bool = ...
-    
+
     // Pure helpers
     pure def producerHasSpace(t: int, ch: int): bool = ...
 

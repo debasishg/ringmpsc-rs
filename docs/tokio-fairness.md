@@ -59,7 +59,7 @@ impl RateLimiter for YieldingRateLimiter {
 
 ### 4. `Notify` Semantics and Fairness
 
-The backpressure-notify-pattern document in the workspace covers this well. Key scheduling implication: `notify_waiters()` wakes **all** waiting producers simultaneously, letting them compete fairly. This is a deliberate fairness choice — vs. `notify_one()` which could starve producers.
+Key scheduling implication: `notify_waiters()` wakes **all** waiting producers simultaneously, letting them compete fairly. This is a deliberate fairness choice — vs. `notify_one()` which could starve producers.
 
 ## Tension Points in the Architecture
 
@@ -83,7 +83,7 @@ The `max_consume_per_poll` config (set to 1000 in the demo) bounds how long the 
 
 2. **Export semaphore fairness**: The `export_semaphore` in `AsyncSpanCollector` uses `Semaphore::new(max_concurrent)` — Tokio's semaphore is FIFO-fair, which is correct for the concurrent export pattern.
 
-3. **The `Interval` tick behavior choice is performance-correct**: `MissedTickBehavior::Skip` in `IntervalRateLimiter` avoids the burst problem. The alternative (`Burst`) would violate the rate-limiting invariant INV-RES-05.
+3. **The `Interval` tick behavior choice is performance-correct**: `MissedTickBehavior::Skip` in `IntervalRateLimiter` avoids the burst problem. The alternative (`Burst`) would queue up all missed ticks and fire them consecutively, violating the per-interval throughput ceiling the rate limiter is designed to enforce.
 
 4. **Spin-loop backoff in async context**: When the ring is full and the producer awaits `Notify`, it cooperates perfectly with Tokio. But if the raw `reserve()` retry loop is ever exposed in an async context without yielding, it would **starve the Tokio runtime**. The current architecture correctly separates these concerns.
 
