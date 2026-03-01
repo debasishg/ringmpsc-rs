@@ -1,5 +1,7 @@
 # TLA+ → Quint Translation Guide
 
+> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0
+
 This document explains how to manually translate TLA+ specifications to Quint. There's **no automated translator** - it's a manual process, but the mapping is straightforward since both languages express the same TLA+ logic.
 
 ## Quick Reference
@@ -7,7 +9,7 @@ This document explains how to manually translate TLA+ specifications to Quint. T
 | TLA+ | Quint | Example |
 |------|-------|---------|
 | `VARIABLE x` | `var x: int` | State variable (Quint requires types) |
-| `CONSTANT C` | `const C: int = 4` | Constants |
+| `CONSTANT C` | `val C = 4` | Module-level constants (Quint uses `val`, see `RingSPSC.qnt`) |
 | `x' = expr` | `x' = expr` | Next-state value (same syntax) |
 | `UNCHANGED x` | `x' = x` | Explicit assignment |
 | `UNCHANGED <<x,y>>` | `x' = x, y' = y` | Multiple unchanged |
@@ -15,7 +17,9 @@ This document explains how to manually translate TLA+ specifications to Quint. T
 | `\/ A \/ B` | `any { A, B }` | Disjunction/choice |
 | `~P` | `not(P)` | Negation |
 | `P => Q` | `P implies Q` | Implication |
-| `\in` | `S.contains(x)` (membership) or `\E x \in S` → `S.exists(x, ...)` (quantification) | Set membership and existential quantification map differently |
+| `\in` | `S.contains(x)` (membership) or `\E x \in S` → `S.exists(x => ...)` (quantification) | Set membership and existential quantification map differently |
+| `\E x \in S : P(x)` | `S.exists(x => P(x))` | Existential quantification |
+| `\A x \in S : P(x)` | `S.forall(x => P(x))` | Universal quantification |
 | `Nat` | `int` | Quint's `int` includes negatives; add an explicit `x >= 0` guard if the spec relies on non-negativity |
 | `IF c THEN a ELSE b` | `if (c) a else b` | Conditional |
 
@@ -50,9 +54,9 @@ CONSTANTS Capacity, MaxItems
 ```
 
 ```quint
-// Quint
-const CAPACITY: int = 4
-const MAX_ITEMS: int = 8
+// Quint — uses `val` for module-level constants (not `const`)
+val CAPACITY = 4
+val MAX_ITEMS = 8
 ```
 
 ### 3. Invariants
@@ -178,7 +182,7 @@ pure def producerHasSpace(t: int, ch: int): bool =
 1. Create module structure
    MODULE Foo → module Foo { }
 
-2. Translate CONSTANTS → const declarations
+2. Translate CONSTANTS → val declarations (Quint uses `val`, not `const`)
 
 3. Translate VARIABLES → var declarations (add types!)
 
@@ -232,9 +236,9 @@ Spec == Init /\ [][Next]_vars
 
 ```quint
 module RingSPSC {
-    // Constants
-    const CAPACITY: int = 4
-    const MAX_ITEMS: int = 8
+    // Constants — Quint uses `val` for module-level constants
+    val CAPACITY = 4
+    val MAX_ITEMS = 8
 
     // State variables — hd/tl instead of head/tail (reserved names in Quint ≥ 0.30.0)
     var hd: int
@@ -325,8 +329,11 @@ quint test RingSPSC.qnt --main=RingSPSC
 # Simulate random traces
 quint run RingSPSC.qnt --main=RingSPSC --max-steps=50
 
-# Formal verification via Apalache
-quint verify RingSPSC.qnt --main=RingSPSC --invariant=boundedCount
+# Exhaustive model checking via TLC backend (requires JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=boundedCount --backend=tlc
+
+# Symbolic model checking via Apalache backend (default, requires JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=boundedCount --backend=apalache
 ```
 
 ## Common Pitfalls
@@ -341,8 +348,8 @@ TLA+ `UNCHANGED` is easy to miss in translation:
 ```
 
 ```quint
-// Quint - must list each one
-head' = head,
+// Quint - must list each one (using hd/tl since head/tail are reserved)
+hd' = hd,
 cached_head' = cached_head,
 cached_tail' = cached_tail,
 ```

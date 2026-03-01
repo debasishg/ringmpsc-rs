@@ -1,5 +1,7 @@
 # Formal Verification Workflow: TLA+ → Quint → Rust
 
+> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
+
 This document explains the complete workflow for formal verification of the ringmpsc lock-free ring buffer, from TLA+ specifications through Quint model-based testing to actual Rust implementation verification.
 
 > **Naming note**: The formal specification files are named `RingSPSC` because the spec models the
@@ -63,8 +65,12 @@ HappensBefore == head <= tail
 
 ```bash
 cd crates/ringmpsc/tla
-java -jar "/Applications/TLA+ Toolbox.app/Contents/Eclipse/tla2tools.jar" \
-    RingSPSC.tla -config RingSPSC.cfg -workers auto
+
+# Via Quint CLI (preferred — no .tla/.cfg files needed, requires Quint ≥ 0.31.0 + JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Via standalone TLC (alternative — works with any JDK, uses .tla + .cfg)
+tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 ```
 
 **Output**: Explores all reachable states, reports any invariant violations with counterexample traces.
@@ -83,6 +89,7 @@ Quint is a modern specification language with TLA+ semantics but TypeScript-like
 | `x' = expr` | `x' = expr` | Same primed notation |
 | `\/ A \/ B` | `any { A, B }` | Nondeterministic choice |
 | `/\ A /\ B` | `all { A, B }` | Conjunction |
+| `CONSTANT C` | `val C = 4` | Quint uses `val` for module-level constants (see `RingSPSC.qnt`) |
 | `Nat` | `int` | Quint uses bounded ints; note `int` includes negatives — add `x >= 0` guards if non-negativity is required |
 
 > **Variable renaming**: Quint (≥ 0.30.0) reserves `head` and `tail` as built-in list operation
@@ -134,12 +141,12 @@ quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
 # Simulation with invariant checking (Rust backend)
 quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
 
-# Exhaustive model checking via TLC backend (requires JDK 17+)
+# Exhaustive model checking via TLC backend (requires JDK 21+)
 # Equivalent to running TLC on the .tla file, but directly from .qnt
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 
-# Symbolic model checking via Apalache backend (requires JDK 17+)
-quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+# Symbolic model checking via Apalache backend (default, requires JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=apalache
 ```
 
 ## 3. Model-Based Testing (MBT)
@@ -335,7 +342,7 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
 cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 
-# TLA+ model checking via Quint CLI (preferred, requires Quint ≥ 0.31.0 + JDK 17+)
+# TLA+ model checking via Quint CLI (preferred, requires Quint ≥ 0.31.0 + JDK 21+)
 cd crates/ringmpsc/tla
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 
@@ -345,6 +352,9 @@ tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 
 # Quint simulation with invariant checking (Rust backend, fast)
 quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Symbolic model checking via Apalache backend (default, requires JDK 21+)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=apalache
 
 # Quint embedded tests
 quint test RingSPSC.qnt --main=RingSPSC

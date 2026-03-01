@@ -1,5 +1,7 @@
 # Invariant Validation Pipeline: From Spec to Verification
 
+> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
+
 ## A Visual Journey of a Domain Invariant Through the Agentic Code Generation Pipeline
 
 ---
@@ -245,6 +247,8 @@ The LLM generates `debug_assert!` macros that embed the invariant directly into 
 │                                        $head <= $tail,          │
 │                                       "INV-SEQ-01 violated"     │
 │                                       )}                        │
+│  Note: The code uses INV-SEQ-01 for this macro because          │
+│  BoundedCount's definition includes the `tail >= head` clause.  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -586,10 +590,9 @@ the Quint simulator. The `#[quint_run]` macro:
 // Automatically generates and replays simulation traces from the Quint spec.
 // Multiple tests with different seeds give diverse coverage.
 
-#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC")]
-fn simulation() -> impl Driver {
-    RingSPSCDriver::default()
-}
+// The primary `simulation` test uses a manual `quint_connect::runner::run_test()`
+// call (rather than the `#[quint_run]` macro) to support runtime seed control
+// via the QUINT_SEED environment variable. See quint_mbt.rs for details.
 
 #[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "1729", max_samples = 20)]
 fn simulation_deep() -> impl Driver {

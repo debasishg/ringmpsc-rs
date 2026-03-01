@@ -1,5 +1,7 @@
 # UB Fix in `make_reservation`
 
+> **Last updated**: 2026-01-26 | **Fixed in**: commit `b195f89`
+
 This document explains the undefined behavior (UB) bug found in `make_reservation` in `src/ring.rs`, why it manifested differently in debug vs release builds, and how it was fixed.
 
 ## The Bug
@@ -194,7 +196,7 @@ producer.send(&[1, 2, 3, 4, 5]);  // Handles MaybeUninit internally
 1. **UB is silent in release, loud in debug** — always test in both modes
 2. **Don't lie to the type system** — if memory is uninitialized, keep it as `MaybeUninit<T>`
 3. **The optimizer assumes correctness** — UB allows the optimizer to remove "impossible" code paths
-4. **`cargo miri`** — use Miri to detect UB that might not manifest as crashes
+4. **`cargo miri`** — use Miri to detect UB that might not manifest as crashes (see [`miri_tests.rs`](../crates/ringmpsc/tests/miri_tests.rs) for this project's Miri test suite)
 
 ## References
 

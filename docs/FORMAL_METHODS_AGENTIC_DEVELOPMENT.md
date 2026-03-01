@@ -1,5 +1,7 @@
 # Formal Methods for Agentic Development
 
+> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
+
 This document explores how formal methods can be integrated into AI-assisted (agentic) software development to ensure correctness, maintain invariants, and bridge the gap between specifications and implementations.
 
 ## The Hierarchical Context: Rules → Spec → Code
@@ -96,14 +98,14 @@ This is **machine-checkable**. TLC will explore all reachable states and report 
 │  ┌─────────────────┐         ┌─────────────────┐                         │
 │  │  RingSPSC.tla   │────────▶│  RingSPSC.qnt   │                         │
 │  │                 │ manual  │                 │                         │
-│  │  • Variables    │ transl. │  • var head     │                         │
+│  │  • Variables    │ transl. │  • var hd       │                         │
 │  │  • Invariants   │         │  • boundedCount │                         │
 │  │  • Actions      │         │  • step action  │                         │
 │  └────────┬────────┘         └────────┬────────┘                         │
 │           │                           │                                  │
 │           ▼                           ▼                                  │
 │      TLC Model                   quint verify                            │
-│      Checker                     (Apalache)                              │
+│      Checker                  (Apalache or TLC)                          │
 │                                                                          │
 │  Exhaustively verifies spec is internally consistent                     │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -311,16 +313,17 @@ Quint provides a modern toolchain for formal specification:
 | `quint typecheck` | Verify spec syntax/types | `quint typecheck RingSPSC.qnt` |
 | `quint test` | Run embedded tests | `quint test RingSPSC.qnt --main=RingSPSC` |
 | `quint run` | Random simulation | `quint run --max-steps=100` |
-| `quint verify` | Symbolic model checking | `quint verify --invariant=boundedCount` |
+| `quint verify` | Model checking (Apalache default, TLC via `--backend=tlc`) | `quint verify --invariant=boundedCount` |
 
-### Current Integration
+## Current Integration
 
 ```bash
 # Spec-level verification (Quint land)
 quint test RingSPSC.qnt --main=RingSPSC      # Spec tests
-quint verify --invariant=safetyInvariant     # Exhaustive check
+quint verify --invariant=safetyInvariant --backend=tlc   # Exhaustive check (TLC)
+quint verify --invariant=safetyInvariant --backend=apalache  # Symbolic check (Apalache)
 
-# Implementation verification (Rust land)  
+# Implementation verification (Rust land)
 cargo test --test quint_mbt --features quint-mbt   # MBT traces
 cargo test --test property_tests                    # Random inputs
 ```
@@ -331,31 +334,11 @@ The MBT driver doesn't duplicate implementation logic—it:
 
 1. **Calls** real `Ring<T>` methods
 2. **Tracks** state changes
-3. **Verifies** spec invariants hold
+3. Uses **automatic state comparison** (via `quint-connect`) to catch any divergence
 
-```rust
-// quint_mbt.rs
-fn execute_trace(actions: &[QuintAction]) -> Result<(), String> {
-    let mut sut = RingSUT::new(capacity_bits);
-    
-    for action in actions {
-        // Execute real Ring<T> code
-        match action {
-            ProducerWrite => sut.ring.reserve(1)?.commit(),
-            ConsumerAdvance => sut.ring.consume_batch(|_| {}),
-            // ...
-        }
-        
-        // Verify spec invariant on real state
-        if !sut.check_safety_invariant() {
-            return Err("Invariant violated!");
-        }
-    }
-    Ok(())
-}
-```
+See `model-based-testing-in-agentic-development.md` for the full architecture and code.
 
-## Future Developments
+## Development Timeline
 
 ### ✅ Implemented: Automated Trace Generation via `quint-connect`
 

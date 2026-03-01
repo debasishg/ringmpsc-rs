@@ -1,8 +1,14 @@
 # Persistent Context for Agentic Coding
 
+> **Last updated**: 2026-03-01
+
 A guide to structuring project knowledge so AI coding agents can be immediately productive.
 
 ## File Hierarchy
+
+> **Note**: The structure below is a recommended template. The actual `ringmpsc-rs` project
+> uses `.github/copilot-instructions.md` as its agent entry point, `crates/*/spec.md` for
+> per-crate invariants, and `docs/` for design documents. Adapt the template to your project.
 
 ```
 project-root/
@@ -484,3 +490,4 @@ At 10 billion msg/sec, wrap-around takes ~58 years.
 | `INV-BP-*` | Backpressure | Flow control guarantees |
 | `INV-MET-*` | Metrics | Counter conservation |
 | `INV-ASYNC-*` | Async lifecycle | Task spawning, shutdown |
+| `SAFETY-*` | Unsafe code safety | Memory safety invariants for `unsafe` blocks (see §8) |

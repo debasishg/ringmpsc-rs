@@ -1,5 +1,7 @@
 # Quint 0.31.0 Upgrade: Impact on ringmpsc-rs Verification
 
+> **Last updated**: 2026-03-01 | **Quint**: 0.31.0 | **JDK**: 21 LTS
+
 This document describes the changes made to the ringmpsc-rs formal verification infrastructure following the [Quint 0.31.0 release](https://github.com/informalsystems/quint/releases/tag/v0.31.0) (2026-02-27), the technical benefits they bring, and the resulting architecture.
 
 ## Background
@@ -19,7 +21,7 @@ This created friction: the `.tla` file was the only path to exhaustive model che
 
 `quint run` and `quint test` switched from the TypeScript evaluator to a native Rust evaluator compiled to a platform binary. Key characteristics:
 
-- **~10× faster simulation**. The Rust evaluator uses MiMalloc as its allocator and streams JSON I/O to reduce memory allocations. For `RingSPSC.qnt` with default parameters, simulation throughput increased from ~400 traces/sec to ~3,900 traces/sec.
+- **~10× faster simulation** (measured on this project: `RingSPSC.qnt` with `CAPACITY=4`, `MAX_ITEMS=8`). The Rust evaluator uses MiMalloc as its allocator and streams JSON I/O to reduce memory allocations. Simulation throughput increased from ~400 traces/sec to ~3,900 traces/sec.
 - **`--mbt` flag supported natively**. The `quint run --mbt` invocation that `quint-connect` uses to generate ITF traces now runs through the Rust backend, directly accelerating the model-based testing pipeline.
 - **`--invariant` flag in `quint run`**. Invariants can be checked across thousands of random simulation traces without requiring a full model checker. This provides a fast feedback loop during development.
 - **Better error diagnostics**. The Rust backend prints the seed and full trace on runtime errors and panics, and supports per-step `q::debug` diagnostics.
@@ -28,7 +30,7 @@ The TypeScript backend remains available via `--backend=ts` for cases requiring 
 
 ### TLC as a `quint verify` Backend
 
-TLC (the TLA+ model checker) is now available via `quint verify --backend=tlc`. This:
+TLC (the TLA+ model checker) is now available via `quint verify --backend=tlc`. The **default** backend (bare `quint verify`) remains Apalache (symbolic model checking via SMT). This:
 
 - Translates the `.qnt` spec to TLA+ using Apalache internally
 - Runs TLC for exhaustive state enumeration

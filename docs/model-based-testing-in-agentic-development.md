@@ -1,6 +1,10 @@
 # Evolution of Model-Based Testing with `quint-connect`
 
-[Quint](https://quint-lang.org/) is a modern specification language designed as an accessible alternative to TLA+, combining TLA+'s rigorous state-machine semantics with a TypeScript-inspired syntax that feels natural to working programmers. Its toolchain — `quint typecheck`, `quint run` (simulation), `quint test`, and `quint verify` (symbolic model checking via Apalache) — enables formal verification workflows without leaving a familiar development environment. The [`quint-connect`](https://crates.io/crates/quint-connect) crate bridges this ecosystem into Rust: it invokes the Quint CLI to generate simulation traces in ITF (Informal Trace Format), then replays those traces against a user-defined Rust `Driver`, automatically comparing the implementation's state with the spec's expected state at every step. This tight integration means Rust projects can adopt model-based testing with minimal boilerplate — a `#[quint_run]` attribute, a `Driver` impl, and a `State` struct are all that's needed to connect a formal specification to a real implementation.
+> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
+
+[Quint](https://quint-lang.org/) is a modern specification language designed as an accessible alternative to TLA+, combining TLA+'s rigorous state-machine semantics with a TypeScript-inspired syntax that feels natural to working programmers. Its toolchain — `quint typecheck`, `quint run` (simulation), `quint test`, and `quint verify` (model checking via Apalache or TLC) — enables formal verification workflows without leaving a familiar development environment.
+
+The [`quint-connect`](https://crates.io/crates/quint-connect) crate bridges this ecosystem into Rust: it invokes the Quint CLI to generate simulation traces in ITF (Informal Trace Format), then replays those traces against a user-defined Rust `Driver`, automatically comparing the implementation's state with the spec's expected state at every step. This tight integration means Rust projects can adopt model-based testing with minimal boilerplate — a `#[quint_run]` attribute, a `Driver` impl, and a `State` struct are all that's needed to connect a formal specification to a real implementation.
 
 This document traces the evolution of Model-Based Testing (MBT) in the `ringmpsc` crate — from hand-crafted trace sequences with manually re-implemented invariants, to fully automated trace generation and state comparison powered by `quint-connect`.
 
@@ -17,7 +21,7 @@ This document traces the evolution of Model-Based Testing (MBT) in the `ringmpsc
 | **Trace generation** | Invokes `quint run --mbt` to simulate the spec and produce ITF (Informal Trace Format) traces |
 | **Action dispatch** | The `switch!` macro routes each trace step to the corresponding Rust method call |
 | **Automatic state comparison** | After every step, deserializes the expected state from the ITF trace and compares it with the driver's actual state via `State::from_driver()` |
-| **Proc-macro integration** | `#[quint_run]` and `#[quint_test]` attributes generate test functions that orchestrate the full simulate → replay → compare cycle |
+| **Proc-macro integration** | `#[quint_run]` generates test functions that orchestrate the full simulate → replay → compare cycle (`#[quint_test]` is also available but not used in this project because `quint test` doesn't support `--mbt`) |
 
 The architecture is straightforward:
 
@@ -450,6 +454,8 @@ cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 ---
 
 ## 6. `quint-connect` MBT vs Deterministic Simulation Testing
+
+> For a detailed comparison, see also `FORMAL_METHODS_AGENTIC_DEVELOPMENT.md` §Development Timeline.
 
 `quint-connect` MBT and Deterministic Simulation Testing (DST, as in FoundationDB / TigerBeetle / Antithesis) share a surface similarity — both replay deterministic sequences — but differ fundamentally:
 

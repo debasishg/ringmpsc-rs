@@ -1,5 +1,7 @@
 # Tokio's Performance–Fairness Balance in Scheduling
 
+> **Last updated**: 2026-03-01 | **Tokio**: 1.x
+
 How Tokio balances performance and fairness in scheduling — contextualized to the RingMPSC-RS workspace, where this tradeoff is directly relevant.
 
 ## Why This Matters for RingMPSC-RS
@@ -16,16 +18,16 @@ This workspace has **three distinct concurrency layers**, each affected differen
 
 ### 1. Cooperative Scheduling via Budget
 
-Tokio uses a **per-task operation budget** (typically 128 ops) to prevent a single task from monopolizing the runtime. When budget is exhausted, `poll` returns `Pending` even if more work is available.
+Tokio uses a **per-task operation budget** (configurable; typically 128 ops in Tokio 1.x) to prevent a single task from monopolizing the runtime. When budget is exhausted, `poll` returns `Pending` even if more work is available.
 
-This directly impacts the `RingReceiver` stream implementation, which uses a **hybrid polling model** (timer + notify):
+This directly impacts the `RingReceiver` stream implementation (in [`crates/ringmpsc-stream/src/receiver.rs`](../crates/ringmpsc-stream/src/receiver.rs)), which uses a **hybrid polling model** (timer + notify):
 
 ```rust
 // Pattern in ringmpsc-stream: batch draining
 // consume_all_up_to(batch_hint) naturally bounds work per poll
 ```
 
-The `StreamConfig::batch_hint` field is effectively an **application-level budget** — `low_latency()` uses 16, `high_throughput()` uses 256. This mirrors Tokio's internal approach.
+The `StreamConfig::batch_hint` field (defined in [`crates/ringmpsc-stream/src/config.rs`](../crates/ringmpsc-stream/src/config.rs)) is effectively an **application-level budget** — `low_latency()` uses 16, `high_throughput()` uses 256. This mirrors Tokio's internal approach.
 
 ### 2. Work-Stealing Scheduler
 
@@ -38,7 +40,7 @@ The `AsyncSpanCollector` benefits from this — the consumer task and concurrent
 
 ### 3. `yield_now()` as Explicit Cooperation
 
-The codebase already uses this pattern correctly in `span_generator.rs`:
+The codebase already uses this pattern correctly in [`span_generator.rs`](../crates/span_collector/bin/span_generator.rs):
 
 ```rust
 // Periodically yield to ensure fair scheduling (every 100 spans)
@@ -47,7 +49,7 @@ if sequence.is_multiple_of(100) {
 }
 ```
 
-This is the **manual equivalent** of Tokio's budget exhaustion — surrendering the thread to let other tasks run. The `YieldingRateLimiter` formalizes this:
+This is the **manual equivalent** of Tokio's budget exhaustion — surrendering the thread to let other tasks run. The `YieldingRateLimiter` (in [`crates/span_collector/src/rate_limiter.rs`](../crates/span_collector/src/rate_limiter.rs)) formalizes this:
 
 ```rust
 impl RateLimiter for YieldingRateLimiter {
@@ -75,7 +77,7 @@ The `IntervalRateLimiter` with `MissedTickBehavior::Skip` is a performance-over-
 
 ### Batch Size as the Fairness Knob
 
-The `max_consume_per_poll` config (set to 1000 in the demo) bounds how long the consumer task holds the CPU before yielding back to Tokio. Too high = starves export tasks. Too low = underutilizes throughput. This is exactly the budget tradeoff Tokio makes internally.
+The `max_consume_per_poll` config (set to 1000 in the [`span_collector` demo](../crates/span_collector/bin/demo.rs)) bounds how long the consumer task holds the CPU before yielding back to Tokio. Too high = starves export tasks. Too low = underutilizes throughput. This is exactly the budget tradeoff Tokio makes internally.
 
 ## Recommendations
 
