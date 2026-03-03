@@ -17,6 +17,8 @@ loom = ["dep:loom"]
 stack-ring = []
 # Enable Quint model-based testing (cargo test --features quint-mbt)
 quint-mbt = ["dep:quint-connect", "dep:serde", "dep:anyhow"]
+# Enable nightly std::alloc::Allocator bridge (requires nightly Rust)
+allocator-api = []
 
 [dependencies]
 crossbeam-utils.workspace = true
@@ -40,6 +42,10 @@ harness = false
 name = "stack_vs_heap"
 harness = false
 required-features = ["stack-ring"]
+
+[[bench]]
+name = "allocator"
+harness = false
 
 [[bin]]
 name = "bench_final"

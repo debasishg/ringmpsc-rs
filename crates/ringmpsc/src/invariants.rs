@@ -154,6 +154,48 @@ macro_rules! debug_assert_fifo_count {
 }
 
 // =============================================================================
+// INV-ALLOC-01: Alignment Guarantee
+// =============================================================================
+
+/// Assert that a buffer pointer is aligned to the expected boundary.
+///
+/// **Invariant**: `AlignedAllocator<ALIGN>` produces pointers where
+/// `ptr as usize % ALIGN == 0`.
+///
+/// Used in: `AlignedAllocator::allocate()` after computing the aligned pointer
+#[allow(unused_macros)]
+macro_rules! debug_assert_aligned {
+    ($ptr:expr, $align:expr) => {
+        debug_assert!(
+            ($ptr as usize) % $align == 0,
+            "INV-ALLOC-01 violated: pointer {:p} not aligned to {} bytes",
+            $ptr,
+            $align
+        )
+    };
+}
+
+// =============================================================================
+// INV-ALLOC-02: Zero Overhead Default
+// =============================================================================
+
+/// Compile-time assertion that `HeapAllocator` is a zero-sized type.
+///
+/// **Invariant**: `Ring<T>` and `Ring<T, HeapAllocator>` have identical
+/// layout. The allocator adds zero bytes.
+///
+/// This is a compile-time check, not a runtime assertion.
+#[allow(unused_macros)]
+macro_rules! static_assert_zst {
+    ($ty:ty) => {
+        const _: () = assert!(
+            std::mem::size_of::<$ty>() == 0,
+            "INV-ALLOC-02 violated: HeapAllocator is not a ZST"
+        );
+    };
+}
+
+// =============================================================================
 // Re-exports for crate-internal use
 // =============================================================================
 
@@ -165,3 +207,7 @@ pub(crate) use debug_assert_initialized_read;
 pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;
 pub(crate) use debug_assert_valid_ring_ptr;
+#[allow(unused_imports)]
+pub(crate) use debug_assert_aligned;
+#[allow(unused_imports)]
+pub(crate) use static_assert_zst;

@@ -21,6 +21,29 @@ Buffer size is determined at construction and never changes. No resizing, no rea
 
 **Implementation**: `Box<[MaybeUninit<T>]>` (heap) or `[MaybeUninit<T>; N]` (stack)
 
+### INV-MEM-04: Allocator Safety Contract
+Custom allocators (via `BufferAllocator`) must satisfy:
+1. `allocate(capacity)` returns a buffer of exactly `capacity` elements.
+2. The memory is valid for reads and writes for the buffer's lifetime.
+3. The buffer's `Deref`/`DerefMut` targets are contiguous slices.
+4. The buffer's `Drop` correctly deallocates the memory.
+
+Violating these invariants causes undefined behavior in the ring buffer's unsafe hot path (depends on INV-INIT-01).
+
+**Enforced by**: `unsafe trait BufferAllocator` — the `unsafe` keyword places the burden of proof on the implementor.
+**Location**: [src/allocator.rs](../src/allocator.rs)
+
+### INV-ALLOC-01: Alignment Guarantee
+`AlignedAllocator<ALIGN>` must produce buffer pointers aligned to `ALIGN` bytes. `ALIGN` must be a power of two and ≥ `align_of::<T>()`.
+
+**Implementation**: Over-allocates by `ALIGN - 1` bytes, rounds up the interior pointer.
+**Verified by**: `debug_assert!` in `AlignedAllocator::allocate()`, runtime test `test_aligned_allocator_buffer_is_actually_aligned`.
+
+### INV-ALLOC-02: Zero Overhead Default
+`HeapAllocator` is a zero-sized type. `Ring<T>` and `Ring<T, HeapAllocator>` have identical size and machine code. No indirection or vtable.
+
+**Verified by**: `static_assert!(size_of::<HeapAllocator>() == 0)` (compile-time)
+
 ## 2. Sequence Number Invariants
 
 ### INV-SEQ-01: Bounded Count
@@ -213,6 +236,9 @@ Messages from a single producer are received in send order. No global ordering a
 | INV-CH-01 | Config validation | `config.rs` assertions |
 | INV-CH-02 | Structural (single consumer API) | N/A (structural) |
 | INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |
+| INV-MEM-04 | `unsafe trait` contract | N/A (proof obligation on implementor) |
+| INV-ALLOC-01 | [tests/allocator_tests.rs](tests/allocator_tests.rs) | `allocator.rs` → `AlignedAllocator::allocate()` |
+| INV-ALLOC-02 | Compile-time `size_of` | N/A (ZST structural) |
 
 ---
 

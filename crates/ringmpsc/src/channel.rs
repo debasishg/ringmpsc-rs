@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 use crate::invariants::debug_assert_fifo_count;
+use crate::allocator::{BufferAllocator, HeapAllocator};
 use crate::{Config, Reservation, Ring};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(debug_assertions)]
@@ -24,12 +25,17 @@ pub enum ChannelError {
 /// Multi-Producer Single-Consumer channel using ring decomposition.
 ///
 /// Each producer gets a dedicated SPSC ring, eliminating producer-producer contention.
-pub struct Channel<T> {
-    inner: Arc<ChannelInner<T>>,
+///
+/// The allocator parameter `A` controls how each ring's backing buffer is allocated.
+/// The default [`HeapAllocator`] is a zero-sized type that produces identical
+/// code to the non-generic version. The channel's own `Vec` and `Arc` always use
+/// the global allocator — only the ring buffers (the hot data path) use `A`.
+pub struct Channel<T, A: BufferAllocator = HeapAllocator> {
+    inner: Arc<ChannelInner<T, A>>,
 }
 
-struct ChannelInner<T> {
-    rings: Vec<Ring<T>>,
+struct ChannelInner<T, A: BufferAllocator = HeapAllocator> {
+    rings: Vec<Ring<T, A>>,
     producer_count: AtomicUsize,
     closed: AtomicBool,
     config: Config,
@@ -38,12 +44,25 @@ struct ChannelInner<T> {
     consumed_counts: Vec<AtomicU64>,
 }
 
-impl<T> Channel<T> {
+impl<T> Channel<T, HeapAllocator> {
     /// Creates a new channel with the given configuration.
+    ///
+    /// Uses the default heap allocator. This is API-compatible with the
+    /// pre-allocator version.
     pub fn new(config: Config) -> Self {
+        Self::new_in(config, HeapAllocator)
+    }
+}
+
+impl<T, A: BufferAllocator + Clone> Channel<T, A> {
+    /// Creates a new channel with the given configuration and allocator.
+    ///
+    /// The allocator is cloned for each ring buffer (one per `max_producers`).
+    /// For the default [`HeapAllocator`] (a ZST), cloning is free.
+    pub fn new_in(config: Config, alloc: A) -> Self {
         let mut rings = Vec::with_capacity(config.max_producers);
         for _ in 0..config.max_producers {
-            rings.push(Ring::new(config));
+            rings.push(Ring::new_in(config, alloc.clone()));
         }
 
         #[cfg(debug_assertions)]
@@ -62,9 +81,11 @@ impl<T> Channel<T> {
             }),
         }
     }
+}
 
+impl<T, A: BufferAllocator> Channel<T, A> {
     /// Register a new producer. Returns an error if too many producers or closed.
-    pub fn register(&self) -> Result<Producer<T>, ChannelError> {
+    pub fn register(&self) -> Result<Producer<T, A>, ChannelError> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(ChannelError::Closed);
         }
@@ -299,7 +320,7 @@ impl<T> Channel<T> {
     /// consumer has a dedicated ring to read from (matching the Zig implementation).
     ///
     /// Returns None if the ring_id is >= max_producers.
-    pub fn get_ring(&self, ring_id: usize) -> Option<&Ring<T>> {
+    pub fn get_ring(&self, ring_id: usize) -> Option<&Ring<T, A>> {
         if ring_id < self.inner.config.max_producers {
             Some(&self.inner.rings[ring_id])
         } else {
@@ -308,7 +329,7 @@ impl<T> Channel<T> {
     }
 }
 
-impl<T> Clone for Channel<T> {
+impl<T, A: BufferAllocator> Clone for Channel<T, A> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -316,19 +337,20 @@ impl<T> Clone for Channel<T> {
     }
 }
 
-// Safety: Channel is Send + Sync as long as T is Send
-unsafe impl<T: Send> Send for Channel<T> {}
-unsafe impl<T: Send> Sync for Channel<T> {}
+// Safety: Channel is Send + Sync as long as T is Send.
+// BufferAllocator requires Send + Sync.
+unsafe impl<T: Send, A: BufferAllocator> Send for Channel<T, A> {}
+unsafe impl<T: Send, A: BufferAllocator> Sync for Channel<T, A> {}
 
 /// Producer handle for sending to the channel.
 ///
 /// Each producer has a dedicated ring buffer, eliminating contention.
-pub struct Producer<T> {
-    channel: Arc<ChannelInner<T>>,
+pub struct Producer<T, A: BufferAllocator = HeapAllocator> {
+    channel: Arc<ChannelInner<T, A>>,
     id: usize,
 }
 
-impl<T> Producer<T> {
+impl<T, A: BufferAllocator> Producer<T, A> {
     /// Get the producer's ID.
     #[inline]
     pub fn id(&self) -> usize {
@@ -341,13 +363,13 @@ impl<T> Producer<T> {
     /// if the reservation wraps around the ring buffer. Always check the slice length.
     /// See [`Ring::reserve`] for details and examples.
     #[inline]
-    pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T>> {
+    pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         self.channel.rings[self.id].reserve(n)
     }
 
     /// Reserve with adaptive backoff. Spins, yields, then gives up.
     #[inline]
-    pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T>> {
+    pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         self.channel.rings[self.id].reserve_with_backoff(n)
     }
 
@@ -394,9 +416,10 @@ impl<T> Producer<T> {
 // Cloning would allow multiple threads to write to the same Ring,
 // breaking the single-producer invariant that enables lock-free operation.
 
-// Safety: Producer is Send + Sync as long as T is Send
-unsafe impl<T: Send> Send for Producer<T> {}
-unsafe impl<T: Send> Sync for Producer<T> {}
+// Safety: Producer is Send + Sync as long as T is Send.
+// BufferAllocator requires Send + Sync.
+unsafe impl<T: Send, A: BufferAllocator> Send for Producer<T, A> {}
+unsafe impl<T: Send, A: BufferAllocator> Sync for Producer<T, A> {}
 
 #[cfg(test)]
 mod tests {

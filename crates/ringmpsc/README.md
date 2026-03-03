@@ -165,7 +165,7 @@ While maintaining the same algorithm and design principles, this Rust implementa
 ### Future Optimizations
 
 - [ ] **NUMA-aware ring allocation** - Allocate ring buffers on NUMA nodes local to their producer/consumer threads for multi-socket systems
-- [ ] **Custom allocator integration** - Allow users to provide custom allocators for specialized use cases (arena allocators, huge pages, etc.)
+- [x] **Custom allocator integration** - `BufferAllocator` trait allows custom allocators (arena, aligned, huge pages, etc.) without modifying core ring logic. Includes `AlignedAllocator<ALIGN>` and nightly `StdAllocator` bridge. See examples below.
 - [x] **Stack-allocated ring variant** - `StackRing<T, N>` and `StackChannel<T, N, P>` for latency-critical expert use. See [STACK_RING_IMPL.md](STACK_RING_IMPL.md) for design details.
 
 ## Feature Flags
@@ -178,6 +178,68 @@ ringmpsc-rs = { version = "0.1", features = ["stack-ring"] }
 | Feature | Description |
 |---------|-------------|
 | `stack-ring` | Enables `StackRing<T, N>` and `StackChannel<T, N, P>` — stack-allocated variants with **2-4x higher throughput** |
+| `allocator-api` | **(nightly only)** Enables `StdAllocator<A>` adapter to bridge any `std::alloc::Allocator` to `BufferAllocator` |
+
+### Custom Allocator Example
+
+The `BufferAllocator` trait controls how ring buffers allocate their backing memory. The default `HeapAllocator` is a zero-sized type that adds zero overhead.
+
+```rust
+use ringmpsc_rs::{AlignedAllocator, Channel, Config, Ring};
+
+// 128-byte cache-line aligned (eliminates false sharing)
+let ring = Ring::<u64, AlignedAllocator<128>>::new_in(
+    Config::default(),
+    AlignedAllocator::<128>,
+);
+ring.push(42);
+let mut val = 0u64;
+ring.consume_batch(|item| val = *item);
+assert_eq!(val, 42);
+
+// Works with Channel too — each ring uses the aligned allocator
+let ch = Channel::<u64, AlignedAllocator<128>>::new_in(
+    Config::default(),
+    AlignedAllocator::<128>,
+);
+let producer = ch.register().unwrap();
+producer.push(99);
+ch.consume_all(|item| println!("Got: {}", item));
+```
+
+#### Implementing a Custom Allocator
+
+```rust
+use ringmpsc_rs::BufferAllocator;
+use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
+
+struct MyBuffer<T> { inner: Vec<MaybeUninit<T>> }
+
+impl<T> Deref for MyBuffer<T> {
+    type Target = [MaybeUninit<T>];
+    fn deref(&self) -> &[MaybeUninit<T>] { &self.inner }
+}
+impl<T> DerefMut for MyBuffer<T> {
+    fn deref_mut(&mut self) -> &mut [MaybeUninit<T>] { &mut self.inner }
+}
+
+#[derive(Clone, Copy)]
+struct MyAllocator;
+
+// Safety: MyBuffer has exactly `capacity` elements, is contiguous, and
+// Vec handles deallocation.
+unsafe impl BufferAllocator for MyAllocator {
+    type Buffer<T> = MyBuffer<T>;
+    fn allocate<T>(&self, capacity: usize) -> MyBuffer<T> {
+        let mut inner = Vec::with_capacity(capacity);
+        inner.resize_with(capacity, MaybeUninit::uninit);
+        MyBuffer { inner }
+    }
+}
+```
+
+See `examples/custom_allocator.rs` for a full working example.
 
 ### Stack-Allocated Example
 

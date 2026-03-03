@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "allocator-api", feature(allocator_api))]
+
 //! RingMPSC - Lock-Free Multi-Producer Single-Consumer Channel
 //!
 //! A ring-decomposed MPSC implementation where each producer has a dedicated
@@ -38,6 +40,7 @@
 //! });
 //! ```
 
+pub mod allocator;
 mod backoff;
 mod channel;
 mod config;
@@ -52,6 +55,9 @@ mod stack_ring;
 #[cfg(feature = "stack-ring")]
 mod stack_channel;
 
+pub use allocator::{AlignedAllocator, BufferAllocator, HeapAllocator};
+#[cfg(feature = "allocator-api")]
+pub use allocator::StdAllocator;
 pub use backoff::Backoff;
 pub use channel::{Channel, ChannelError, Producer};
 pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};

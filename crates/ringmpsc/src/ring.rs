@@ -1,10 +1,10 @@
+use crate::allocator::{BufferAllocator, HeapAllocator};
 use crate::invariants::{
     debug_assert_bounded_count, debug_assert_head_not_past_tail, debug_assert_initialized_read,
     debug_assert_monotonic, debug_assert_no_wrap,
 };
 use crate::{Backoff, Config, Metrics, Reservation};
 use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -60,8 +60,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// - 128-byte alignment to prevent false sharing
 /// - Cached sequence numbers to minimize cross-core traffic
 /// - Batch operations to amortize atomic overhead
+///
+/// The allocator parameter `A` controls how the backing buffer is allocated.
+/// The default [`HeapAllocator`] is a zero-sized type that produces identical
+/// code to the non-generic version.
 #[repr(C)]
-pub struct Ring<T> {
+pub struct Ring<T, A: BufferAllocator = HeapAllocator> {
     // === PRODUCER HOT === (128-byte aligned)
     /// Tail index (written by producer, read by consumer)
     tail: CacheAligned<AtomicU64>,
@@ -86,35 +90,38 @@ pub struct Ring<T> {
     config: Config,
 
     // === DATA BUFFER === (64-byte aligned)
-    /// The actual ring buffer storage.
+    /// The actual ring buffer storage, allocated via [`BufferAllocator`].
     ///
-    /// Uses `Box<[T]>` instead of `Vec<T>` because:
-    /// - Buffer size is fixed at construction (never grows/shrinks)
-    /// - Saves 8 bytes per Ring (no capacity field needed)
-    /// - Clearer semantic intent: this is a fixed-size allocation
-    buffer: UnsafeCell<Box<[MaybeUninit<T>]>>,
+    /// For the default `HeapAllocator`, this is `Box<[MaybeUninit<T>]>` —
+    /// identical layout and behavior to the pre-allocator version.
+    buffer: UnsafeCell<A::Buffer<T>>,
 }
 
-// Safety: Ring is Send + Sync as long as T is Send
-// The atomic operations ensure proper synchronization
-unsafe impl<T: Send> Send for Ring<T> {}
-unsafe impl<T: Send> Sync for Ring<T> {}
+// Safety: Ring is Send + Sync as long as T is Send.
+// The atomic operations ensure proper synchronization.
+// BufferAllocator requires Send + Sync, and Buffer<T> requires Send.
+unsafe impl<T: Send, A: BufferAllocator> Send for Ring<T, A> {}
+unsafe impl<T: Send, A: BufferAllocator> Sync for Ring<T, A> {}
 
-impl<T> Ring<T> {
+impl<T> Ring<T, HeapAllocator> {
     /// Creates a new ring buffer with the given configuration.
+    ///
+    /// Uses the default heap allocator (`Box<[MaybeUninit<T>]>`).
+    /// This is API-compatible with the pre-allocator version.
     pub fn new(config: Config) -> Self {
+        Self::new_in(config, HeapAllocator)
+    }
+}
+
+impl<T, A: BufferAllocator> Ring<T, A> {
+    /// Creates a new ring buffer with the given configuration and allocator.
+    ///
+    /// The allocator is used to allocate the backing buffer at construction
+    /// time. It is not stored in the ring — the buffer type handles its own
+    /// deallocation on drop.
+    pub fn new_in(config: Config, alloc: A) -> Self {
         let capacity = config.capacity();
-        
-        // Create fixed-size buffer as boxed slice.
-        // Stable Rust: allocate via Vec then convert to Box<[T]>
-        let mut buffer = Vec::with_capacity(capacity);
-        buffer.resize_with(capacity, MaybeUninit::uninit);
-        let buffer = buffer.into_boxed_slice();
-        
-        // Nightly alternative (more efficient - single allocation, no intermediate Vec):
-        // let buffer = Box::new_uninit_slice(capacity);
-        // This avoids the Vec's capacity field and potential reallocation tracking.
-        // Tracking issue: https://github.com/rust-lang/rust/issues/63291
+        let buffer = alloc.allocate::<T>(capacity);
 
         Self {
             tail: CacheAligned::new(AtomicU64::new(0)),
@@ -206,7 +213,7 @@ impl<T> Ring<T> {
     /// - Fast path: `ProducerReserveFast` (check cached_head)
     /// - Slow path: `ProducerRefreshCache` (Acquire load on head)
     #[allow(clippy::cast_possible_truncation)]
-    pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T>> {
+    pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         if n == 0 || n > self.capacity() {
             return None;
         }
@@ -238,7 +245,7 @@ impl<T> Ring<T> {
     }
 
     /// Reserve with adaptive backoff. Spins, yields, then gives up.
-    pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T>> {
+    pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         let mut backoff = Backoff::new();
         while !backoff.is_completed() {
             if let Some(r) = self.reserve(n) {
@@ -253,7 +260,7 @@ impl<T> Ring<T> {
     }
 
     /// Internal: Create a reservation for writing.
-    fn make_reservation(&self, tail: u64, n: usize) -> Reservation<'_, T> {
+    fn make_reservation(&self, tail: u64, n: usize) -> Reservation<'_, T, A> {
         let mask = self.mask();
         let idx = (tail as usize) & mask;
         let contiguous = n.min(self.capacity() - idx);
@@ -729,7 +736,7 @@ impl<T> Ring<T> {
     }
 }
 
-impl<T> Drop for Ring<T> {
+impl<T, A: BufferAllocator> Drop for Ring<T, A> {
     fn drop(&mut self) {
         // Drop all initialized items in the ring
         let head = self.head.load(Ordering::Relaxed);
