@@ -185,6 +185,8 @@ real `Ring<T>`, with **automatic state comparison** at every step. See
 
 ```rust
 // quint-connect Driver: the spec IS the oracle — no manual invariant re-implementation needed.
+// NOTE: Simplified — the actual driver tracks additional allocator state (buffer_capacity,
+// initialized_slots, buffer_aligned, allocator_zst). See quint_mbt.rs for the full implementation.
 impl Driver for RingSPSCDriver {
     type State = RingSPSCState;   // deserialized from ITF trace + constructed from real state
 
@@ -216,6 +218,7 @@ proptest! {
     #[test]
     fn prop_bounded_count_ring(writes in 0usize..100) {
         let ring = Ring::<u64>::new(Config::default());
+        let capacity = ring.capacity();
         
         for i in 0..writes {
             if let Some(mut r) = ring.reserve(1) {
@@ -403,29 +406,7 @@ head by 2 instead of 1 while still satisfying `head ≤ tail`).
 
 #### quint-connect MBT vs Deterministic Simulation Testing
 
-quint-connect MBT and Deterministic Simulation Testing (DST, as in FoundationDB/TigerBeetle/Antithesis)
-share a surface similarity — both replay deterministic sequences — but differ fundamentally:
-
-| Dimension | DST | quint-connect MBT |
-|---|---|---|
-| **What executes** | The real system under a controlled scheduler that captures all nondeterminism | The Quint simulator generates traces; the Rust driver replays actions sequentially |
-| **Oracle** | Assertions/invariants embedded in the code (you write them) | The formal spec itself (state comparison is automatic) |
-| **Concurrency** | Primary strength — finds races, deadlocks, ordering bugs | Does not test concurrency (that's loom's job) |
-| **Bug class: logic errors** | Can miss if no assertion covers it | Catches any state divergence from spec |
-| **Bug class: concurrency** | Primary strength | Not tested |
-| **Abstraction level** | System-level (real threads, real I/O) | Protocol-level (abstract state transitions) |
-
-In ringmpsc-rs, the verification stack uses **both paradigms** complementarily:
-
-```
-quint-connect MBT     → "Does the logic match the spec?"        (protocol correctness)
-Property tests        → "Do random inputs preserve invariants?"  (input coverage)
-Loom tests            → "Do all thread interleavings work?"      (≈ mini-DST for atomics)
-Miri tests            → "Is there undefined behavior?"           (memory safety)
-```
-
-A system can pass MBT perfectly (correct logic) and still fail under DST (race condition in the
-implementation of that logic). The two approaches answer orthogonal questions.
+See [model-based-testing-in-agentic-development.md §6](model-based-testing-in-agentic-development.md) for a detailed comparison of `quint-connect` MBT and Deterministic Simulation Testing (DST, as in FoundationDB/TigerBeetle/Antithesis). The key takeaway: MBT tests protocol correctness ("does the logic match the spec?") while DST tests concurrency correctness ("do all thread interleavings work?"). In ringmpsc-rs, the verification stack uses both paradigms complementarily — `quint-connect` MBT for spec conformance and Loom for exhaustive thread interleaving.
 
 ### Medium-Term: Agent-Driven Spec Evolution
 

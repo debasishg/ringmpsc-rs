@@ -2,7 +2,7 @@
 
 > **Last updated**: 2026-03-01
 
-A guide to structuring project knowledge so AI coding agents can be immediately productive.
+A general-purpose guide to structuring project knowledge so AI coding agents can be immediately productive. While the examples are drawn from the `ringmpsc-rs` workspace, the patterns and templates apply to any project with formal invariants and `unsafe` code.
 
 ## File Hierarchy
 
@@ -450,9 +450,9 @@ the slice borrows from Ring's buffer with `'a`.
 
 ### Pruning Schedule
 
-- **Weekly**: Remove completed TODOs
+- **Per-PR or periodically**: Remove completed TODOs
 - **Per-feature**: Compress design notes when feature merges
-- **Quarterly**: Full context review, validate all links
+- **Quarterly** (or when staleness signals fire): Full context review, validate all links
 
 ### Compression Examples
 
@@ -475,6 +475,12 @@ At 10 billion msg/sec, wrap-around takes ~58 years.
 ---
 
 ## Quick Reference: Invariant Categories
+
+The table below is an extensible naming convention. Not all prefixes are used in every crate —
+add rows as your project's domain requires. In `ringmpsc-rs`, the core crate uses `INV-MEM-*`,
+`INV-SEQ-*`, `INV-INIT-*`, `INV-SW-*`, `INV-ORD-*`, `INV-RES-*`, and `INV-ALLOC-*`; the
+`span_collector` crate adds `INV-DOM-*`, `INV-BP-*`, `INV-MET-*`, and `INV-ASYNC-*`; the
+`ringmpsc-stream` crate adds `INV-OWN-*`.
 
 | Prefix | Domain | Example |
 |--------|--------|---------|

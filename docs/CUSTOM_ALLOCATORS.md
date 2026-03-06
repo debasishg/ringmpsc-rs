@@ -1,5 +1,7 @@
 # Custom Allocators in RingMPSC
 
+> **Last updated**: 2026-03-06
+
 This document describes the custom allocator subsystem in `ringmpsc`, which allows the ring buffer's backing memory to be provided by any allocation strategy — heap, cache-line-aligned, arena, huge-page, NUMA-local, or anything else — without modifying the lock-free core.
 
 ## Table of Contents
@@ -370,7 +372,7 @@ The allocator invariants are formally verified in the Quint specification [crate
 | **INV-MEM-04** | `allocatorCapacityCorrect` | `buffer_capacity == CAPACITY` — allocator provides exactly the expected number of slots |
 | **INV-ALLOC-01** | `alignmentGuarantee` | `buffer_aligned == true` — buffer pointer alignment (structural in Rust, modeled as flag) |
 | **INV-ALLOC-02** | `zeroOverheadDefault` | `allocator_zst == true` — HeapAllocator is ZST (structural in Rust, modeled as flag) |
-| **INV-INIT-01** | `initializedRange` | `initialized == { (hd+k) % CAPACITY : k ∈ 0..count-1 }` — buffer slot initialization tracked via set |
+| **INV-INIT-01** | `initializedRange` | `initialized == { (hd+k) % CAPACITY : k ∈ 0..count-1 }` — buffer slot initialization tracked via set. *Note: this invariant bridges the allocator and ring protocol domains — it verifies that the set of initialized buffer slots (an allocator-level concern) matches the range implied by the head/tail sequence numbers (a protocol-level concern).* |
 
 ### State Variables
 

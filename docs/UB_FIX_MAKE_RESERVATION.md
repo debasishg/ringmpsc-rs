@@ -1,6 +1,6 @@
 # UB Fix in `make_reservation`
 
-> **Last updated**: 2026-01-26 | **Fixed in**: commit `b195f89`
+> **Last updated**: 2026-01-26 | **Fixed in**: commit [`b195f89`](https://github.com/debasishg/ringmpsc-rs/commit/b195f89)
 
 This document explains the undefined behavior (UB) bug found in `make_reservation` in `src/ring.rs`, why it manifested differently in debug vs release builds, and how it was fixed.
 

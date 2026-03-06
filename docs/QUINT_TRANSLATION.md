@@ -175,6 +175,52 @@ pure def producerHasSpace(t: int, ch: int): bool =
 | **Module** | `MODULE Name` | `module Name { }` |
 | **Sequences** | `Seq(T)` | `List[T]` |
 | **Records** | `[field |-> value]` | `{ field: value }` |
+| **Sets** | `{1, 2, 3}` | `Set(1, 2, 3)` |
+
+### Set Operations
+
+Sets are common in TLA+ specs and translate straightforwardly to Quint. The `RingSPSC.qnt` spec
+uses `Set[int]` to track initialized buffer slots (`initialized` state variable).
+
+```tla
+\* TLA+ — Set operations
+{1, 2, 3}                          \* Set literal
+x \in S                            \* Membership
+S \union T                         \* Union
+S \intersect T                     \* Intersection
+S \ T                              \* Difference
+{x \in S : P(x)}                   \* Filter (set comprehension)
+{f(x) : x \in S}                   \* Map
+SUBSET S                           \* Power set
+Cardinality(S)                     \* Size (from FiniteSets)
+```
+
+```quint
+// Quint — Set operations
+Set(1, 2, 3)                              // Set literal
+S.contains(x)                             // Membership
+S.union(T)                                // Union
+S.intersect(T)                            // Intersection
+S.exclude(T)                              // Difference
+S.filter(x => P(x))                       // Filter
+S.map(x => f(x))                          // Map
+S.powerset()                              // Power set
+S.size()                                  // Size
+```
+
+**Example from `RingSPSC.qnt`** — the `initialized` set uses set comprehension to compute expected slot indices:
+
+```quint
+// State variable
+var initialized: Set[int]
+
+// Set comprehension — expected initialized range
+val expected = 0.to(count - 1).map(k => (hd + k) % CAPACITY).toSet()
+
+// Invariant comparing actual set to expected
+val initializedRange: bool =
+    initialized == expected
+```
 
 ## Translation Workflow
 

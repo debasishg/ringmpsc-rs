@@ -16,6 +16,7 @@ This folder contains design documents, guides, and technical references for the 
 | [FORMAL_METHODS_AGENTIC_DEVELOPMENT.md](FORMAL_METHODS_AGENTIC_DEVELOPMENT.md) | Architects, AI agent integrators | Conceptual rationale for integrating formal methods into AI-assisted development |
 | [model-based-testing-in-agentic-development.md](model-based-testing-in-agentic-development.md) | MBT practitioners | Evolution from hand-crafted MBT to `quint-connect` automated trace generation |
 | [tokio-fairness.md](tokio-fairness.md) | Async layer maintainers | Tokio scheduling fairness trade-offs contextualized to this workspace |
+| [CUSTOM_ALLOCATORS.md](CUSTOM_ALLOCATORS.md) | All contributors | Custom allocator subsystem — design, API, testing, formal verification |
 | [QUINT_0_31_UPGRADE.md](QUINT_0_31_UPGRADE.md) | Maintainers | Impact of the Quint 0.31.0 upgrade on the verification infrastructure |
 
 ## Suggested Reading Order
@@ -33,6 +34,7 @@ This folder contains design documents, guides, and technical references for the 
 5. `FORMAL_METHODS_AGENTIC_DEVELOPMENT.md` — architectural rationale
 
 **Specific topics**:
+- Custom allocators: `CUSTOM_ALLOCATORS.md`
 - Toolchain maintenance: `QUINT_0_31_UPGRADE.md`
 - AI agent setup: `PERSISTENT_CONTEXT_GUIDE.md`
 - Async scheduling: `tokio-fairness.md`

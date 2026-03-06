@@ -22,9 +22,15 @@ The verification strategy uses multiple complementary layers:
 | Concurrency Testing | Loom | Exhaustive thread interleaving |
 | Memory Safety | Miri | Undefined behavior detection |
 
-## 1. TLA+ Specification (Source of Truth)
+## 1. TLA+ Specification (Historical Reference)
 
 **File**: [tla/RingSPSC.tla](../crates/ringmpsc/tla/RingSPSC.tla)
+
+> **Note on source of truth**: TLA+ was the original formal specification. The **Quint spec
+> ([RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt)) is now the primary working artifact**
+> for safety properties — all new invariants, actions, and tests are added in Quint first.
+> The TLA+ file is retained only for **liveness properties** (`~>` leads-to) not yet
+> supported by Quint.
 
 TLA+ is a formal specification language for concurrent and distributed systems. Our spec models the SPSC ring buffer protocol.
 
@@ -175,6 +181,10 @@ RingSPSC.qnt ──▶ quint run --mbt ──▶ ITF traces ──▶ quint-conn
 The `RingSPSCState` struct is automatically deserialized from Quint's ITF trace output.
 After each step, `quint-connect` compares the driver's state with the expected trace state:
 
+> **Simplified for clarity.** The actual struct includes additional allocator-tracking fields
+> (`buffer_capacity`, `initialized`, `buffer_aligned`, `allocator_zst`). See
+> [quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) for the full implementation.
+
 ```rust
 #[derive(Eq, PartialEq, Deserialize, Debug)]
 struct RingSPSCState {
@@ -201,6 +211,9 @@ impl State<RingSPSCDriver> for RingSPSCState {
 ```
 
 ### Driver (connects Ring\<T\> to Quint actions)
+
+> **Simplified.** The actual driver also tracks allocator state (`initialized_slots`,
+> `buffer_capacity`, etc.) alongside the core protocol fields shown here.
 
 ```rust
 impl Driver for RingSPSCDriver {
@@ -436,6 +449,16 @@ debug_assert_head_not_past_tail!(head, tail);
 ```
 
 ## 8. Extending the Workflow
+
+### Prerequisites
+
+| Tool | Version | Required For |
+|------|---------|-------------|
+| Quint CLI | ≥ 0.31.0 | `quint test`, `quint run`, `quint verify` |
+| JDK | ≥ 21 | TLC backend (`quint verify --backend=tlc`) and Apalache |
+| Rust (stable) | latest | `cargo test`, property tests, MBT |
+| Rust (nightly) | latest | Miri (`cargo +nightly miri test`), `allocator-api` feature |
+| Node.js/npm | ≥ 18 | Installing Quint CLI (`npm install -g @informalsystems/quint`) |
 
 ### Adding New Invariants
 

@@ -130,7 +130,12 @@ This is strictly stronger: it catches not only invariant violations but also cas
 
 ### 3.1 The State: Deserialized from Quint ITF Traces
 
-The `RingSPSCState` struct (defined in `crates/ringmpsc/tests/quint_mbt.rs`) mirrors the five Quint state variables. It is both deserialized from ITF trace output **and** constructed from the driver's internal tracking:
+The `RingSPSCState` struct (defined in `crates/ringmpsc/tests/quint_mbt.rs`) mirrors the Quint state variables. It is both deserialized from ITF trace output **and** constructed from the driver's internal tracking:
+
+> **Simplified for clarity.** The code below shows the core protocol fields. Additional
+> allocator-tracking fields (`buffer_capacity`, `initialized`, `buffer_aligned`, `allocator_zst`)
+> were added to support INV-MEM-04, INV-ALLOC-01, INV-ALLOC-02, and INV-INIT-01. See
+> [quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) for the full implementation.
 
 ```rust
 // crates/ringmpsc/tests/quint_mbt.rs
@@ -177,6 +182,9 @@ No hand-written invariant check is needed — any state mismatch is immediately 
 ### 3.2 The Driver: Connecting Ring\<T\> to Quint Actions
 
 The `RingSPSCDriver` (in `crates/ringmpsc/tests/quint_mbt.rs`) wraps the real `Ring<u64>` and maintains abstract state tracking that mirrors Quint's variables:
+
+> **Simplified.** The actual driver also tracks allocator state (`initialized_slots: BTreeSet<u64>`,
+> `buffer_capacity`, `buffer_aligned`, `allocator_zst`) alongside these core protocol fields.
 
 ```rust
 // crates/ringmpsc/tests/quint_mbt.rs

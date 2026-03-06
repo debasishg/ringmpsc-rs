@@ -151,6 +151,9 @@ module RingSPSC {
     val happensBefore: bool = hd <= tl
 
     // Combined safety property checked by model checker
+    // NOTE: Simplified — the actual safetyInvariant also includes allocator invariants:
+    //   allocatorCapacityCorrect, alignmentGuarantee, zeroOverheadDefault, initializedRange.
+    //   See RingSPSC.qnt for the full definition.
     val safetyInvariant: bool = boundedCount and happensBefore
 }
 ```
@@ -501,6 +504,9 @@ with the expected state from the trace:
 
 ```rust
 // filepath: crates/ringmpsc/tests/quint_mbt.rs
+// NOTE: Simplified — the actual struct includes additional allocator-tracking fields
+// (buffer_capacity, initialized, buffer_aligned, allocator_zst).
+// See quint_mbt.rs for the full implementation.
 
 /// State deserialized from Quint ITF traces AND constructed from driver state.
 /// quint-connect compares these automatically at each step.
@@ -535,6 +541,8 @@ to dispatch Quint actions from automatically generated traces:
 
 ```rust
 // filepath: crates/ringmpsc/tests/quint_mbt.rs
+// NOTE: Simplified — the actual driver also tracks allocator state (initialized_slots,
+// buffer_capacity, buffer_aligned, allocator_zst) alongside these core protocol fields.
 
 struct RingSPSCDriver {
     ring: Ring<u64>,         // ◄── The REAL ring buffer

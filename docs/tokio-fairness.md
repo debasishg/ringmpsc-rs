@@ -89,6 +89,10 @@ The `max_consume_per_poll` config (set to 1000 in the [`span_collector` demo](..
 
 4. **Spin-loop backoff in async context**: When the ring is full and the producer awaits `Notify`, it cooperates perfectly with Tokio. But if the raw `reserve()` retry loop is ever exposed in an async context without yielding, it would **starve the Tokio runtime**. The current architecture correctly separates these concerns.
 
+5. **Escape hatch for budget-sensitive paths**: If Tokio's cooperative budget interferes with batch draining performance (e.g., `poll_next` returning `Pending` mid-batch because the budget is exhausted), `tokio::task::unconstrained()` can wrap the critical section to opt out of budget tracking. Use sparingly — it trades fairness for throughput and should be documented when applied.
+
+> **Tokio version note**: The cooperative budget behavior described above applies to Tokio 1.x. The budget threshold (currently ~128 ops) is an internal implementation detail and may change in future Tokio versions.
+
 ## Summary
 
 The workspace already makes good scheduling tradeoffs — the ring buffer's spin-loops stay on dedicated OS threads, the async layer uses `Notify`/`yield_now` for cooperation, and batch sizes serve as application-level budgets that mirror Tokio's internal fairness mechanisms.

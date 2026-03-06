@@ -181,13 +181,16 @@ The `quint-connect` integration (`quint_mbt.rs`) benefits directly:
 
 ## Remaining Work
 
+> **Last reviewed**: 2026-03-06
+
 | Item | Status | Notes |
 |------|--------|-------|
 | CI workflow (`.github/workflows/quint.yml`) | Planned | `quint verify` (both backends) + MBT in GitHub Actions |
 | `q::debug` diagnostics in `.qnt` spec | Planned | Per-step tracing for richer MBT debugging |
 | MPSC channel spec (`RingMPSC.qnt`) | Planned | Multi-producer model using Quint's nondeterminism |
 | Liveness in Quint | Blocked | `~>` not yet in Quint; `.tla` retained until supported |
-| Deprecate `.tla` for safety | Ready | Blocked only on CI validation of `quint verify --backend=tlc` |
+| Deprecate `.tla` for safety | Ready | Blocked on CI workflow above — once `quint verify --backend=tlc` runs in CI, `.tla` can be deprecated for safety properties |
+| Allocator invariants in Quint | ✅ Done | INV-MEM-04, INV-ALLOC-01, INV-ALLOC-02, INV-INIT-01 added to `RingSPSC.qnt` + MBT driver (2026-03-06) |
 
 ## References
 
