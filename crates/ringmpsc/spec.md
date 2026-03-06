@@ -236,9 +236,10 @@ Messages from a single producer are received in send order. No global ordering a
 | INV-CH-01 | Config validation | `config.rs` assertions |
 | INV-CH-02 | Structural (single consumer API) | N/A (structural) |
 | INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |
-| INV-MEM-04 | `unsafe trait` contract | N/A (proof obligation on implementor) |
-| INV-ALLOC-01 | [tests/allocator_tests.rs](tests/allocator_tests.rs) | `allocator.rs` → `AlignedAllocator::allocate()` |
-| INV-ALLOC-02 | Compile-time `size_of` | N/A (ZST structural) |
+| INV-MEM-04 | `unsafe trait` contract, [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`allocatorCapacityCorrect`) | N/A (proof obligation on implementor) |
+| INV-ALLOC-01 | [tests/allocator_tests.rs](tests/allocator_tests.rs), [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`alignmentGuarantee`) | `allocator.rs` → `AlignedAllocator::allocate()` |
+| INV-ALLOC-02 | Compile-time `size_of`, [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`zeroOverheadDefault`) | N/A (ZST structural) |
+| INV-INIT-01 | [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`initializedRange`), [tests/miri_tests.rs](tests/miri_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
 
 ---
 
@@ -259,6 +260,10 @@ The lock-free protocol is formally specified in TLA+ for model checking. This co
 | INV-ORD-03 | `HappensBefore` | `head <= tail` (consumer never reads ahead) |
 | INV-SW-01 | Structural | Producer actions only modify `tail`, `cached_head` |
 | INV-SW-02 | Structural | Consumer actions only modify `head`, `cached_tail` |
+| INV-MEM-04 | `allocatorCapacityCorrect` | `buffer_capacity == CAPACITY` (allocator contract) |
+| INV-ALLOC-01 | `alignmentGuarantee` | `buffer_aligned` flag (structural in Rust) |
+| INV-ALLOC-02 | `zeroOverheadDefault` | `allocator_zst` flag (structural in Rust) |
+| INV-INIT-01 | `initializedRange` | `initialized` set tracks slot init state |
 
 ### Refinement Mapping (TLA+ → Rust)
 
@@ -325,6 +330,15 @@ The TLA+ spec is also translated to [Quint](https://quint-lang.org/) in [tla/Rin
 | `test_cache_refresh_scenario` | Stale cache recovery |
 | `test_alternating_produce_consume` | Interleaved operations |
 | `test_producer_starvation_recovery` | Full→empty→refill |
+| `allocatorCapacityAtInit` | INV-MEM-04: buffer_capacity == CAPACITY at init |
+| `allocatorCapacityStableAcrossOps` | INV-MEM-04: capacity stable across ops |
+| `alignmentAtInit` | INV-ALLOC-01: alignment flag set |
+| `zeroOverheadAtInit` | INV-ALLOC-02: ZST flag set |
+| `producerWriteInitializesSlot` | INV-INIT-01: write marks slot initialized |
+| `consumerAdvanceUninitializesSlot` | INV-INIT-01: consume marks slot uninitialized |
+| `initializedRangeWrapAround` | INV-INIT-01: modular arithmetic after wrap |
+| `emptyRingNoInitializedSlots` | INV-INIT-01: empty ring has empty set |
+| `allocatorInvariantsThroughCycle` | All invariants at every step of a cycle |
 
 Run with:
 ```bash

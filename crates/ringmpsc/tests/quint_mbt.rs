@@ -58,19 +58,24 @@
 //!
 //! # State Mapping
 //!
-//! | Quint variable   | Rust driver field | Ring<T> correspondence         |
-//! |------------------|-------------------|--------------------------------|
-//! | `head`           | `consumed`        | `Ring.head` (AtomicU64)        |
-//! | `tail`           | `produced`        | `Ring.tail` (AtomicU64)        |
-//! | `cached_head`    | `cached_head`     | `Ring.cached_head` (UnsafeCell)|
-//! | `cached_tail`    | `cached_tail`     | `Ring.cached_tail` (UnsafeCell)|
-//! | `items_produced` | `items_produced`  | (external counter)             |
+//! | Quint variable     | Rust driver field     | Ring<T> correspondence            |
+//! |--------------------|-----------------------|-----------------------------------|
+//! | `head`             | `consumed`            | `Ring.head` (AtomicU64)           |
+//! | `tail`             | `produced`            | `Ring.tail` (AtomicU64)           |
+//! | `cached_head`      | `cached_head`         | `Ring.cached_head` (UnsafeCell)   |
+//! | `cached_tail`      | `cached_tail`         | `Ring.cached_tail` (UnsafeCell)   |
+//! | `items_produced`   | `items_produced`      | (external counter)                |
+//! | `buffer_capacity`  | `buffer_capacity`     | CAPACITY (INV-MEM-04)             |
+//! | `initialized`      | `initialized_slots`   | Set of init'd indices (INV-INIT-01)|
+//! | `buffer_aligned`   | `buffer_aligned`      | true for HeapAllocator (INV-ALLOC-01)|
+//! | `allocator_zst`    | `allocator_zst`       | true for HeapAllocator (INV-ALLOC-02)|
 
 #![cfg(feature = "quint-mbt")]
 
 use quint_connect::*;
 use ringmpsc_rs::{Config, Ring};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::mem::MaybeUninit;
 use std::sync::OnceLock;
 
@@ -107,7 +112,7 @@ fn runtime_seed() -> String {
 // STATE — Mirrors Quint's RingSPSC module variables
 // =============================================================================
 
-/// State representation matching the five Quint state variables in RingSPSC.qnt.
+/// State representation matching the Quint state variables in RingSPSC.qnt.
 ///
 /// Deserialized from ITF trace output by `quint-connect` and also constructed
 /// from the driver's internal tracking via [`State::from_driver`] for comparison.
@@ -129,6 +134,14 @@ struct RingSPSCState {
     cached_tail: i64,
     /// Total items produced (Quint: `items_produced`)
     items_produced: i64,
+    /// Buffer capacity as allocated (Quint: `buffer_capacity`, INV-MEM-04)
+    buffer_capacity: i64,
+    /// Set of initialized buffer indices (Quint: `initialized`, INV-INIT-01)
+    initialized: itf::value::Set<i64>,
+    /// Whether buffer is aligned (Quint: `buffer_aligned`, INV-ALLOC-01)
+    buffer_aligned: bool,
+    /// Whether allocator is ZST (Quint: `allocator_zst`, INV-ALLOC-02)
+    allocator_zst: bool,
 }
 
 impl State<RingSPSCDriver> for RingSPSCState {
@@ -139,6 +152,10 @@ impl State<RingSPSCDriver> for RingSPSCState {
             cached_head: driver.cached_head as i64,
             cached_tail: driver.cached_tail as i64,
             items_produced: driver.items_produced as i64,
+            buffer_capacity: driver.buffer_capacity as i64,
+            initialized: driver.initialized_slots.iter().map(|&i| i as i64).collect(),
+            buffer_aligned: driver.buffer_aligned,
+            allocator_zst: driver.allocator_zst,
         })
     }
 }
@@ -169,7 +186,18 @@ struct RingSPSCDriver {
     cached_tail: u64,
     /// Total items produced — matches Quint's `items_produced`
     items_produced: u64,
+    /// Buffer capacity as allocated — matches Quint's `buffer_capacity` (INV-MEM-04)
+    buffer_capacity: u64,
+    /// Set of initialized buffer indices — matches Quint's `initialized` (INV-INIT-01)
+    initialized_slots: BTreeSet<u64>,
+    /// Whether buffer is aligned — matches Quint's `buffer_aligned` (INV-ALLOC-01)
+    buffer_aligned: bool,
+    /// Whether allocator is ZST — matches Quint's `allocator_zst` (INV-ALLOC-02)
+    allocator_zst: bool,
 }
+
+/// Ring capacity (2^2 = 4), matching CAPACITY = 4 in RingSPSC.qnt
+const CAPACITY: u64 = 4;
 
 impl Default for RingSPSCDriver {
     fn default() -> Self {
@@ -182,6 +210,10 @@ impl Default for RingSPSCDriver {
             cached_head: 0,
             cached_tail: 0,
             items_produced: 0,
+            buffer_capacity: CAPACITY,       // INV-MEM-04: allocator provides CAPACITY slots
+            initialized_slots: BTreeSet::new(), // INV-INIT-01: empty at start
+            buffer_aligned: true,            // INV-ALLOC-01: HeapAllocator is aligned
+            allocator_zst: true,             // INV-ALLOC-02: HeapAllocator is ZST
         }
     }
 }
@@ -197,7 +229,7 @@ impl Driver for RingSPSCDriver {
             init => {
                 *self = Self::default();
                 if verbose {
-                    eprintln!("  [init] head=0 tail=0 cached_head=0 cached_tail=0 items_produced=0");
+                    eprintln!("  [init] head=0 tail=0 cached_head=0 cached_tail=0 items_produced=0 buffer_capacity={} initialized={{}} buffer_aligned=true allocator_zst=true", CAPACITY);
                 }
             },
 
@@ -225,7 +257,9 @@ impl Driver for RingSPSCDriver {
 
             producerWrite => {
                 // Quint: tail' = tail + 1, items_produced' = items_produced + 1
+                //        initialized' = initialized.union(Set(tl % CAPACITY))
                 // Drive the real Ring to verify conformance.
+                let slot_idx = self.produced % CAPACITY;
                 let mut reserved = self.ring.reserve(1)
                     .expect("reserve(1) should succeed: Quint guard ensures (tail-head) < CAPACITY");
                 // Safety-note: write value then commit (zero-copy reservation pattern)
@@ -233,8 +267,9 @@ impl Driver for RingSPSCDriver {
                 reserved.commit();
                 self.produced += 1;
                 self.items_produced += 1;
+                self.initialized_slots.insert(slot_idx);  // INV-INIT-01
                 if verbose {
-                    eprintln!("  [{action}] tail={} items_produced={}", self.produced, self.items_produced);
+                    eprintln!("  [{action}] tail={} items_produced={} initialized={:?}", self.produced, self.items_produced, self.initialized_slots);
                 }
             },
 
@@ -262,15 +297,18 @@ impl Driver for RingSPSCDriver {
 
             consumerAdvance => {
                 // Quint: head' = head + 1
+                //        initialized' = initialized.exclude(Set(hd % CAPACITY))
                 // Drive the real Ring — consume exactly 1 item.
+                let slot_idx = self.consumed % CAPACITY;
                 let consumed = self.ring.consume_up_to(1, |_item| {});
                 assert_eq!(
                     consumed, 1,
                     "consume_up_to(1) should return 1: Quint guard ensures head < tail"
                 );
                 self.consumed += 1;
+                self.initialized_slots.remove(&slot_idx);  // INV-INIT-01
                 if verbose {
-                    eprintln!("  [{action}] head={}", self.consumed);
+                    eprintln!("  [{action}] head={} initialized={:?}", self.consumed, self.initialized_slots);
                 }
             },
         })

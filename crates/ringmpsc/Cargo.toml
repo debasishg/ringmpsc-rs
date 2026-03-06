@@ -16,7 +16,7 @@ loom = ["dep:loom"]
 # Enable stack-allocated ring buffer variants (StackRing, StackChannel)
 stack-ring = []
 # Enable Quint model-based testing (cargo test --features quint-mbt)
-quint-mbt = ["dep:quint-connect", "dep:serde", "dep:anyhow"]
+quint-mbt = ["dep:quint-connect", "dep:itf", "dep:serde", "dep:anyhow"]
 # Enable nightly std::alloc::Allocator bridge (requires nightly Rust)
 allocator-api = []
 
@@ -25,6 +25,7 @@ crossbeam-utils.workspace = true
 loom = { workspace = true, optional = true }
 thiserror.workspace = true
 quint-connect = { workspace = true, optional = true }
+itf = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 

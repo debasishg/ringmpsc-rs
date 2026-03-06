@@ -1059,6 +1059,7 @@ dependencies = [
  "bumpalo",
  "criterion",
  "crossbeam-utils",
+ "itf",
  "loom",
  "proptest",
  "quint-connect",

@@ -28,5 +28,6 @@ rand = "0.8"
 
 # Model-based testing (Quint ↔ Rust)
 quint-connect = "0.1.1"
+itf = "0.4"
 anyhow = "1"
 

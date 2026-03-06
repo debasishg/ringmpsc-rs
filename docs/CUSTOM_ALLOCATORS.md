@@ -19,6 +19,7 @@ This document describes the custom allocator subsystem in `ringmpsc`, which allo
 - [How Alignment Works Internally](#how-alignment-works-internally)
 - [Performance Considerations](#performance-considerations)
 - [Testing](#testing)
+- [Formal Verification (Quint Model)](#formal-verification-quint-model)
 - [Code Map](#code-map)
 
 ---
@@ -358,6 +359,80 @@ Benchmarks comparing allocator strategies are in [crates/ringmpsc/benches/alloca
 cargo bench -p ringmpsc-rs --bench allocator
 ```
 
+## Formal Verification (Quint Model)
+
+The allocator invariants are formally verified in the Quint specification [crates/ringmpsc/tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt). The model tracks allocator-related state alongside the lock-free protocol:
+
+### Modeled Invariants
+
+| Spec Invariant | Quint Element | Description |
+|---|---|---|
+| **INV-MEM-04** | `allocatorCapacityCorrect` | `buffer_capacity == CAPACITY` — allocator provides exactly the expected number of slots |
+| **INV-ALLOC-01** | `alignmentGuarantee` | `buffer_aligned == true` — buffer pointer alignment (structural in Rust, modeled as flag) |
+| **INV-ALLOC-02** | `zeroOverheadDefault` | `allocator_zst == true` — HeapAllocator is ZST (structural in Rust, modeled as flag) |
+| **INV-INIT-01** | `initializedRange` | `initialized == { (hd+k) % CAPACITY : k ∈ 0..count-1 }` — buffer slot initialization tracked via set |
+
+### State Variables
+
+The Quint model adds four state variables for allocator verification:
+
+```
+buffer_capacity : int       — allocated buffer size (must equal CAPACITY)
+initialized     : Set[int]  — set of buffer indices holding valid data
+buffer_aligned  : bool      — alignment guarantee flag
+allocator_zst   : bool      — zero-overhead default flag
+```
+
+The `initialized` set is the most interesting: `producerWrite` adds `tl % CAPACITY` to the set, and `consumerAdvance` removes `hd % CAPACITY`. The `initializedRange` invariant verifies that this set always matches the expected range derived from `[hd, tl)`.
+
+### Quint Tests
+
+The specification includes allocator-specific embedded tests:
+
+| Quint Test | Invariant | What it verifies |
+|---|---|---|
+| `allocatorCapacityAtInit` | INV-MEM-04 | Buffer capacity equals CAPACITY at construction |
+| `allocatorCapacityStableAcrossOps` | INV-MEM-04 | Capacity unchanged after produce/consume |
+| `alignmentAtInit` | INV-ALLOC-01 | Alignment flag set at construction |
+| `zeroOverheadAtInit` | INV-ALLOC-02 | ZST flag set at construction |
+| `producerWriteInitializesSlot` | INV-INIT-01 | Write marks correct slot index as initialized |
+| `consumerAdvanceUninitializesSlot` | INV-INIT-01 | Consume marks correct slot index as uninitialized |
+| `initializedRangeWrapAround` | INV-INIT-01 | Modular arithmetic correct after wrap-around |
+| `emptyRingNoInitializedSlots` | INV-INIT-01 | Empty ring has empty initialized set |
+| `allocatorInvariantsThroughCycle` | All | Full safety invariant at every step of a cycle |
+
+Run the Quint tests:
+
+```bash
+cd crates/ringmpsc/tla
+
+# Embedded tests (fast — Rust backend)
+quint test RingSPSC.qnt --main=RingSPSC
+
+# Simulation with all invariants (including allocator)
+quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
+
+# Exhaustive model checking (TLC backend)
+quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+```
+
+### Model-Based Testing (quint-connect)
+
+The Rust MBT driver in [crates/ringmpsc/tests/quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) tracks all allocator state and compares it against the Quint specification at every step:
+
+| Quint variable | Rust driver field | Ring correspondence |
+|---|---|---|
+| `buffer_capacity` | `buffer_capacity` | `CAPACITY` (INV-MEM-04) |
+| `initialized` | `initialized_slots: BTreeSet<u64>` | Slot initialization tracking (INV-INIT-01) |
+| `buffer_aligned` | `buffer_aligned: bool` | `true` for HeapAllocator (INV-ALLOC-01) |
+| `allocator_zst` | `allocator_zst: bool` | `true` for HeapAllocator (INV-ALLOC-02) |
+
+Run the MBT tests:
+
+```bash
+cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
+```
+
 ## Code Map
 
 | File | Purpose |
@@ -368,6 +443,8 @@ cargo bench -p ringmpsc-rs --bench allocator
 | [crates/ringmpsc/src/invariants.rs](../crates/ringmpsc/src/invariants.rs) | `debug_assert_aligned!`, `static_assert_zst!` macros |
 | [crates/ringmpsc/src/lib.rs](../crates/ringmpsc/src/lib.rs) | Public exports: `AlignedAllocator`, `BufferAllocator`, `HeapAllocator`, `StdAllocator` |
 | [crates/ringmpsc/spec.md](../crates/ringmpsc/spec.md) | INV-MEM-04, INV-ALLOC-01, INV-ALLOC-02 specifications |
+| [crates/ringmpsc/tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt) | Quint formal spec — allocator invariants, `initialized` set, model checking |
+| [crates/ringmpsc/tests/quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) | Quint model-based testing driver — allocator state tracking via `quint-connect` |
 | [crates/ringmpsc/tests/allocator_tests.rs](../crates/ringmpsc/tests/allocator_tests.rs) | 22 allocator tests |
 | [crates/ringmpsc/benches/allocator.rs](../crates/ringmpsc/benches/allocator.rs) | Criterion benchmarks (single-thread, SPSC, MPSC) |
 | [crates/ringmpsc/examples/custom_allocator.rs](../crates/ringmpsc/examples/custom_allocator.rs) | Runnable demo comparing all allocator strategies |
