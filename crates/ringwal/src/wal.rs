@@ -1,7 +1,9 @@
 //! WAL engine — background flusher, segment management, group commit.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{oneshot, Notify};
@@ -10,6 +12,7 @@ use tokio::task::JoinHandle;
 use crate::config::WalConfig;
 use crate::error::WalError;
 use crate::invariants::debug_assert_commit_durable;
+use crate::recovery;
 use crate::segment::SegmentManager;
 use crate::writer::{Envelope, WalWriterFactory};
 use ringmpsc_rs::Config as RingConfig;
@@ -32,8 +35,10 @@ impl CommitRegistry {
 /// Created via [`Wal::open`], which returns both the `Wal` handle
 /// and a [`WalWriterFactory`] for creating writers.
 pub struct Wal {
+    dir: PathBuf,
     shutdown_notify: Arc<Notify>,
     flusher_handle: Option<JoinHandle<()>>,
+    checkpoint_handle: Option<JoinHandle<()>>,
     next_lsn: Arc<AtomicU64>,
 }
 
@@ -82,8 +87,10 @@ impl Wal {
 
         Ok((
             Self {
+                dir: config.dir.clone(),
                 shutdown_notify,
                 flusher_handle: Some(flusher_handle),
+                checkpoint_handle: None,
                 next_lsn,
             },
             writer_factory,
@@ -98,8 +105,16 @@ impl Wal {
     /// Initiates graceful shutdown.
     ///
     /// Signals the flusher to drain remaining entries and stop.
-    /// Awaits until the flusher completes.
+    /// Also cancels the checkpoint scheduler if running.
+    /// Awaits until all background tasks complete.
     pub async fn shutdown(&mut self) -> Result<(), WalError> {
+        // Cancel the checkpoint scheduler first (best-effort, idempotent)
+        if let Some(handle) = self.checkpoint_handle.take() {
+            handle.abort();
+            let _ = handle.await; // ignore JoinError from abort
+        }
+        // Signal the flusher to drain and stop (notify_one stores a permit
+        // so the flusher will see it even if not currently polled)
         self.shutdown_notify.notify_one();
         if let Some(handle) = self.flusher_handle.take() {
             handle.await.map_err(|_| {
@@ -110,6 +125,75 @@ impl Wal {
             })?;
         }
         Ok(())
+    }
+
+    /// Returns the WAL directory path.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// Advances the checkpoint to the highest committed transaction.
+    ///
+    /// Scans all segment files, finds the highest committed `tx_id`,
+    /// writes a checkpoint file, and removes old segment files whose
+    /// entries are all below the new checkpoint.
+    ///
+    /// Returns the new checkpoint LSN, or `WalError::NoNewCheckpoints`
+    /// if no new committed transactions exist beyond the current checkpoint.
+    pub fn checkpoint<K, V>(&self) -> Result<u64, WalError>
+    where
+        K: DeserializeOwned + Send + 'static,
+        V: DeserializeOwned + Send + 'static,
+    {
+        let lsn = recovery::checkpoint::<K, V>(&self.dir)?;
+        let _ = recovery::truncate_segments_before(&self.dir, lsn);
+        Ok(lsn)
+    }
+
+    /// Starts a background task that periodically checkpoints committed
+    /// transactions and truncates old segment files.
+    ///
+    /// The scheduler runs until `shutdown()` is called. Only one scheduler
+    /// can be active at a time; calling this again replaces the previous one.
+    ///
+    /// This matches async-wal-db's `start_checkpoint_scheduler(interval_secs)`.
+    pub fn start_checkpoint_scheduler<K, V>(&mut self, interval: Duration)
+    where
+        K: DeserializeOwned + Send + 'static,
+        V: DeserializeOwned + Send + 'static,
+    {
+        // Cancel existing scheduler if any
+        if let Some(handle) = self.checkpoint_handle.take() {
+            handle.abort();
+        }
+
+        let dir = self.dir.clone();
+        let shutdown_notify = Arc::clone(&self.shutdown_notify);
+
+        self.checkpoint_handle = Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.tick().await; // first tick is immediate, skip it
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        // Best-effort checkpoint — ignore NoNewCheckpoints
+                        match recovery::checkpoint::<K, V>(&dir) {
+                            Ok(lsn) => {
+                                let _ = recovery::truncate_segments_before(&dir, lsn);
+                            }
+                            Err(WalError::NoNewCheckpoints) => {}
+                            Err(e) => {
+                                eprintln!("ringwal: checkpoint scheduler error: {e}");
+                            }
+                        }
+                    }
+                    _ = shutdown_notify.notified() => {
+                        return;
+                    }
+                }
+            }
+        }));
     }
 }
 
@@ -221,9 +305,9 @@ fn flush_and_notify(
     }
 
     // Fsync the active segment
-    let fsynced = segment_mgr.fsync().is_ok();
+    let _fsynced = segment_mgr.fsync().is_ok();
 
-    debug_assert_commit_durable!(fsynced);
+    debug_assert_commit_durable!(_fsynced);
 
     // Notify all commit waiters — group commit
     for waiter in commit_waiters.drain(..) {

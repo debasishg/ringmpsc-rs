@@ -31,4 +31,7 @@ pub enum WalError {
 
     #[error("Invalid segment file: {0}")]
     InvalidSegment(String),
+
+    #[error("No new checkpoints available")]
+    NoNewCheckpoints,
 }

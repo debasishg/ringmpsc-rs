@@ -1,8 +1,8 @@
 //! Integration tests for ringwal.
 
 use ringwal::{
-    recover, read_checkpoint, write_checkpoint, RecoveryAction, Transaction, Wal, WalConfig,
-    WalEntry,
+    recover, recover_into_store, read_checkpoint, write_checkpoint, InMemoryStore,
+    RecoveryAction, Transaction, Wal, WalConfig, WalEntry,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -235,4 +235,96 @@ async fn writer_factory_max_writers() {
     assert!(factory.register().is_err());
 
     wal.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn checkpoint_advancement() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(tmp.path());
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let writer = factory.register().unwrap();
+
+    // Write two transactions
+    for i in 0..2 {
+        let mut tx = Transaction::new();
+        tx.insert(format!("k{i}"), format!("v{i}").into_bytes());
+        tx.commit(&writer).await.unwrap();
+    }
+    wal.shutdown().await.unwrap();
+
+    // Checkpoint should advance to highest committed tx_id
+    let lsn = wal.checkpoint::<String, Vec<u8>>().unwrap();
+    assert!(lsn > 0, "checkpoint LSN should advance");
+
+    // Second checkpoint should return NoNewCheckpoints
+    let result = wal.checkpoint::<String, Vec<u8>>();
+    assert!(
+        result.is_err(),
+        "second checkpoint with no new writes should be NoNewCheckpoints"
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_scheduler_truncates_segments() {
+    let tmp = TempDir::new().unwrap();
+    // Small segments to force rotation
+    let config = WalConfig::new(tmp.path())
+        .with_ring_bits(10)
+        .with_max_writers(4)
+        .with_max_segment_size(4096) // 4KB segments — forces many rotations
+        .with_flush_interval(std::time::Duration::from_millis(5))
+        .with_batch_hint(64);
+
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let writer = factory.register().unwrap();
+
+    // Write enough data to generate multiple segments
+    for i in 0..50 {
+        let mut tx = Transaction::new();
+        tx.insert(format!("key-{i}"), vec![0u8; 512]);
+        tx.commit(&writer).await.unwrap();
+    }
+
+    // Start the checkpoint scheduler with a short interval
+    wal.start_checkpoint_scheduler::<String, Vec<u8>>(std::time::Duration::from_millis(50));
+
+    // Give the scheduler time to run at least once
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    wal.shutdown().await.unwrap();
+
+    // Verify checkpoint file exists and is non-zero
+    let lsn = read_checkpoint(tmp.path()).unwrap();
+    assert!(lsn > 0, "scheduler should have advanced the checkpoint");
+}
+
+#[tokio::test]
+async fn recover_into_store_replays_committed() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(tmp.path());
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let writer = factory.register().unwrap();
+
+    // Committed transaction
+    let mut tx = Transaction::new();
+    tx.insert("alive".to_string(), b"yes".to_vec());
+    tx.commit(&writer).await.unwrap();
+
+    // Aborted transaction
+    let mut tx2 = Transaction::new();
+    tx2.insert("dead".to_string(), b"no".to_vec());
+    tx2.abort(&writer).await.unwrap();
+
+    wal.shutdown().await.unwrap();
+
+    // Recover into InMemoryStore
+    let mut store = InMemoryStore::<String, Vec<u8>>::new();
+    let stats =
+        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+
+    assert_eq!(stats.committed, 1);
+    assert_eq!(stats.aborted, 1);
+    assert_eq!(store.len(), 1);
+    assert_eq!(store.get(&"alive".to_string()), Some(b"yes".to_vec()));
+    assert!(store.get(&"dead".to_string()).is_none());
 }

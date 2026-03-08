@@ -39,6 +39,7 @@ mod error;
 mod invariants;
 mod recovery;
 mod segment;
+mod store;
 mod transaction;
 mod wal;
 mod writer;
@@ -47,10 +48,11 @@ pub use config::WalConfig;
 pub use entry::{ByteWalEntry, WalEntry, WalEntryHeader};
 pub use error::WalError;
 pub use recovery::{
-    read_checkpoint, recover, write_checkpoint, RecoveredTransaction, RecoveryAction,
-    RecoveryStats,
+    checkpoint, read_checkpoint, recover, truncate_segments_before, write_checkpoint,
+    RecoveredTransaction, RecoveryAction, RecoveryStats,
 };
 pub use segment::{SegmentMeta, SegmentManager};
+pub use store::{apply_transactions, recover_into_store, InMemoryStore, WalStore};
 pub use transaction::{Transaction, TxState};
 pub use wal::Wal;
 pub use writer::{next_tx_id, WalWriter, WalWriterFactory};

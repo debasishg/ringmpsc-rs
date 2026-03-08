@@ -18,3 +18,16 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
+criterion.workspace = true
+async-wal-db = { path = "../../../async-wal-db" }
+
+[[bench]]
+name = "wal_throughput"
+harness = false
+
+[[example]]
+name = "demo"
+
+[[bin]]
+name = "ringwal-demo"
+path = "bin/demo.rs"

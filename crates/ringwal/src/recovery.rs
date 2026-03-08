@@ -221,3 +221,124 @@ pub fn read_checkpoint(dir: &Path) -> Result<u64, WalError> {
         Err(e) => Err(e.into()),
     }
 }
+
+/// Advances the checkpoint to the highest committed transaction's LSN.
+///
+/// Scans all segment files, identifies committed transactions, and writes
+/// a checkpoint at the highest committed LSN. Returns `NoNewCheckpoints`
+/// if no committed transactions exist beyond the current checkpoint.
+///
+/// This is the analog of async-wal-db's `checkpoint()` method which
+/// filters committed-only transactions and advances to the highest
+/// committed `tx_id`.
+pub fn checkpoint<K, V>(dir: &Path) -> Result<u64, WalError>
+where
+    K: DeserializeOwned + Send + 'static,
+    V: DeserializeOwned + Send + 'static,
+{
+    let current_lsn = read_checkpoint(dir)?;
+    let (recovered, _stats) = recover::<K, V>(dir)?;
+
+    // Find the highest tx_id among committed transactions
+    let max_committed_tx_id = recovered
+        .iter()
+        .filter(|t| t.action == RecoveryAction::Commit)
+        .map(|t| t.tx_id)
+        .max();
+
+    match max_committed_tx_id {
+        Some(tx_id) if tx_id > current_lsn => {
+            write_checkpoint(dir, tx_id)?;
+            Ok(tx_id)
+        }
+        Some(_) | None => Err(WalError::NoNewCheckpoints),
+    }
+}
+
+/// Removes segment files whose names indicate an ID strictly less
+/// than the segment containing the given checkpoint LSN.
+///
+/// This is a directory-level operation that does not require access to
+/// the live `SegmentManager`. It complements `SegmentManager::truncate_before()`
+/// for use outside the flusher task (e.g., from the checkpoint scheduler).
+pub fn truncate_segments_before(dir: &Path, checkpoint_lsn: u64) -> Result<usize, WalError> {
+    // We remove segment files that are clearly older by scanning on-disk entries.
+    // For safety, we re-read each candidate segment and only remove those whose
+    // highest entry LSN (tx_id) is below the checkpoint.
+    let mut segment_ids = discover_segment_ids(dir)?;
+    segment_ids.sort();
+
+    // Keep at least the last segment (even if empty) to avoid removing the active one
+    if segment_ids.len() <= 1 {
+        return Ok(0);
+    }
+
+    let mut removed = 0;
+    // Never remove the last segment — it might be the active one
+    let candidates = &segment_ids[..segment_ids.len() - 1];
+
+    for &seg_id in candidates {
+        let path = segment_path(dir, seg_id);
+        // Read the segment to find its max tx_id.
+        // We read each segment cheaply with the raw header parser
+        // to find the highest tx_id. If it's below the checkpoint,
+        // every entry in that segment is already checkpointed.
+        let max_tx_id = read_segment_max_tx_id(&path)?;
+        if max_tx_id > 0 && max_tx_id < checkpoint_lsn {
+            let _ = std::fs::remove_file(&path);
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Reads a segment file and returns the maximum tx_id found, or 0 if empty/unreadable.
+fn read_segment_max_tx_id(path: &Path) -> Result<u64, WalError> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+
+    let file_len = file.metadata()?.len();
+    let mut offset: u64 = 0;
+    let mut max_tx_id: u64 = 0;
+
+    loop {
+        if offset + WalEntryHeader::SIZE as u64 > file_len {
+            break;
+        }
+
+        let mut header_bytes = [0u8; WalEntryHeader::SIZE];
+        if file.read_exact(&mut header_bytes).is_err() {
+            break;
+        }
+        let header = WalEntryHeader::from_bytes(&header_bytes);
+        offset += WalEntryHeader::SIZE as u64;
+
+        if offset + header.length > file_len {
+            break;
+        }
+
+        let mut data = vec![0u8; header.length as usize];
+        if file.read_exact(&mut data).is_err() {
+            break;
+        }
+        offset += header.length;
+
+        if header.validate(&data).is_err() {
+            break;
+        }
+
+        // Deserialize as ByteWalEntry to extract tx_id
+        if let Ok(entry) = bincode::deserialize::<crate::entry::ByteWalEntry>(&data) {
+            let tx_id = entry.tx_id();
+            if tx_id > max_tx_id {
+                max_tx_id = tx_id;
+            }
+        }
+    }
+
+    Ok(max_tx_id)
+}
