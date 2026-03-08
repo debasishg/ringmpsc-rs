@@ -2,19 +2,19 @@
 //!
 //! Three benchmark groups:
 //!
-//! 1. **`wal_durable`** — ringwal and async-wal-db with full `sync_all()`
-//!    after every batch. Shows real durable-commit throughput (~170 txn/s
-//!    on macOS due to `F_FULLFSYNC` ≈ 5 ms per call). Both implementations
-//!    are fsync-bound so numbers are comparable.
+//! 1. **`wal_durable`** — ringwal with full `sync_all()` after every batch,
+//!    on a `multi_thread` runtime. Sweeps 1/2/4/8 writers to show group-
+//!    commit scaling under fsync. Uses `multi_thread` so writers run in
+//!    parallel with the flusher — fsync on one thread doesn't block
+//!    writers filling rings on other threads.
 //!
 //! 2. **`wal_throughput`** — ringwal with `SyncMode::None` on a
-//!    `current_thread` runtime. Sweeps payload sizes × writer counts.
-//!    Shows cooperative single-threaded throughput ceiling.
+//!    `current_thread` runtime. Sweeps payload sizes (16/64/256/1024 B)
+//!    × writer counts (1/2/4/8). Shows single-threaded cooperative
+//!    throughput ceiling.
 //!
 //! 3. **`wal_throughput_mt`** — Same as (2) but on a `multi_thread`
-//!    runtime. Writers fill rings on worker threads while the flusher
-//!    drains in parallel — true pipelining. Enabled by the
-//!    `RingReceiver` register-then-recheck fix (INV-STREAM-05/06).
+//!    runtime. Comparison point to isolate runtime overhead.
 //!
 //! All groups use a shared runtime per benchmark function (via
 //! `b.to_async(&rt)`). Each iteration gets a fresh `TempDir` via
@@ -101,29 +101,40 @@ async fn ringwal_bench(
     wal.shutdown().await.unwrap();
 }
 
-// ── Durable benchmarks (fsync per batch) ─────────────────────────────────────
+// ── Durable benchmarks (fsync per batch, multi_thread) ───────────────────────
 
 fn bench_durable(c: &mut Criterion) {
-    let rt = make_rt();
+    let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_durable");
-    group.throughput(Throughput::Elements(DURABLE_TXN));
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(3));
 
-    group.bench_function("ringwal", |b| {
-        b.to_async(&rt).iter_batched(
-            || {
-                let dir = tempfile::tempdir().unwrap();
-                let config = ringwal_config_durable(dir.path());
-                (dir, config)
-            },
-            |(_dir, config)| ringwal_bench(1, DURABLE_TXN, 64, config),
-            BatchSize::SmallInput,
-        );
-    });
+    // ringwal: sweep writers [1, 2, 4, 8] to show group-commit scaling
+    for num_writers in [1, 2, 4, 8] {
+        let total_txn = num_writers as u64 * DURABLE_TXN;
+        group.throughput(Throughput::Elements(total_txn));
 
-    group.bench_function("async-wal-db", |b| {
+        group.bench_with_input(
+            BenchmarkId::new("ringwal", num_writers),
+            &num_writers,
+            |b, &nw| {
+                b.to_async(&rt).iter_batched(
+                    || {
+                        let dir = tempfile::tempdir().unwrap();
+                        let config = ringwal_config_durable(dir.path());
+                        (dir, config)
+                    },
+                    |(_dir, config)| ringwal_bench(nw, DURABLE_TXN, 64, config),
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    // async-wal-db: single-writer reference point
+    group.throughput(Throughput::Elements(DURABLE_TXN));
+    group.bench_function("async-wal-db/1", |b| {
         b.to_async(&rt).iter_batched(
             || tempfile::tempdir().unwrap(),
             |dir| async move {
@@ -136,30 +147,25 @@ fn bench_durable(c: &mut Criterion) {
                     .build()
                     .await;
 
-                let mut handles = Vec::new();
-                for w in 0..1usize {
-                    let db_clone = Arc::clone(&db);
-                    handles.push(tokio::spawn(async move {
-                        for i in 0..DURABLE_TXN {
-                            let mut tx = async_wal_db::Transaction::new();
-                            tx.append_op(
-                                &db_clone,
-                                async_wal_db::WalEntry::Insert {
-                                    tx_id: 0,
-                                    timestamp: 0,
-                                    key: format!("k-{w}-{i}"),
-                                    value: vec![0u8; 64],
-                                },
-                            )
-                            .await
-                            .unwrap();
-                            tx.commit(&db_clone).await.unwrap();
-                        }
-                    }));
-                }
-                for h in handles {
-                    h.await.unwrap();
-                }
+                let db_clone = Arc::clone(&db);
+                let handle = tokio::spawn(async move {
+                    for i in 0..DURABLE_TXN {
+                        let mut tx = async_wal_db::Transaction::new();
+                        tx.append_op(
+                            &db_clone,
+                            async_wal_db::WalEntry::Insert {
+                                tx_id: 0,
+                                timestamp: 0,
+                                key: format!("k-0-{i}"),
+                                value: vec![0u8; 64],
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit(&db_clone).await.unwrap();
+                    }
+                });
+                handle.await.unwrap();
                 db.wal.stop_flusher().await.unwrap();
                 drop(dir); // keep TempDir alive until after shutdown
             },

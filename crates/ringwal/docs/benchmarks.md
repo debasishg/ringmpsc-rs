@@ -10,12 +10,15 @@ eliminating runtime-construction overhead from measurements.
 
 ## Summary
 
-### Durable (fsync) — 64-byte payload
+### Durable (fsync) — 64-byte payload, `multi_thread` runtime
 
-| WAL | Writers | Throughput | Notes |
-|-----|---------|-----------|-------|
-| ringwal | 1 | ~170 txn/s | fsync-bound |
-| async-wal-db | 1 | ~171 txn/s | statistically identical |
+| WAL | Writers | Throughput | Scaling |
+|-----|---------|-----------|---------|
+| ringwal | 1 | ~171 txn/s | 1.0× |
+| ringwal | 2 | ~337 txn/s | 2.0× |
+| ringwal | 4 | ~677 txn/s | 4.0× |
+| ringwal | 8 | ~1,338 txn/s | 7.8× |
+| async-wal-db | 1 | ~170 txn/s | (reference) |
 
 ### No-sync — `current_thread` vs `multi_thread` (64-byte payload)
 
@@ -30,80 +33,78 @@ eliminating runtime-construction overhead from measurements.
 
 ## Key Takeaways
 
-### 1. fsync dominates durable-commit latency
+### 1. Group-commit scaling under fsync
 
 macOS `F_FULLFSYNC` (the only correct fsync on APFS) costs ~5 ms per call.
-With `current_thread` scheduling the flusher blocks all writers during
-`sync_all()`, producing batch sizes of 1 and capping throughput at
-**~170 txn/s** regardless of WAL implementation. Both ringwal and
-async-wal-db hit the same ceiling — proving the bottleneck is the kernel,
-not the WAL design.
+With a single writer, each fsync covers only that writer's batch, capping
+throughput at **~170 txn/s**. But on a `multi_thread` runtime, multiple
+writers fill their rings in parallel on separate worker threads while the
+flusher drains *all* rings into a single batch before issuing one fsync.
+This is group commit: one fsync covers N writers' work.
 
-### 2. Ring decomposition delivers near-linear writer scaling
+The result is **near-linear scaling**: 8 writers reach **1,338 txn/s**
+(7.8× vs 1 writer) with wall-clock time unchanged (~2.95 s). The fsync
+cost is constant — more writers just mean more transactions per fsync
+batch. async-wal-db at 1 writer matches ringwal's single-writer baseline
+(~170 txn/s), confirming fsync is the common bottleneck.
 
-With fsync removed (`SyncMode::None`), the ring buffer architecture shows
-its strength: 8 writers reach **7.81× throughput** (vs 8× ideal) on
-`current_thread`. Each producer owns a dedicated SPSC ring with zero
-contention, so adding writers adds throughput proportionally.
+### 2. Ring decomposition delivers near-linear writer scaling (both modes)
 
-### 3. `multi_thread` runtime adds overhead without unlocking parallelism
+The ring-per-producer architecture shows near-linear scaling in both
+durable and no-sync modes:
 
-The `multi_thread` benchmarks (`wal_throughput_mt`) are **2–10% slower**
-than `current_thread` across all writer counts. The reason: the bottleneck
-is the **flusher's poll interval** (100 µs configured, ~1 ms effective on
-macOS due to timer coalescing), not cooperative scheduling. The flusher is
-the single serialization point — it must drain all rings, serialize, and
-write to disk. On `multi_thread`, cross-thread communication (wake
-latency, cache-line bouncing on ring atomics) adds overhead without
-enabling true pipelining.
+- **Durable (multi_thread)**: 8 writers → 7.8× (group-commit amortization)
+- **No-sync (current_thread)**: 8 writers → 7.81× (zero-contention rings)
 
-The `current_thread` runtime is actually *ideal* for this workload because
-writers and flusher share a single event loop with zero cross-thread
-synchronization overhead. The near-linear scaling (7.81×/8×) proves the
-ring decomposition eliminates contention within the single thread.
+Each producer owns a dedicated SPSC ring with zero contention, so adding
+writers adds throughput proportionally. The flusher drains all rings in
+one pass regardless of count.
 
-### 4. Unlocking higher durable throughput requires background fsync — with a data-loss trade-off
+### 3. Runtime choice depends on workload: `multi_thread` for durable, `current_thread` for no-sync
 
-The path to high durable throughput on macOS is to offload `sync_all()` to
-a background thread so writers can keep filling rings during the 5 ms
-fsync window, enabling real group commit (one fsync covers many writes).
+**Durable (`SyncMode::Full`)**: `multi_thread` is **essential**. On
+`current_thread`, `sync_all()` blocks the single thread — writers stall
+during the 5 ms fsync, batch sizes collapse to 1, and throughput caps at
+~170 txn/s regardless of writer count. On `multi_thread`, writers run on
+separate worker threads, filling rings while fsync blocks the flusher's
+thread. This enables group commit and the 7.8× scaling seen above.
+
+**No-sync (`SyncMode::None`)**: `current_thread` is 2–10% **faster**.
+The bottleneck is the flusher's poll interval (100 µs configured, ~1 ms
+effective on macOS due to timer coalescing). Since the flusher is the
+single serialization point (drain → serialize → write), cross-thread
+wake latency and cache-line bouncing on ring atomics add overhead without
+enabling pipelining. Writers and flusher sharing a single event loop with
+zero cross-thread overhead is ideal when there's no blocking I/O.
+
+### 4. Background fsync could push durable throughput further — with a data-loss trade-off
+
+The current durable benchmarks show **1,338 txn/s** at 8 writers via
+group commit, but fsync still blocks the flusher thread during each batch
+flush. Offloading `sync_all()` to a background thread (via
+`spawn_blocking()`) would let the flusher immediately start draining the
+next batch while the previous one syncs to disk. This would increase
+effective batch size and throughput further.
 
 **However, background fsync introduces a data-loss window.** If the
 process crashes after `write()` but before `sync_all()` completes, any
-writes in that window are lost — the OS page cache holds the data but it
-hasn't reached stable storage. The size of the window equals the fsync
-latency (~5 ms on macOS), so at 838 writes/writer/sec × 8 writers, up to
-**~33 committed transactions could be lost on crash**.
+writes in that window are lost. The size equals fsync latency (~5 ms).
 
-This is a fundamental trade-off:
-
-| Strategy | Throughput | Durability guarantee |
-|----------|-----------|---------------------|
-| **Sync per batch** (current) | ~170 txn/s | Every committed txn is durable before ack |
-| **Background fsync** | ~6,500 txn/s (projected) | Writes acked before fsync — crash can lose the last fsync window |
+| Strategy | Throughput (8 writers) | Durability guarantee |
+|----------|----------------------|---------------------|
+| **Sync per batch** (current) | ~1,338 txn/s | Every committed txn is durable before ack |
+| **Background fsync** (projected) | higher (TBD) | Writes acked before fsync — crash can lose last sync window |
 | **`SyncMode::None`** (current bench) | ~6,500 txn/s | No durability — flush only, data lost on crash |
 
-The background-fsync approach is what most production WALs use (e.g.,
-PostgreSQL's `wal_sync_method = fdatasync` with `commit_delay`). It's
-acceptable when:
-- The application can tolerate losing the last few milliseconds of writes
-- A replication layer provides redundancy (lost writes survive on replicas)
-- The commit protocol allows replay from upstream
+### 5. Additional `multi_thread` opportunities
 
-For applications requiring strict per-transaction durability (e.g.,
-financial ledgers without replication), the current synchronous fsync
-path is the only correct choice. The ~170 txn/s ceiling is a hardware
-constraint, not a software one.
-
-### 5. Where `multi_thread` *would* help
-
-`multi_thread` becomes beneficial when the flusher does expensive work
-that genuinely benefits from parallelism with writers:
+Beyond group-commit scaling (already demonstrated), `multi_thread`
+enables:
 
 1. **Background fsync** — the flusher writes to the page cache (fast) and
-   spawns `sync_all()` on a blocking thread via `spawn_blocking()`. Writers
-   continue filling rings on worker threads during the 5 ms fsync. This
-   requires `multi_thread` because `spawn_blocking` needs a thread pool.
+   spawns `sync_all()` on `spawn_blocking()`. The flusher immediately
+   starts the next batch drain while the previous one syncs, increasing
+   pipeline depth.
 2. **Compression/encryption** — if the flusher must compress or encrypt
    batches before writing, that CPU work can overlap with writers producing
    on separate cores.
@@ -118,12 +119,13 @@ Max writers:       16
 Segment size:      256 MB
 Batch hint:        512
 Flush interval:    1 ms (durable) / 100 µs (throughput)
-Payload sizes:     16 / 64 / 256 / 1024 bytes (throughput sweep)
+Payload sizes:     64 bytes (durable) / 16 / 64 / 256 / 1024 bytes (throughput)
 Txns per writer:   500 (durable) / 5,000 (throughput)
-Writer counts:     1 / 2 / 4 / 8 (throughput sweep)
+Writer counts:     1 / 2 / 4 / 8 (durable + throughput sweeps)
 Samples:           20
 Measurement time:  10 s
-Runtimes:          current_thread + multi_thread (4 workers)
+Runtimes:          multi_thread 4 workers (durable + throughput_mt)
+                   current_thread (throughput)
 Setup isolation:   iter_batched with fresh TempDir per iteration
 ```
 
