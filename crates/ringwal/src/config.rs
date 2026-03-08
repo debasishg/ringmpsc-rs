@@ -3,11 +3,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Controls when `sync_all()` is called after writing a batch.
+/// Controls when and how the flusher syncs data to disk after writing a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncMode {
     /// `sync_all()` after every batch — full durability (default).
+    /// Blocks the flusher task during fsync.
     Full,
+    /// `sync_data()` after every batch — flushes file data but not metadata
+    /// (e.g. file size, mtime). Faster than `Full` on Linux/ext4 where
+    /// metadata sync is expensive. On macOS this is equivalent to `Full`.
+    DataOnly,
+    /// Flush + `spawn_blocking(sync_all)` — offloads fsync to Tokio's
+    /// blocking thread pool. The flusher awaits the result but yields
+    /// the worker thread so writers on other threads keep filling rings.
+    /// Requires `multi_thread` runtime for any benefit.
+    Background,
     /// Flush BufWriter to kernel buffer only — faster but data may be
     /// lost on crash. Useful for benchmarks and testing.
     None,
@@ -36,7 +46,7 @@ pub struct WalConfig {
     /// Enable per-ring metrics collection.
     /// Default: false.
     pub enable_metrics: bool,
-    /// Sync mode: `Full` (fsync per batch, durable) or `None` (flush-only, fast).
+    /// Sync mode: `Full` | `DataOnly` | `Background` | `None`.
     /// Default: `SyncMode::Full`.
     pub sync_mode: SyncMode,
 }

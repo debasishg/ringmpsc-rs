@@ -231,7 +231,7 @@ async fn flusher_task<K, V>(
                         while let Some(envelope) = receiver.next().await {
                             collect_envelope(envelope, &next_lsn, &mut batch, &mut commit_waiters);
                         }
-                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode);
+                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
                         return;
                     }
                 }
@@ -251,14 +251,14 @@ async fn flusher_task<K, V>(
                 }
                 None => {
                     // Stream ended (all senders dropped)
-                    flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode);
+                    flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
                     return;
                 }
             }
         }
 
         if !batch.is_empty() {
-            flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode);
+            flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
         }
     }
 }
@@ -290,7 +290,7 @@ fn collect_envelope<K, V>(
 }
 
 /// Writes a batch to the segment manager, optionally fsyncs, and notifies commit waiters.
-fn flush_and_notify(
+async fn flush_and_notify(
     segment_mgr: &mut SegmentManager,
     batch: &mut Vec<(u64, Vec<u8>)>,
     commit_waiters: &mut Vec<oneshot::Sender<()>>,
@@ -313,6 +313,27 @@ fn flush_and_notify(
             // Fsync the active segment — guarantees durability
             let _fsynced = segment_mgr.fsync().is_ok();
             debug_assert_commit_durable!(_fsynced);
+        }
+        SyncMode::DataOnly => {
+            // Fsync data only (skip metadata) — faster on Linux/ext4
+            let _fsynced = segment_mgr.fsync_data().is_ok();
+            debug_assert_commit_durable!(_fsynced);
+        }
+        SyncMode::Background => {
+            // Offload fsync to Tokio's blocking thread pool.
+            // flush_and_clone_fd() flushes the BufWriter and dup()s the fd;
+            // sync_all() on the clone syncs the same inode.
+            match segment_mgr.flush_and_clone_fd() {
+                Ok(fd) => {
+                    let result = tokio::task::spawn_blocking(move || fd.sync_all())
+                        .await;
+                    let _fsynced = matches!(result, Ok(Ok(())));
+                    debug_assert_commit_durable!(_fsynced);
+                }
+                Err(e) => {
+                    eprintln!("ringwal: flush_and_clone_fd error: {e}");
+                }
+            }
         }
         SyncMode::None => {
             // Flush BufWriter to kernel buffer but skip fsync —

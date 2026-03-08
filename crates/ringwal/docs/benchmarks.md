@@ -12,13 +12,16 @@ eliminating runtime-construction overhead from measurements.
 
 ### Durable (fsync) — 64-byte payload, `multi_thread` runtime
 
-| WAL | Writers | Throughput | Scaling |
-|-----|---------|-----------|---------|
-| ringwal | 1 | ~171 txn/s | 1.0× |
-| ringwal | 2 | ~337 txn/s | 2.0× |
-| ringwal | 4 | ~677 txn/s | 4.0× |
-| ringwal | 8 | ~1,338 txn/s | 7.8× |
-| async-wal-db | 1 | ~170 txn/s | (reference) |
+| WAL | SyncMode | Writers | Throughput | vs Full/1 |
+|-----|----------|---------|-----------|----------|
+| ringwal | Full | 1 | ~171 txn/s | 1.0× |
+| ringwal | Full | 2 | ~337 txn/s | 2.0× |
+| ringwal | Full | 4 | ~677 txn/s | 4.0× |
+| ringwal | Full | 8 | ~1,359 txn/s | 7.9× |
+| ringwal | Background | 1 | ~161 txn/s | 0.9× |
+| ringwal | Background | 4 | ~653 txn/s | 3.8× |
+| ringwal | Background | 8 | ~1,347 txn/s | 7.9× |
+| async-wal-db | — | 1 | ~170 txn/s | (reference) |
 
 ### No-sync — `current_thread` vs `multi_thread` (64-byte payload)
 
@@ -77,34 +80,56 @@ wake latency and cache-line bouncing on ring atomics add overhead without
 enabling pipelining. Writers and flusher sharing a single event loop with
 zero cross-thread overhead is ideal when there's no blocking I/O.
 
-### 4. Background fsync could push durable throughput further — with a data-loss trade-off
+### 4. `SyncMode::Background` — spawn_blocking fsync
 
-The current durable benchmarks show **1,338 txn/s** at 8 writers via
-group commit, but fsync still blocks the flusher thread during each batch
-flush. Offloading `sync_all()` to a background thread (via
-`spawn_blocking()`) would let the flusher immediately start draining the
-next batch while the previous one syncs to disk. This would increase
-effective batch size and throughput further.
+`Background` mode offloads `sync_all()` to Tokio's blocking thread pool
+via `spawn_blocking()`. The flusher clones the file descriptor (`dup()`)
+and awaits the blocking task, yielding the Tokio worker thread so other
+tasks (writers) can progress.
 
-**However, background fsync introduces a data-loss window.** If the
-process crashes after `write()` but before `sync_all()` completes, any
-writes in that window are lost. The size equals fsync latency (~5 ms).
+**Result**: Background matches Full within noise at all writer counts.
+With 8 writers: **~1,347 txn/s** (Background) vs **~1,359 txn/s** (Full).
+At 1 writer, Background is ~6% slower due to `spawn_blocking` overhead
+(thread switch + schedule).
 
-| Strategy | Throughput (8 writers) | Durability guarantee |
-|----------|----------------------|---------------------|
-| **Sync per batch** (current) | ~1,338 txn/s | Every committed txn is durable before ack |
-| **Background fsync** (projected) | higher (TBD) | Writes acked before fsync — crash can lose last sync window |
-| **`SyncMode::None`** (current bench) | ~6,500 txn/s | No durability — flush only, data lost on crash |
+Why no improvement? The flusher **awaits** the `spawn_blocking` result
+before notifying commit waiters — it doesn't pipeline. This preserves
+the durability guarantee (every committed txn is fsync'd before ack) but
+means the flusher still does one fsync per batch cycle. The win would
+come from **fire-and-forget** pipelining (start next drain while previous
+fsync runs), which trades strict per-batch durability for throughput.
 
-### 5. Additional `multi_thread` opportunities
+### 5. Flush interval tuning: shorter is better for durable
+
+Sweep with `SyncMode::Background`, 4 writers, batch_hint 512/2048/8192:
+
+| flush_interval | batch_hint | Throughput |
+|---------------|-----------|------------|
+| 1 ms | 512 | ~650 txn/s |
+| 1 ms | 2048 | ~653 txn/s |
+| 1 ms | 8192 | ~641 txn/s |
+| 5 ms | 512 | ~401 txn/s |
+| 5 ms | 2048 | ~401 txn/s |
+| 5 ms | 8192 | ~401 txn/s |
+| 10 ms | 512 | ~398 txn/s |
+| 10 ms | 2048 | ~398 txn/s |
+| 10 ms | 8192 | ~398 txn/s |
+
+**Key finding**: `batch_hint` has no effect — the flusher is always
+blocked on fsync, not on draining. `flush_interval` dominates:
+with 5 ms fsync per cycle, each cycle takes `flush_interval + fsync`.
+At 1 ms interval: ~6 ms/cycle → ~167 fsyncs/s. At 10 ms: ~15 ms/cycle
+→ ~67 fsyncs/s. Shorter intervals minimize idle time between fsyncs.
+
+### 6. Additional `multi_thread` opportunities
 
 Beyond group-commit scaling (already demonstrated), `multi_thread`
 enables:
 
-1. **Background fsync** — the flusher writes to the page cache (fast) and
-   spawns `sync_all()` on `spawn_blocking()`. The flusher immediately
-   starts the next batch drain while the previous one syncs, increasing
-   pipeline depth.
+1. **Pipelined fsync** — fire-and-forget `spawn_blocking(sync_all)`,
+   immediately start draining next batch. Trades per-batch durability
+   for higher throughput. Commit waiters notified after the *next* fsync
+   completes.
 2. **Compression/encryption** — if the flusher must compress or encrypt
    batches before writing, that CPU work can overlap with writers producing
    on separate cores.
@@ -117,12 +142,15 @@ enables:
 Ring capacity:     16,384 slots (ring_bits = 14)
 Max writers:       16
 Segment size:      256 MB
-Batch hint:        512
-Flush interval:    1 ms (durable) / 100 µs (throughput)
+Batch hint:        512 (default), tuning sweep: 512 / 2048 / 8192
+Flush interval:    1 ms (durable default), tuning sweep: 1 / 5 / 10 ms
+                   100 µs (throughput)
+Sync modes:        Full (sync_all), Background (spawn_blocking + sync_all),
+                   DataOnly (sync_data), None (flush only)
 Payload sizes:     64 bytes (durable) / 16 / 64 / 256 / 1024 bytes (throughput)
-Txns per writer:   500 (durable) / 5,000 (throughput)
-Writer counts:     1 / 2 / 4 / 8 (durable + throughput sweeps)
-Samples:           20
+Txns per writer:   2,000 (durable) / 5,000 (throughput)
+Writer counts:     1 / 2 / 4 / 8
+Samples:           20 (10 for tuning sweep)
 Measurement time:  10 s
 Runtimes:          multi_thread 4 workers (durable + throughput_mt)
                    current_thread (throughput)
@@ -132,19 +160,27 @@ Setup isolation:   iter_batched with fresh TempDir per iteration
 ## Running
 
 ```bash
-# All groups (durable + throughput + throughput_mt)
+# All groups
 cargo bench -p ringwal
 
-# current_thread throughput only
-cargo bench -p ringwal -- "wal_throughput/"
+# Durable: Full sync (fsync per batch)
+cargo bench -p ringwal -- "wal_durable/ringwal"
 
-# multi_thread throughput only
+# Durable: Background fsync (spawn_blocking)
+cargo bench -p ringwal -- "wal_durable_bg"
+
+# Durable: config tuning sweep (flush_interval × batch_hint)
+cargo bench -p ringwal -- "wal_durable_tuning"
+
+# No-sync throughput (current_thread / multi_thread)
+cargo bench -p ringwal -- "wal_throughput/"
 cargo bench -p ringwal -- "wal_throughput_mt"
 
 # Specific payload × writer combo
 cargo bench -p ringwal -- "wal_throughput/64B/8"
 cargo bench -p ringwal -- "wal_throughput_mt/64B/8"
 
-# Durable only (fsync, slow)
-cargo bench -p ringwal -- "wal_durable"
+# Single writer count (use $ anchor to avoid prefix matching)
+cargo bench -p ringwal -- "wal_durable/ringwal/1$"
+cargo bench -p ringwal -- "wal_durable_bg/ringwal-bg/8$"
 ```

@@ -1,20 +1,22 @@
 //! Throughput benchmarks for ringwal.
 //!
-//! Three benchmark groups:
+//! Five benchmark groups:
 //!
-//! 1. **`wal_durable`** — ringwal with full `sync_all()` after every batch,
-//!    on a `multi_thread` runtime. Sweeps 1/2/4/8 writers to show group-
-//!    commit scaling under fsync. Uses `multi_thread` so writers run in
-//!    parallel with the flusher — fsync on one thread doesn't block
-//!    writers filling rings on other threads.
+//! 1. **`wal_durable`** — ringwal with `SyncMode::Full` (sync fsync) on
+//!    a `multi_thread` runtime. Sweeps 1/2/4/8 writers.
 //!
-//! 2. **`wal_throughput`** — ringwal with `SyncMode::None` on a
-//!    `current_thread` runtime. Sweeps payload sizes (16/64/256/1024 B)
-//!    × writer counts (1/2/4/8). Shows single-threaded cooperative
-//!    throughput ceiling.
+//! 2. **`wal_durable_bg`** — ringwal with `SyncMode::Background` (fsync
+//!    offloaded to `spawn_blocking`). Same writer sweep. Shows the
+//!    benefit of not blocking the flusher task during fsync.
 //!
-//! 3. **`wal_throughput_mt`** — Same as (2) but on a `multi_thread`
-//!    runtime. Comparison point to isolate runtime overhead.
+//! 3. **`wal_durable_tuning`** — flush_interval × batch_hint sweep on
+//!    `SyncMode::Background` with 4 writers. Shows batching
+//!    amortisation under different configurations.
+//!
+//! 4. **`wal_throughput`** — `SyncMode::None` on `current_thread`.
+//!    Payload (16/64/256/1024 B) × writer (1/2/4/8) sweep.
+//!
+//! 5. **`wal_throughput_mt`** — Same as (4) on `multi_thread`.
 //!
 //! All groups use a shared runtime per benchmark function (via
 //! `b.to_async(&rt)`). Each iteration gets a fresh `TempDir` via
@@ -30,7 +32,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
-const DURABLE_TXN: u64 = 500; // fsync-bound → keep small to avoid hour-long runs
+const DURABLE_TXN: u64 = 2_000; // increased for statistical stability with multi_thread
 const THROUGHPUT_TXN: u64 = 5_000; // no fsync → more samples for statistical accuracy
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -60,6 +62,16 @@ fn ringwal_config_durable(dir: &std::path::Path) -> ringwal::WalConfig {
         .with_flush_interval(Duration::from_millis(1))
         .with_batch_hint(512)
         .with_sync_mode(SyncMode::Full)
+}
+
+fn ringwal_config_background(dir: &std::path::Path) -> ringwal::WalConfig {
+    ringwal::WalConfig::new(dir)
+        .with_ring_bits(14)
+        .with_max_writers(16)
+        .with_max_segment_size(256 * 1024 * 1024)
+        .with_flush_interval(Duration::from_millis(1))
+        .with_batch_hint(512)
+        .with_sync_mode(SyncMode::Background)
 }
 
 fn ringwal_config_fast(dir: &std::path::Path) -> ringwal::WalConfig {
@@ -176,6 +188,84 @@ fn bench_durable(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Durable benchmarks — background fsync (spawn_blocking) ───────────────────
+
+fn bench_durable_bg(c: &mut Criterion) {
+    let rt = make_mt_rt();
+    let mut group = c.benchmark_group("wal_durable_bg");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(3));
+
+    for num_writers in [1, 2, 4, 8] {
+        let total_txn = num_writers as u64 * DURABLE_TXN;
+        group.throughput(Throughput::Elements(total_txn));
+
+        group.bench_with_input(
+            BenchmarkId::new("ringwal-bg", num_writers),
+            &num_writers,
+            |b, &nw| {
+                b.to_async(&rt).iter_batched(
+                    || {
+                        let dir = tempfile::tempdir().unwrap();
+                        let config = ringwal_config_background(dir.path());
+                        (dir, config)
+                    },
+                    |(_dir, config)| ringwal_bench(nw, DURABLE_TXN, 64, config),
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ── Durable tuning sweep — flush_interval × batch_hint on Background ─────────
+
+fn bench_durable_tuning(c: &mut Criterion) {
+    let rt = make_mt_rt();
+    let mut group = c.benchmark_group("wal_durable_tuning");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(3));
+
+    let num_writers = 4;
+    let total_txn = num_writers as u64 * DURABLE_TXN;
+
+    for flush_ms in [1u64, 5, 10, 20] {
+        for batch_hint in [512usize, 2048, 8192] {
+            group.throughput(Throughput::Elements(total_txn));
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("f{flush_ms}ms-b{batch_hint}"),
+                    num_writers,
+                ),
+                &num_writers,
+                |b, &nw| {
+                    b.to_async(&rt).iter_batched(
+                        || {
+                            let dir = tempfile::tempdir().unwrap();
+                            let config = ringwal::WalConfig::new(dir.path())
+                                .with_ring_bits(14)
+                                .with_max_writers(16)
+                                .with_max_segment_size(256 * 1024 * 1024)
+                                .with_flush_interval(Duration::from_millis(flush_ms))
+                                .with_batch_hint(batch_hint)
+                                .with_sync_mode(SyncMode::Background);
+                            (dir, config)
+                        },
+                        |(_dir, config)| ringwal_bench(nw, DURABLE_TXN, 64, config),
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 // ── Ring throughput benchmarks (no fsync, payload × writer sweep) ────────────
 
 fn bench_ring_throughput(c: &mut Criterion) {
@@ -258,5 +348,5 @@ fn bench_ring_throughput_mt(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_durable, bench_ring_throughput, bench_ring_throughput_mt);
+criterion_group!(benches, bench_durable, bench_durable_bg, bench_durable_tuning, bench_ring_throughput, bench_ring_throughput_mt);
 criterion_main!(benches);

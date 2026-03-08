@@ -84,10 +84,21 @@ impl Segment {
         self.size >= self.max_size
     }
 
-    /// Flushes the buffer and fsyncs data to disk.
+    /// Flushes the buffer and fsyncs data + metadata to disk.
     pub fn fsync(&mut self) -> Result<(), WalError> {
         self.file.flush()?;
         self.file.get_ref().sync_all()?;
+        Ok(())
+    }
+
+    /// Flushes the buffer and fsyncs data only (no metadata) to disk.
+    ///
+    /// Uses `sync_data()` which maps to `fdatasync` on Linux — avoids
+    /// the metadata write that `sync_all()` requires. On macOS this is
+    /// equivalent to `sync_all()` (`F_FULLFSYNC` flushes everything).
+    pub fn fsync_data(&mut self) -> Result<(), WalError> {
+        self.file.flush()?;
+        self.file.get_ref().sync_data()?;
         Ok(())
     }
 
@@ -160,9 +171,14 @@ impl SegmentManager {
         Ok(())
     }
 
-    /// Flushes and fsyncs the active segment.
+    /// Flushes and fsyncs the active segment (data + metadata).
     pub fn fsync(&mut self) -> Result<(), WalError> {
         self.active.fsync()
+    }
+
+    /// Flushes and fsyncs data only (no metadata) on the active segment.
+    pub fn fsync_data(&mut self) -> Result<(), WalError> {
+        self.active.fsync_data()
     }
 
     /// Flushes the active segment's BufWriter to the kernel buffer (no fsync).
