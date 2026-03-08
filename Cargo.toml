@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ringmpsc", "crates/span_collector", "crates/ringmpsc-stream"]
+members = ["crates/ringmpsc", "crates/span_collector", "crates/ringmpsc-stream", "crates/ringwal"]
 
 # Default to the ringmpsc library crate
 default-members = ["crates/ringmpsc"]
