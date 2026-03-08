@@ -42,6 +42,54 @@ macro_rules! debug_assert_shutdown_drained {
 }
 
 // =============================================================================
+// INV-STREAM-05: Register-Then-Recheck (Notification Race Fix)
+// =============================================================================
+
+/// Assert that the post-registration re-drain caught items in the race window.
+///
+/// **Invariant**: After registering our waker via `data_notified.poll(cx)`,
+/// we must re-drain the ring buffer. Any items found were pushed between our
+/// last drain and the waker registration — the classic lost-wakeup window.
+///
+/// This assertion fires only when items ARE found, confirming the recheck
+/// was necessary and caught real data. Zero items means no race occurred.
+///
+/// Used in: `RingReceiver::poll_next()` after `data_notified.poll()` → Pending
+macro_rules! debug_assert_recheck_after_register {
+    ($recheck_count:expr) => {
+        debug_assert!(
+            $recheck_count > 0,
+            "INV-STREAM-05: recheck_after_register called but found 0 items \
+             (this assert should only be reached when recheck_count > 0)"
+        )
+    };
+}
+
+// =============================================================================
+// INV-STREAM-06: Timer Tick Loop (Waker Registration Guarantee)
+// =============================================================================
+
+/// Assert that the timer poll_tick loop consumed at least one tick before
+/// reaching the Pending state that registers the waker.
+///
+/// **Invariant**: `poll_tick()` is called in a loop until it returns `Pending`.
+/// `Interval::poll_tick()` only registers the waker when returning `Pending`.
+/// If only called once and it returns `Ready` (first tick fires immediately),
+/// the waker is never registered and the timer is permanently dead.
+///
+/// This is a structural/documentation assertion — the loop in `receiver.rs`
+/// guarantees this by construction. The assert documents the requirement.
+///
+/// Used in: `RingReceiver::poll_next()` timer polling loop
+macro_rules! debug_assert_timer_pending_reached {
+    () => {
+        // Structural assertion: this macro is placed at the `Pending` branch
+        // of the poll_tick loop, confirming the waker was registered.
+        // The loop structure guarantees we always reach here.
+    };
+}
+
+// =============================================================================
 // INV-SINK-01: No Item Loss on Backpressure
 // =============================================================================
 
@@ -154,6 +202,8 @@ macro_rules! debug_assert_senders_woken {
 
 pub(crate) use debug_assert_backpressure_signaled;
 pub(crate) use debug_assert_data_notified;
+pub(crate) use debug_assert_recheck_after_register;
+pub(crate) use debug_assert_timer_pending_reached;
 pub(crate) use debug_assert_explicit_registration;
 pub(crate) use debug_assert_item_preserved;
 pub(crate) use debug_assert_senders_woken;

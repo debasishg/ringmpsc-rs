@@ -18,7 +18,7 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
-criterion.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
 async-wal-db = { path = "../../../async-wal-db" }
 
 [[bench]]

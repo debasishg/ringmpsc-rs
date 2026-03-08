@@ -17,7 +17,7 @@ thiserror = "1.0"
 
 # Optional/testing
 loom = "0.7"
-criterion = "0.5"
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 # Async runtime (span_collector)
 tokio = { version = "1.35", features = ["full"] }

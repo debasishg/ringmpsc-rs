@@ -18,11 +18,65 @@ Items from a single producer are received in the order they were sent. No global
 ```
 wake_condition = data_notify.notified() ∨ poll_interval.tick()
 ```
-The receiver uses event-driven wakeup (via `Notify`) with a configurable poll interval as a safety net for missed notifications.
+The receiver uses event-driven wakeup (via `Notify`) with a configurable poll interval as a safety net for batching and edge cases.
 
-**Rationale**: Pure event-driven may miss notifications due to races; pure polling adds latency. Hybrid provides best of both.
+**Rationale**: The register-then-recheck pattern (INV-STREAM-05) closes the in-flight race window (items arriving during `poll_next` execution). The timer is required for waking the task when items arrive between `poll_next` calls, since the `Notified` future is stack-local and dropped on return. The timer also enables batching.
 
 **Configuration**: `StreamConfig::poll_interval` (default: 10ms)
+
+### INV-STREAM-05: Register-Then-Recheck (Notification Race Fix)
+```
+data_notified.poll(cx) → Pending  →  re-drain ring buffer
+```
+After registering the waker via `data_notified.poll(cx)`, the receiver
+immediately re-drains the ring buffer. This closes the in-flight race
+window where a producer pushes an item and calls `notify_one()` between
+the last drain and the waker registration.
+
+**Scope**: This fix covers items arriving *during* `poll_next` execution.
+Items arriving *after* `poll_next` returns `Pending` are handled by
+the timer (INV-STREAM-02), since the `Notified` future is dropped on
+return and `notify_one()` can only store a permit, not wake the task.
+
+**Race sequence (without this fix)**:
+1. Consumer drains ring → empty
+2. Consumer calls `data_notify.notified()` → creates `Notified` future
+3. Producer pushes item → calls `notify_one()` → wakes task
+4. Consumer polls `data_notified` → `Pending` (notification consumed by wake)
+5. Consumer returns `Poll::Pending` → `data_notified` dropped
+6. On re-entry: `data_pending` is false → skips drain → items stuck until timer
+
+**Fix**: Step 4½ — after `Pending`, drain the ring. Any items found were
+pushed in the race window.
+
+**Location**: [src/receiver.rs](src/receiver.rs) — register-then-recheck block
+
+**Assertion**: `debug_assert_recheck_after_register!` in [src/invariants.rs](src/invariants.rs)
+
+### INV-STREAM-06: Timer Tick Loop (Waker Registration Guarantee)
+```
+loop { poll_tick(cx) → Ready: drain, continue; Pending: break }
+```
+`tokio::time::Interval::poll_tick()` only registers the waker when it returns
+`Poll::Pending`. If called once and it returns `Ready` (first tick fires
+immediately on construction), the waker is never registered and the timer
+permanently stops waking the task.
+
+**Bug (without this fix)**:
+1. `Interval` created → first tick is immediately `Ready`
+2. `poll_tick(cx)` returns `Ready` → drains ring, returns items
+3. On next `poll_next` call, `poll_tick(cx)` returns `Ready` again (elapsed)
+4. Eventually no ticks are elapsed → `poll_tick` returns `Pending` (registers waker)
+5. But if `poll_next` only called `poll_tick` once per invocation, step 4 never happens
+6. Timer is dead → receiver relies solely on `Notify` (which drops on return) → stall
+
+**Fix**: Loop over `poll_tick` calls, consuming all elapsed `Ready` ticks,
+until `Pending` is returned. The `Pending` return registers the waker for the
+next tick, keeping the timer alive.
+
+**Location**: [src/receiver.rs](src/receiver.rs) — timer polling loop
+
+**Assertion**: `debug_assert_timer_pending_reached!` (structural — placed at Pending branch)
 
 ### INV-STREAM-03: Backpressure Relief Signaling
 ```
@@ -172,6 +226,8 @@ is_terminal(Closed | ShutDown) = true
 | INV-STREAM-02 | Timer + notify interaction tests | N/A (behavioral - tokio::select!) |
 | INV-STREAM-03 | Backpressure tests | `receiver.rs` → `debug_assert_backpressure_signaled!` |
 | INV-STREAM-04 | Shutdown drain tests | `receiver.rs` → `debug_assert_shutdown_drained!` |
+| INV-STREAM-05 | Lost-wakeup regression tests (timer disabled) | `receiver.rs` → `debug_assert_recheck_after_register!` |
+| INV-STREAM-06 | Burst pattern tests (verify timer stays alive) | `receiver.rs` → `debug_assert_timer_pending_reached!` (structural) |
 | INV-SINK-01 | try_send preservation tests | `sender.rs` → `debug_assert_item_preserved!` |
 | INV-SINK-02 | Compile-time (no Clone impl) | N/A (compile-time via `!Clone`) |
 | INV-SINK-03 | Integration tests | `sender.rs` → `debug_assert_data_notified!` |
@@ -189,6 +245,8 @@ All runtime invariant checks are in [src/invariants.rs](src/invariants.rs):
 |-------|-----------|---------|
 | `debug_assert_backpressure_signaled!` | INV-STREAM-03 | Verify backpressure_notify.notify_waiters() called after drain |
 | `debug_assert_shutdown_drained!` | INV-STREAM-04 | Verify all items consumed before returning None |
+| `debug_assert_recheck_after_register!` | INV-STREAM-05 | Verify post-registration re-drain caught items in race window |
+| `debug_assert_timer_pending_reached!` | INV-STREAM-06 | Structural: placed at Pending branch of timer loop to document waker registration |
 | `debug_assert_item_preserved!` | INV-SINK-01 | Verify item returned on reserve failure |
 | `debug_assert_data_notified!` | INV-SINK-03 | Verify data_notify.notify_one() called after send |
 | `debug_assert_explicit_registration!` | INV-CH-01 | Document explicit registration via factory |

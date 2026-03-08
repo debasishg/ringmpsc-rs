@@ -2,7 +2,10 @@
 
 use crate::config::StreamConfig;
 #[cfg(debug_assertions)]
-use crate::invariants::{debug_assert_backpressure_signaled, debug_assert_shutdown_drained};
+use crate::invariants::{
+    debug_assert_backpressure_signaled, debug_assert_recheck_after_register,
+    debug_assert_shutdown_drained,
+};
 use crate::shutdown::{ShutdownHandle, ShutdownSignal, ShutdownState};
 use ringmpsc_rs::Channel;
 use std::collections::VecDeque;
@@ -222,29 +225,68 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
             Poll::Pending => {}
         }
 
-        // Poll interval timer as safety net
-        match this.poll_timer.as_mut().poll_tick(cx) {
-            Poll::Ready(_) => {
-                // Timer fired - try to drain even without notification
-                let batch_limit = this.config.batch_hint.saturating_sub(this.buffer.len());
-                if batch_limit > 0 {
-                    let mut count = 0;
-                    this.channel.consume_all_up_to_owned(batch_limit, |item| {
-                        this.buffer.push_back(item);
-                        count += 1;
-                    });
-                    if count > 0 {
-                        this.backpressure_notify.notify_waiters();
-                        // INV-STREAM-03: Verify backpressure signaled
-                        #[cfg(debug_assertions)]
-                        debug_assert_backpressure_signaled!(count, true);
-                        if let Some(item) = this.buffer.pop_front() {
-                            return Poll::Ready(Some(item));
-                        }
+        // INV-STREAM-05: Register-then-recheck — drain ring after waker
+        // registration to close the race window where a producer pushes
+        // an item + calls notify_one() between our last drain and the
+        // notified().poll() call above. Without this re-drain, the
+        // notification would wake our task, but on re-entry data_pending
+        // is false so we'd skip the drain and wait for the timer.
+        {
+            let batch_limit = this.config.batch_hint.saturating_sub(this.buffer.len());
+            if batch_limit > 0 {
+                let mut recheck_count = 0;
+                this.channel.consume_all_up_to_owned(batch_limit, |item| {
+                    this.buffer.push_back(item);
+                    recheck_count += 1;
+                });
+                if recheck_count > 0 {
+                    this.backpressure_notify.notify_waiters();
+                    // INV-STREAM-03: Verify backpressure signaled
+                    #[cfg(debug_assertions)]
+                    debug_assert_backpressure_signaled!(recheck_count, true);
+                    // INV-STREAM-05: Verify recheck caught items
+                    #[cfg(debug_assertions)]
+                    debug_assert_recheck_after_register!(recheck_count);
+                    if let Some(item) = this.buffer.pop_front() {
+                        return Poll::Ready(Some(item));
                     }
                 }
             }
-            Poll::Pending => {}
+        }
+
+        // Poll interval timer as safety net.
+        // IMPORTANT: poll_tick only registers the waker when it returns Pending.
+        // If it returns Ready (tick fired), we must loop to consume all elapsed
+        // ticks and eventually get Pending, which registers for the next tick.
+        // Without this loop, after the first Ready the timer is effectively dead
+        // and the task is never re-woken by the timer.
+        loop {
+            match this.poll_timer.as_mut().poll_tick(cx) {
+                Poll::Ready(_) => {
+                    // Timer fired - try to drain even without notification
+                    let batch_limit =
+                        this.config.batch_hint.saturating_sub(this.buffer.len());
+                    if batch_limit > 0 {
+                        let mut count = 0;
+                        this.channel.consume_all_up_to_owned(batch_limit, |item| {
+                            this.buffer.push_back(item);
+                            count += 1;
+                        });
+                        if count > 0 {
+                            this.backpressure_notify.notify_waiters();
+                            // INV-STREAM-03: Verify backpressure signaled
+                            #[cfg(debug_assertions)]
+                            debug_assert_backpressure_signaled!(count, true);
+                            if let Some(item) = this.buffer.pop_front() {
+                                return Poll::Ready(Some(item));
+                            }
+                        }
+                    }
+                    // Continue loop to consume more elapsed ticks and register
+                    // for the next one (poll_tick must return Pending to register).
+                }
+                Poll::Pending => break, // Waker registered for next tick (INV-STREAM-06)
+            }
         }
 
         // Check if channel is closed

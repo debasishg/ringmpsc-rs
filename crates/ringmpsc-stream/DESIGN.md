@@ -58,34 +58,103 @@
 
 ## Key Design Decisions
 
-### 1. Hybrid Polling Strategy (INV-STREAM-02)
+### 1. Hybrid Polling Strategy (INV-STREAM-02, INV-STREAM-05)
 
-**Problem**: Pure event-driven polling via `Notify` can miss notifications due to races. Pure interval polling adds latency.
+**Problem**: Pure event-driven polling via `Notify` suffers from a classic
+lost-wakeup race. Pure interval polling adds latency.
 
-**Solution**: Combine both approaches:
+**Solution**: Register-then-recheck pattern with timer safety net:
 
 ```
-┌─────────────────────────────────────────────┐
-│           Hybrid Polling Strategy           │
-├─────────────────────────────────────────────┤
-│                                             │
-│   Event-Driven Path (fast)                  │
-│   ┌─────────────────────────────────────┐   │
-│   │ Sender: data_notify.notify_one()    │   │
-│   │           │                         │   │
-│   │           ▼                         │   │
-│   │ Receiver: data_notify.notified()    │   │
-│   │           wakes immediately         │   │
-│   └─────────────────────────────────────┘   │
-│                                             │
-│   + Safety Net (catch missed notifies)      │
-│   ┌─────────────────────────────────────┐   │
-│   │ poll_timer.tick() every 10ms        │   │
-│   │ Ensures wake within poll_interval   │   │
-│   └─────────────────────────────────────┘   │
-│                                             │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│           Hybrid Polling Strategy (Race-Free)                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Event-Driven Path (fast)                                      │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │ Sender: data_notify.notify_one()                        │   │
+│   │           │                                             │   │
+│   │           ▼                                             │   │
+│   │ Receiver: data_notify.notified()                        │   │
+│   │           wakes immediately                             │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│   + Register-Then-Recheck (closes race window)                  │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │ 1. Drain ring → empty                                   │   │
+│   │ 2. Register waker: notified().poll(cx) → Pending         │   │
+│   │ 3. Re-drain ring (catches items pushed in 1→2 gap)       │   │
+│   │    └─ If items found → return Ready (no lost wakeup)     │   │
+│   │    └─ If empty → any future notify_one() wakes us        │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│   + Timer Safety Net (required for inter-poll-next waking)          │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │ poll_timer.tick() every 10ms                             │   │
+│   │ When poll_next returns Pending, the Notified future is   │   │
+│   │ dropped (stack-local). notify_one() after that stores a  │   │
+│   │ permit but can't wake the task. The timer re-wakes the   │   │
+│   │ task, which then consumes the stored permit. Also enables │   │
+│   │ batching for high-throughput scenarios.                   │   │
+│   │                                                          │   │
+│   │ CRITICAL (INV-STREAM-06): poll_tick() must be called in  │   │
+│   │ a loop until it returns Pending. poll_tick only registers │   │
+│   │ the waker on Pending — a single Ready return without     │   │
+│   │ reaching Pending leaves the timer permanently dead.      │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**The Lost-Wakeup Race (fixed by INV-STREAM-05)**:
+
+Without the re-drain, the following interleaving causes items to be stuck
+in the ring until the timer fires:
+
+```
+Consumer                              Producer
+────────                              ────────
+drain ring → empty
+                                      push item
+                                      notify_one() → wakes consumer task
+notified().poll(cx) → Pending
+  (wake already consumed)
+return Poll::Pending
+  (data_notified dropped)
+re-enter poll_next:
+  data_pending = false → skip drain   ← BUG: items in ring, not drained
+  new notified().poll() → Pending     ← waiting for notification that
+                                        already happened
+  ... waits until timer fires ...
+```
+
+The fix inserts a re-drain between steps 2 and 3, catching any items
+pushed during the race window.
+
+**The Timer Death Bug (fixed by INV-STREAM-06)**:
+
+`tokio::time::Interval::poll_tick()` only registers the waker when it returns
+`Poll::Pending`. If the code calls `poll_tick` once per `poll_next` invocation
+and it returns `Ready` (tick elapsed), the waker is never registered for the
+next tick:
+
+```
+poll_next call 1:
+  poll_tick(cx) → Ready (first tick fires immediately)
+  drain ring, return items → timer waker NOT registered
+
+poll_next call 2:
+  poll_tick(cx) → Ready (time elapsed during processing)
+  drain ring, return items → timer waker STILL not registered
+
+poll_next call N:
+  poll_tick(cx) → Ready → process → no waker → ...
+  Timer is effectively dead. Receiver stalls.
+```
+
+The fix changes the single `poll_tick` call to a loop that consumes all elapsed
+`Ready` ticks and breaks only on `Pending` — which registers the waker for the
+next tick. This guarantees the timer stays alive across `poll_next` calls.
 
 **Configuration**: `StreamConfig::poll_interval` (default 10ms)
 
