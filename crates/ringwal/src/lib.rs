@@ -45,6 +45,7 @@ mod wal;
 mod writer;
 
 pub use config::WalConfig;
+pub use config::SyncMode;
 pub use entry::{ByteWalEntry, WalEntry, WalEntryHeader};
 pub use error::WalError;
 pub use recovery::{

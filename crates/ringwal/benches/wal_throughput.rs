@@ -1,37 +1,64 @@
 //! Throughput benchmarks for ringwal vs async-wal-db.
 //!
-//! Benchmarks:
-//! - Single-writer throughput
-//! - Multi-writer scaling (1, 2, 4, 8 writers)
+//! Two benchmark groups:
 //!
-//! Uses `current_thread` tokio runtime per iteration because
-//! `RingReceiver`'s Stream impl has a notification race under
-//! multi-thread runtimes (tracked separately).
+//! 1. **`wal_durable`** — Both WALs with full `sync_all()` after every batch.
+//!    Shows real durable-commit throughput (~170 txn/s on macOS due to
+//!    `F_FULLFSYNC` ≈ 5 ms per call).  Numbers are comparable because both
+//!    implementations are fsync-bound under `current_thread` scheduling.
+//!
+//! 2. **`wal_throughput`** — ringwal with `SyncMode::None` (flush-only, no
+//!    fsync) and aggressive 100µs poll interval at 1/2/4/8 writers.
+//!    Shows the ring buffer + serialization + I/O write throughput without
+//!    the disk durability bottleneck.
+//!
+//! **Note on `current_thread`**: Both groups use a single-threaded tokio
+//! runtime. The writer and flusher alternate cooperatively, so each commit
+//! round-trip is bounded by the flusher's poll interval. This is realistic
+//! for embedded / single-core deployments but understates throughput on
+//! multi-core systems. A multi-thread runtime would allow true pipelining
+//! but is blocked by a known `RingReceiver` notification race (tracked
+//! separately).
 //!
 //! Run: `cargo bench -p ringwal`
 
 use criterion::{
     criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
 };
+use ringwal::SyncMode;
 use std::sync::Arc;
 use std::time::Duration;
 
-const TXN_PER_WRITER: u64 = 500;
+const DURABLE_TXN: u64 = 500; // fsync-bound → keep small to avoid hour-long runs
+const THROUGHPUT_TXN: u64 = 5_000; // no fsync → more samples for statistical accuracy
 
 // ── ringwal helpers ───────────────────────────────────────────────────────────
 
-fn ringwal_config(dir: &std::path::Path) -> ringwal::WalConfig {
+fn ringwal_config_durable(dir: &std::path::Path) -> ringwal::WalConfig {
     ringwal::WalConfig::new(dir)
-        .with_ring_bits(14) // 16384 slots
+        .with_ring_bits(14)
         .with_max_writers(16)
-        .with_max_segment_size(256 * 1024 * 1024) // 256MB — avoid rotation overhead
+        .with_max_segment_size(256 * 1024 * 1024)
         .with_flush_interval(Duration::from_millis(1))
         .with_batch_hint(512)
+        .with_sync_mode(SyncMode::Full)
 }
 
-async fn ringwal_bench(num_writers: usize, txn_per_writer: u64) {
-    let dir = tempfile::tempdir().unwrap();
-    let config = ringwal_config(dir.path());
+fn ringwal_config_fast(dir: &std::path::Path) -> ringwal::WalConfig {
+    ringwal::WalConfig::new(dir)
+        .with_ring_bits(14)
+        .with_max_writers(16)
+        .with_max_segment_size(256 * 1024 * 1024)
+        .with_flush_interval(Duration::from_micros(100)) // aggressive polling
+        .with_batch_hint(512)
+        .with_sync_mode(SyncMode::None)
+}
+
+async fn ringwal_bench(
+    num_writers: usize,
+    txn_per_writer: u64,
+    config: ringwal::WalConfig,
+) {
     let (mut wal, factory) = ringwal::Wal::open::<String, Vec<u8>>(config).unwrap();
 
     let mut handles = Vec::new();
@@ -91,44 +118,49 @@ async fn async_wal_db_bench(num_writers: usize, txn_per_writer: u64) {
     db.wal.stop_flusher().await.unwrap();
 }
 
-// ── Criterion benchmarks ─────────────────────────────────────────────────────
+// ── helpers ──────────────────────────────────────────────────────────────────
 
-fn bench_single_writer(c: &mut Criterion) {
-    let mut group = c.benchmark_group("wal_single_writer");
-    group.throughput(Throughput::Elements(TXN_PER_WRITER));
+fn make_rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+// ── Durable benchmarks (fsync per batch) ─────────────────────────────────────
+
+fn bench_durable(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wal_durable");
+    group.throughput(Throughput::Elements(DURABLE_TXN));
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(3));
 
     group.bench_function("ringwal", |b| {
         b.iter(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(ringwal_bench(1, TXN_PER_WRITER));
+            let dir = tempfile::tempdir().unwrap();
+            let config = ringwal_config_durable(dir.path());
+            make_rt().block_on(ringwal_bench(1, DURABLE_TXN, config));
         });
     });
 
     group.bench_function("async-wal-db", |b| {
         b.iter(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async_wal_db_bench(1, TXN_PER_WRITER));
+            make_rt().block_on(async_wal_db_bench(1, DURABLE_TXN));
         });
     });
 
     group.finish();
 }
 
-fn bench_multi_writer_scaling(c: &mut Criterion) {
-    let mut group = c.benchmark_group("wal_scaling");
+// ── Ring throughput benchmarks (no fsync) ────────────────────────────────────
+
+fn bench_ring_throughput(c: &mut Criterion) {
+    let mut group = c.benchmark_group("wal_throughput");
     group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(3));
+    group.warm_up_time(Duration::from_secs(1));
 
     for num_writers in [1, 2, 4, 8] {
-        let total_txn = num_writers as u64 * TXN_PER_WRITER;
+        let total_txn = num_writers as u64 * THROUGHPUT_TXN;
         group.throughput(Throughput::Elements(total_txn));
 
         group.bench_with_input(
@@ -136,25 +168,9 @@ fn bench_multi_writer_scaling(c: &mut Criterion) {
             &num_writers,
             |b, &nw| {
                 b.iter(|| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(ringwal_bench(nw, TXN_PER_WRITER));
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("async-wal-db", num_writers),
-            &num_writers,
-            |b, &nw| {
-                b.iter(|| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(async_wal_db_bench(nw, TXN_PER_WRITER));
+                    let dir = tempfile::tempdir().unwrap();
+                    let config = ringwal_config_fast(dir.path());
+                    make_rt().block_on(ringwal_bench(nw, THROUGHPUT_TXN, config));
                 });
             },
         );
@@ -163,5 +179,5 @@ fn bench_multi_writer_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_single_writer, bench_multi_writer_scaling);
+criterion_group!(benches, bench_durable, bench_ring_throughput);
 criterion_main!(benches);

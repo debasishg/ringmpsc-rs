@@ -3,6 +3,16 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Controls when `sync_all()` is called after writing a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMode {
+    /// `sync_all()` after every batch — full durability (default).
+    Full,
+    /// Flush BufWriter to kernel buffer only — faster but data may be
+    /// lost on crash. Useful for benchmarks and testing.
+    None,
+}
+
 /// Configuration for the ring-buffer WAL.
 #[derive(Debug, Clone)]
 pub struct WalConfig {
@@ -26,6 +36,9 @@ pub struct WalConfig {
     /// Enable per-ring metrics collection.
     /// Default: false.
     pub enable_metrics: bool,
+    /// Sync mode: `Full` (fsync per batch, durable) or `None` (flush-only, fast).
+    /// Default: `SyncMode::Full`.
+    pub sync_mode: SyncMode,
 }
 
 impl WalConfig {
@@ -39,6 +52,7 @@ impl WalConfig {
             flush_interval: Duration::from_millis(10),
             batch_hint: 256,
             enable_metrics: false,
+            sync_mode: SyncMode::Full,
         }
     }
 
@@ -72,6 +86,11 @@ impl WalConfig {
 
     pub fn with_metrics(mut self, enable: bool) -> Self {
         self.enable_metrics = enable;
+        self
+    }
+
+    pub fn with_sync_mode(mut self, mode: SyncMode) -> Self {
+        self.sync_mode = mode;
         self
     }
 

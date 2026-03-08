@@ -10,6 +10,7 @@ use tokio::sync::{oneshot, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::WalConfig;
+use crate::config::SyncMode;
 use crate::error::WalError;
 use crate::invariants::debug_assert_commit_durable;
 use crate::recovery;
@@ -80,6 +81,7 @@ impl Wal {
                 shutdown_notify,
                 next_lsn,
                 config.batch_hint,
+                config.sync_mode,
             ))
         };
 
@@ -205,6 +207,7 @@ async fn flusher_task<K, V>(
     shutdown_notify: Arc<Notify>,
     next_lsn: Arc<AtomicU64>,
     batch_hint: usize,
+    sync_mode: SyncMode,
 ) where
     K: Serialize + DeserializeOwned + Send + 'static,
     V: Serialize + DeserializeOwned + Send + 'static,
@@ -228,7 +231,7 @@ async fn flusher_task<K, V>(
                         while let Some(envelope) = receiver.next().await {
                             collect_envelope(envelope, &next_lsn, &mut batch, &mut commit_waiters);
                         }
-                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters);
+                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode);
                         return;
                     }
                 }
@@ -248,14 +251,14 @@ async fn flusher_task<K, V>(
                 }
                 None => {
                     // Stream ended (all senders dropped)
-                    flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters);
+                    flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode);
                     return;
                 }
             }
         }
 
         if !batch.is_empty() {
-            flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters);
+            flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode);
         }
     }
 }
@@ -286,11 +289,12 @@ fn collect_envelope<K, V>(
     }
 }
 
-/// Writes a batch to the segment manager, fsyncs, and notifies commit waiters.
+/// Writes a batch to the segment manager, optionally fsyncs, and notifies commit waiters.
 fn flush_and_notify(
     segment_mgr: &mut SegmentManager,
     batch: &mut Vec<(u64, Vec<u8>)>,
     commit_waiters: &mut Vec<oneshot::Sender<()>>,
+    sync_mode: SyncMode,
 ) {
     if batch.is_empty() {
         return;
@@ -304,10 +308,18 @@ fn flush_and_notify(
         return;
     }
 
-    // Fsync the active segment
-    let _fsynced = segment_mgr.fsync().is_ok();
-
-    debug_assert_commit_durable!(_fsynced);
+    match sync_mode {
+        SyncMode::Full => {
+            // Fsync the active segment — guarantees durability
+            let _fsynced = segment_mgr.fsync().is_ok();
+            debug_assert_commit_durable!(_fsynced);
+        }
+        SyncMode::None => {
+            // Flush BufWriter to kernel buffer but skip fsync —
+            // faster but data may be lost on crash.
+            let _ = segment_mgr.flush();
+        }
+    }
 
     // Notify all commit waiters — group commit
     for waiter in commit_waiters.drain(..) {

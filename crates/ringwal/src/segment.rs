@@ -91,6 +91,16 @@ impl Segment {
         Ok(())
     }
 
+    /// Flushes the BufWriter buffer and returns a cloned file handle
+    /// for background `sync_all()` via `spawn_blocking`.
+    ///
+    /// The clone shares the same underlying OS file descriptor (`dup()`),
+    /// so `sync_all()` on the clone flushes the same inode.
+    pub fn flush_and_clone_fd(&mut self) -> Result<std::fs::File, WalError> {
+        self.file.flush()?;
+        Ok(self.file.get_ref().try_clone()?)
+    }
+
     /// Seals this segment, returning its metadata. The file is fsynced and closed.
     pub fn seal(mut self) -> Result<SegmentMeta, WalError> {
         self.fsync()?;
@@ -153,6 +163,19 @@ impl SegmentManager {
     /// Flushes and fsyncs the active segment.
     pub fn fsync(&mut self) -> Result<(), WalError> {
         self.active.fsync()
+    }
+
+    /// Flushes the active segment's BufWriter to the kernel buffer (no fsync).
+    pub fn flush(&mut self) -> Result<(), WalError> {
+        use std::io::Write;
+        self.active.file.flush()?;
+        Ok(())
+    }
+
+    /// Flushes the active segment's BufWriter and returns a cloned file
+    /// handle for background `sync_all()`.
+    pub fn flush_and_clone_fd(&mut self) -> Result<std::fs::File, WalError> {
+        self.active.flush_and_clone_fd()
     }
 
     /// Rotates: seals the current segment and opens a new one.
