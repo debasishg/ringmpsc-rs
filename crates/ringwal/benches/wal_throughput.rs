@@ -10,18 +10,25 @@
 //!    benefit of not blocking the flusher task during fsync.
 //!
 //! 3. **`wal_streaming_pipeline`** — streaming workload comparing Full,
-//!    Background, and Pipelined sync modes side-by-side. Writers use
-//!    fire-and-forget `append()` with periodic `commit()`, so the
-//!    flusher pipeline stays saturated between fsyncs.
+//!    Background, Pipelined, PipelinedDataOnly, and PipelinedDedicated
+//!    sync modes side-by-side. Writers use fire-and-forget `append()`
+//!    with periodic `commit()`, so the flusher pipeline stays saturated.
 //!
 //! 4. **`wal_durable_tuning`** — flush_interval × batch_hint sweep on
 //!    `SyncMode::Background` with 4 writers. Shows batching
 //!    amortisation under different configurations.
 //!
-//! 5. **`wal_throughput`** — `SyncMode::None` on `current_thread`.
+//! 5. **`wal_pipelined_tuning`** — flush_interval × batch_hint sweep on
+//!    `Pipelined` and `PipelinedDataOnly` with 16 writers.
+//!
+//! 6. **`wal_throughput`** — `SyncMode::None` on `current_thread`.
 //!    Payload (16/64/256/1024 B) × writer (1/2/4/8) sweep.
 //!
-//! 6. **`wal_throughput_mt`** — Same as (5) on `multi_thread`.
+//! 7. **`wal_throughput_mt`** — Same as (6) on `multi_thread`.
+//!
+//! 8. **`wal_streaming_payload`** — Streaming workload with larger
+//!    payloads (64/1024/4096 B) × writers (4/8/16/32) comparing Full,
+//!    Pipelined, and PipelinedDataOnly.
 //!
 //! All groups use a shared runtime per benchmark function (via
 //! `b.to_async(&rt)`). Each iteration gets a fresh `TempDir` via
@@ -302,6 +309,8 @@ fn bench_streaming_pipeline(c: &mut Criterion) {
         ("full", SyncMode::Full),
         ("background", SyncMode::Background),
         ("pipelined", SyncMode::Pipelined),
+        ("pipelined-data", SyncMode::PipelinedDataOnly),
+        ("pipelined-dedicated", SyncMode::PipelinedDedicated),
     ];
 
     for num_writers in [4, 8, 16, 32] {
@@ -472,5 +481,126 @@ fn bench_ring_throughput_mt(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_durable, bench_durable_bg, bench_streaming_pipeline, bench_durable_tuning, bench_ring_throughput, bench_ring_throughput_mt);
+// ── Pipelined tuning sweep — flush_interval × batch_hint on Pipelined ────────
+
+fn bench_pipelined_tuning(c: &mut Criterion) {
+    let rt = make_mt_rt();
+    let mut group = c.benchmark_group("wal_pipelined_tuning");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(3));
+
+    let num_writers = 16;
+    let total_ops = num_writers as u64 * STREAMING_COMMITS * STREAMING_ENTRIES as u64;
+
+    let modes: &[(&str, SyncMode)] = &[
+        ("pipelined", SyncMode::Pipelined),
+        ("pipelined-data", SyncMode::PipelinedDataOnly),
+    ];
+
+    for flush_ms in [1u64, 3, 5, 10] {
+        for batch_hint in [2048usize, 4096, 8192, 16384] {
+            for &(label, mode) in modes {
+                group.throughput(Throughput::Elements(total_ops));
+                group.bench_with_input(
+                    BenchmarkId::new(
+                        format!("{label}/f{flush_ms}ms-b{batch_hint}"),
+                        num_writers,
+                    ),
+                    &num_writers,
+                    |b, &nw| {
+                        b.to_async(&rt).iter_batched(
+                            || {
+                                let dir = tempfile::tempdir().unwrap();
+                                let config = ringwal::WalConfig::new(dir.path())
+                                    .with_ring_bits(14)
+                                    .with_max_writers(64)
+                                    .with_max_segment_size(256 * 1024 * 1024)
+                                    .with_flush_interval(Duration::from_millis(flush_ms))
+                                    .with_batch_hint(batch_hint)
+                                    .with_sync_mode(mode);
+                                (dir, config)
+                            },
+                            |(_dir, config)| {
+                                ringwal_bench_streaming(
+                                    nw,
+                                    STREAMING_COMMITS,
+                                    STREAMING_ENTRIES,
+                                    64,
+                                    config,
+                                )
+                            },
+                            BatchSize::SmallInput,
+                        );
+                    },
+                );
+            }
+        }
+    }
+
+    group.finish();
+}
+
+// ── Streaming payload sweep — larger payloads shift pressure to bandwidth ────
+
+fn bench_streaming_payload(c: &mut Criterion) {
+    let rt = make_mt_rt();
+    let mut group = c.benchmark_group("wal_streaming_payload");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(3));
+
+    let modes: &[(&str, SyncMode)] = &[
+        ("full", SyncMode::Full),
+        ("pipelined", SyncMode::Pipelined),
+        ("pipelined-data", SyncMode::PipelinedDataOnly),
+    ];
+
+    for payload_bytes in [64usize, 1024, 4096] {
+        for num_writers in [4, 8, 16, 32] {
+            let total_ops =
+                num_writers as u64 * STREAMING_COMMITS * STREAMING_ENTRIES as u64;
+            group.throughput(Throughput::Elements(total_ops));
+
+            for &(label, mode) in modes {
+                group.bench_with_input(
+                    BenchmarkId::new(
+                        format!("{label}/{payload_bytes}B"),
+                        num_writers,
+                    ),
+                    &num_writers,
+                    |b, &nw| {
+                        b.to_async(&rt).iter_batched(
+                            || {
+                                let dir = tempfile::tempdir().unwrap();
+                                let config = ringwal::WalConfig::new(dir.path())
+                                    .with_ring_bits(14)
+                                    .with_max_writers(64)
+                                    .with_max_segment_size(256 * 1024 * 1024)
+                                    .with_flush_interval(Duration::from_millis(1))
+                                    .with_batch_hint(2048)
+                                    .with_sync_mode(mode);
+                                (dir, config)
+                            },
+                            |(_dir, config)| {
+                                ringwal_bench_streaming(
+                                    nw,
+                                    STREAMING_COMMITS,
+                                    STREAMING_ENTRIES,
+                                    payload_bytes,
+                                    config,
+                                )
+                            },
+                            BatchSize::SmallInput,
+                        );
+                    },
+                );
+            }
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_durable, bench_durable_bg, bench_streaming_pipeline, bench_durable_tuning, bench_pipelined_tuning, bench_ring_throughput, bench_ring_throughput_mt, bench_streaming_payload);
 criterion_main!(benches);

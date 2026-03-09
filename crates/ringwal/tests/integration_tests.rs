@@ -390,3 +390,73 @@ async fn pipelined_single_writer_commit() {
     assert_eq!(committed.len(), 1);
     assert_eq!(committed[0].entries.len(), 2);
 }
+
+// ── PipelinedDataOnly fsync tests ────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_data_only_multi_writer_commits() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(tmp.path())
+        .with_sync_mode(SyncMode::PipelinedDataOnly);
+
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+
+    let mut handles = Vec::new();
+    for w in 0..4u8 {
+        let writer = factory.register().unwrap();
+        handles.push(tokio::spawn(async move {
+            for i in 0..50u64 {
+                let mut tx = Transaction::new();
+                tx.insert(format!("k-{w}-{i}"), vec![w; 16]);
+                tx.commit(&writer).await.unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    wal.shutdown().await.unwrap();
+
+    let mut store = InMemoryStore::<String, Vec<u8>>::new();
+    let stats =
+        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+
+    assert_eq!(stats.committed, 200);
+    assert_eq!(stats.aborted, 0);
+    assert_eq!(store.len(), 200);
+}
+
+// ── PipelinedDedicated fsync tests ───────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_dedicated_multi_writer_commits() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(tmp.path())
+        .with_sync_mode(SyncMode::PipelinedDedicated);
+
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+
+    let mut handles = Vec::new();
+    for w in 0..4u8 {
+        let writer = factory.register().unwrap();
+        handles.push(tokio::spawn(async move {
+            for i in 0..50u64 {
+                let mut tx = Transaction::new();
+                tx.insert(format!("k-{w}-{i}"), vec![w; 16]);
+                tx.commit(&writer).await.unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    wal.shutdown().await.unwrap();
+
+    let mut store = InMemoryStore::<String, Vec<u8>>::new();
+    let stats =
+        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+
+    assert_eq!(stats.committed, 200);
+    assert_eq!(stats.aborted, 0);
+    assert_eq!(store.len(), 200);
+}

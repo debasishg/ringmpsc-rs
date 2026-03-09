@@ -24,6 +24,17 @@ pub enum SyncMode {
     /// synced). This is the performance unlock over `Background`.
     /// Requires `multi_thread` runtime.
     Pipelined,
+    /// **PipelinedDataOnly**: same as `Pipelined` but uses `sync_data()`
+    /// (fdatasync) instead of `sync_all()`. Skips metadata updates
+    /// (atime/mtime/size) — potentially 30–80% faster on Linux/ext4
+    /// for append-mostly workloads. On macOS APFS this is equivalent
+    /// to `Pipelined`. Requires `multi_thread` runtime.
+    PipelinedDataOnly,
+    /// **PipelinedDedicated**: same fire-and-forget overlap as `Pipelined`
+    /// but uses a dedicated OS thread + bounded channel instead of Tokio's
+    /// `spawn_blocking` pool. Lower tail latency at high writer counts.
+    /// Requires `multi_thread` runtime.
+    PipelinedDedicated,
     /// Flush BufWriter to kernel buffer only — faster but data may be
     /// lost on crash. Useful for benchmarks and testing.
     None,
@@ -52,7 +63,8 @@ pub struct WalConfig {
     /// Enable per-ring metrics collection.
     /// Default: false.
     pub enable_metrics: bool,
-    /// Sync mode: `Full` | `DataOnly` | `Background` | `Pipelined` | `None`.
+    /// Sync mode: `Full` | `DataOnly` | `Background` | `Pipelined` |
+    /// `PipelinedDataOnly` | `PipelinedDedicated` | `None`.
     /// Default: `SyncMode::Full`.
     pub sync_mode: SyncMode,
 }
