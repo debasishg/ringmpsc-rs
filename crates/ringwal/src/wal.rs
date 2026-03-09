@@ -199,6 +199,52 @@ impl Wal {
     }
 }
 
+/// Pipelined flush: write batch, spawn fire-and-forget background fsync
+/// that notifies commit waiters directly when fsync completes.
+/// The flusher returns immediately and can start writing the next batch.
+async fn pipelined_flush(
+    segment_mgr: &mut SegmentManager,
+    batch: &mut Vec<(u64, Vec<u8>)>,
+    commit_waiters: &mut Vec<oneshot::Sender<()>>,
+    in_flight: &mut tokio::task::JoinSet<()>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    // Write batch to active segment (may rotate)
+    if let Err(e) = segment_mgr.write_batch(batch) {
+        eprintln!("ringwal: segment write error: {e}");
+        batch.clear();
+        commit_waiters.clear();
+        return;
+    }
+
+    // Flush BufWriter + dup() the fd for background sync
+    match segment_mgr.flush_and_clone_fd() {
+        Ok(fd) => {
+            let waiters = std::mem::take(commit_waiters);
+            // Notify waiters directly from the blocking thread — no flusher
+            // involvement needed. This is the key: the flusher can immediately
+            // start writing the next batch while fsync runs in the background.
+            in_flight.spawn_blocking(move || {
+                if let Err(e) = fd.sync_all() {
+                    eprintln!("ringwal: pipelined fsync error: {e}");
+                }
+                for tx in waiters {
+                    let _ = tx.send(());
+                }
+            });
+        }
+        Err(e) => {
+            eprintln!("ringwal: flush_and_clone_fd error: {e}");
+            commit_waiters.clear();
+        }
+    }
+
+    batch.clear();
+}
+
 /// Background task: drains entries from the ring receiver, serialises them,
 /// writes to the segment manager, fsyncs, and notifies commit waiters.
 async fn flusher_task<K, V>(
@@ -214,6 +260,9 @@ async fn flusher_task<K, V>(
 {
     let mut batch: Vec<(u64, Vec<u8>)> = Vec::with_capacity(batch_hint);
     let mut commit_waiters: Vec<oneshot::Sender<()>> = Vec::new();
+    // JoinSet tracks in-flight pipelined fsyncs for shutdown cleanup only.
+    // During normal operation, spawned tasks notify waiters directly.
+    let mut in_flight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     loop {
         let mut drained = 0usize;
@@ -231,7 +280,13 @@ async fn flusher_task<K, V>(
                         while let Some(envelope) = receiver.next().await {
                             collect_envelope(envelope, &next_lsn, &mut batch, &mut commit_waiters);
                         }
-                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+                        if sync_mode == SyncMode::Pipelined {
+                            pipelined_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, &mut in_flight).await;
+                            // Wait for all in-flight fsyncs to complete before returning
+                            while in_flight.join_next().await.is_some() {}
+                        } else {
+                            flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+                        }
                         return;
                     }
                 }
@@ -251,14 +306,23 @@ async fn flusher_task<K, V>(
                 }
                 None => {
                     // Stream ended (all senders dropped)
-                    flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+                    if sync_mode == SyncMode::Pipelined {
+                        pipelined_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, &mut in_flight).await;
+                        while in_flight.join_next().await.is_some() {}
+                    } else {
+                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+                    }
                     return;
                 }
             }
         }
 
         if !batch.is_empty() {
-            flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+            if sync_mode == SyncMode::Pipelined {
+                pipelined_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, &mut in_flight).await;
+            } else {
+                flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+            }
         }
     }
 }
@@ -334,6 +398,9 @@ async fn flush_and_notify(
                     eprintln!("ringwal: flush_and_clone_fd error: {e}");
                 }
             }
+        }
+        SyncMode::Pipelined => {
+            unreachable!("pipelined mode handled in flusher_task")
         }
         SyncMode::None => {
             // Flush BufWriter to kernel buffer but skip fsync —

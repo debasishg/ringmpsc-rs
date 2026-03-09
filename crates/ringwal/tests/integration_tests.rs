@@ -2,7 +2,7 @@
 
 use ringwal::{
     recover, recover_into_store, read_checkpoint, write_checkpoint, InMemoryStore,
-    RecoveryAction, Transaction, Wal, WalConfig, WalEntry,
+    RecoveryAction, SyncMode, Transaction, Wal, WalConfig, WalEntry,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -327,4 +327,66 @@ async fn recover_into_store_replays_committed() {
     assert_eq!(store.len(), 1);
     assert_eq!(store.get(&"alive".to_string()), Some(b"yes".to_vec()));
     assert!(store.get(&"dead".to_string()).is_none());
+}
+
+// ── Pipelined fsync tests ────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_multi_writer_commits() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(tmp.path())
+        .with_sync_mode(SyncMode::Pipelined);
+
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+
+    let mut handles = Vec::new();
+    for w in 0..4u8 {
+        let writer = factory.register().unwrap();
+        handles.push(tokio::spawn(async move {
+            for i in 0..50u64 {
+                let mut tx = Transaction::new();
+                tx.insert(format!("k-{w}-{i}"), vec![w; 16]);
+                tx.commit(&writer).await.unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    wal.shutdown().await.unwrap();
+
+    // Recover and verify all 200 committed transactions
+    let mut store = InMemoryStore::<String, Vec<u8>>::new();
+    let stats =
+        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+
+    assert_eq!(stats.committed, 200);
+    assert_eq!(stats.aborted, 0);
+    assert_eq!(store.len(), 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pipelined_single_writer_commit() {
+    let tmp = TempDir::new().unwrap();
+    let config = test_config(tmp.path())
+        .with_sync_mode(SyncMode::Pipelined);
+
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let writer = factory.register().unwrap();
+
+    let mut tx = Transaction::new();
+    tx.insert("key1".into(), b"value1".to_vec());
+    tx.insert("key2".into(), b"value2".to_vec());
+    tx.commit(&writer).await.unwrap();
+
+    wal.shutdown().await.unwrap();
+
+    let (recovered, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    assert_eq!(stats.committed, 1);
+    let committed: Vec<_> = recovered
+        .iter()
+        .filter(|r| r.action == RecoveryAction::Commit)
+        .collect();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].entries.len(), 2);
 }

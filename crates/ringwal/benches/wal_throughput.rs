@@ -1,6 +1,6 @@
 //! Throughput benchmarks for ringwal.
 //!
-//! Five benchmark groups:
+//! Six benchmark groups:
 //!
 //! 1. **`wal_durable`** — ringwal with `SyncMode::Full` (sync fsync) on
 //!    a `multi_thread` runtime. Sweeps 1/2/4/8 writers.
@@ -9,14 +9,19 @@
 //!    offloaded to `spawn_blocking`). Same writer sweep. Shows the
 //!    benefit of not blocking the flusher task during fsync.
 //!
-//! 3. **`wal_durable_tuning`** — flush_interval × batch_hint sweep on
+//! 3. **`wal_streaming_pipeline`** — streaming workload comparing Full,
+//!    Background, and Pipelined sync modes side-by-side. Writers use
+//!    fire-and-forget `append()` with periodic `commit()`, so the
+//!    flusher pipeline stays saturated between fsyncs.
+//!
+//! 4. **`wal_durable_tuning`** — flush_interval × batch_hint sweep on
 //!    `SyncMode::Background` with 4 writers. Shows batching
 //!    amortisation under different configurations.
 //!
-//! 4. **`wal_throughput`** — `SyncMode::None` on `current_thread`.
+//! 5. **`wal_throughput`** — `SyncMode::None` on `current_thread`.
 //!    Payload (16/64/256/1024 B) × writer (1/2/4/8) sweep.
 //!
-//! 5. **`wal_throughput_mt`** — Same as (4) on `multi_thread`.
+//! 6. **`wal_throughput_mt`** — Same as (5) on `multi_thread`.
 //!
 //! All groups use a shared runtime per benchmark function (via
 //! `b.to_async(&rt)`). Each iteration gets a fresh `TempDir` via
@@ -34,6 +39,10 @@ use std::time::Duration;
 
 const DURABLE_TXN: u64 = 2_000; // increased for statistical stability with multi_thread
 const THROUGHPUT_TXN: u64 = 5_000; // no fsync → more samples for statistical accuracy
+
+// Streaming benchmark: many appends per commit to keep the flusher pipeline full
+const STREAMING_COMMITS: u64 = 50; // commits per writer
+const STREAMING_ENTRIES: usize = 100; // fire-and-forget appends per commit
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -84,8 +93,19 @@ fn ringwal_config_fast(dir: &std::path::Path) -> ringwal::WalConfig {
         .with_sync_mode(SyncMode::None)
 }
 
-// ── ringwal bench routine ───────────────────────────────────────────────────
+fn ringwal_config_pipelined(dir: &std::path::Path) -> ringwal::WalConfig {
+    ringwal::WalConfig::new(dir)
+        .with_ring_bits(14)
+        .with_max_writers(16)
+        .with_max_segment_size(256 * 1024 * 1024)
+        .with_flush_interval(Duration::from_millis(1))
+        .with_batch_hint(512)
+        .with_sync_mode(SyncMode::Pipelined)
+}
 
+// ── ringwal bench routines ──────────────────────────────────────────────────
+
+/// Original 1-entry-per-commit benchmark (commit-and-wait pattern).
 async fn ringwal_bench(
     num_writers: usize,
     txn_per_writer: u64,
@@ -104,6 +124,50 @@ async fn ringwal_bench(
                 let mut tx = ringwal::Transaction::new();
                 tx.insert(format!("k-{w}-{i}"), payload.clone());
                 tx.commit(&writer).await.unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+    wal.shutdown().await.unwrap();
+}
+
+/// Streaming workload: each writer fires many `append()` calls (non-blocking
+/// ring push) then issues a single `commit()` per batch.  With enough
+/// concurrent writers some always have pending data, keeping the flusher
+/// pipeline saturated between fsyncs.
+async fn ringwal_bench_streaming(
+    num_writers: usize,
+    commits_per_writer: u64,
+    entries_per_commit: usize,
+    payload_size: usize,
+    config: ringwal::WalConfig,
+) {
+    let payload = black_box(vec![0u8; payload_size]);
+    let (mut wal, factory) = ringwal::Wal::open::<String, Vec<u8>>(config).unwrap();
+
+    let mut handles = Vec::new();
+    for w in 0..num_writers {
+        let writer = factory.register().unwrap();
+        let payload = payload.clone();
+        handles.push(tokio::spawn(async move {
+            for c in 0..commits_per_writer {
+                let tx_id = ringwal::next_tx_id();
+                // Fire-and-forget appends — just ring push, no durability wait
+                for i in 0..entries_per_commit {
+                    writer
+                        .append(ringwal::WalEntry::Insert {
+                            tx_id,
+                            timestamp: 0,
+                            key: format!("k-{w}-{c}-{i}"),
+                            value: payload.clone(),
+                        })
+                        .await
+                        .unwrap();
+                }
+                // Single durable checkpoint per batch
+                writer.commit(tx_id).await.unwrap();
             }
         }));
     }
@@ -216,6 +280,66 @@ fn bench_durable_bg(c: &mut Criterion) {
                 );
             },
         );
+    }
+
+    group.finish();
+}
+
+// ── Streaming pipeline benchmark — Full vs Background vs Pipelined ───────────
+//
+// Exercises the pipelined fsync path with a realistic workload:  many writers
+// continuously push fire-and-forget appends and commit periodically, so the
+// flusher always has a next batch ready while the previous fsync is in-flight.
+
+fn bench_streaming_pipeline(c: &mut Criterion) {
+    let rt = make_mt_rt();
+    let mut group = c.benchmark_group("wal_streaming_pipeline");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(3));
+
+    let modes: &[(&str, SyncMode)] = &[
+        ("full", SyncMode::Full),
+        ("background", SyncMode::Background),
+        ("pipelined", SyncMode::Pipelined),
+    ];
+
+    for num_writers in [4, 8, 16, 32] {
+        let total_ops =
+            num_writers as u64 * STREAMING_COMMITS * STREAMING_ENTRIES as u64;
+        group.throughput(Throughput::Elements(total_ops));
+
+        for &(label, mode) in modes {
+            group.bench_with_input(
+                BenchmarkId::new(label, num_writers),
+                &num_writers,
+                |b, &nw| {
+                    b.to_async(&rt).iter_batched(
+                        || {
+                            let dir = tempfile::tempdir().unwrap();
+                            let config = ringwal::WalConfig::new(dir.path())
+                                .with_ring_bits(14)
+                                .with_max_writers(64)
+                                .with_max_segment_size(256 * 1024 * 1024)
+                                .with_flush_interval(Duration::from_millis(1))
+                                .with_batch_hint(2048)
+                                .with_sync_mode(mode);
+                            (dir, config)
+                        },
+                        |(_dir, config)| {
+                            ringwal_bench_streaming(
+                                nw,
+                                STREAMING_COMMITS,
+                                STREAMING_ENTRIES,
+                                64,
+                                config,
+                            )
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
     }
 
     group.finish();
@@ -348,5 +472,5 @@ fn bench_ring_throughput_mt(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_durable, bench_durable_bg, bench_durable_tuning, bench_ring_throughput, bench_ring_throughput_mt);
+criterion_group!(benches, bench_durable, bench_durable_bg, bench_streaming_pipeline, bench_durable_tuning, bench_ring_throughput, bench_ring_throughput_mt);
 criterion_main!(benches);

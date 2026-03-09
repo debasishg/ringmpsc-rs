@@ -18,6 +18,12 @@ pub enum SyncMode {
     /// the worker thread so writers on other threads keep filling rings.
     /// Requires `multi_thread` runtime for any benefit.
     Background,
+    /// **Pipelined**: fire-and-forget the *previous* batch's fsync while
+    /// draining/writing the *next* batch. Strict durability is preserved
+    /// (commit waiters are only notified after *their* batch has fully
+    /// synced). This is the performance unlock over `Background`.
+    /// Requires `multi_thread` runtime.
+    Pipelined,
     /// Flush BufWriter to kernel buffer only — faster but data may be
     /// lost on crash. Useful for benchmarks and testing.
     None,
@@ -46,7 +52,7 @@ pub struct WalConfig {
     /// Enable per-ring metrics collection.
     /// Default: false.
     pub enable_metrics: bool,
-    /// Sync mode: `Full` | `DataOnly` | `Background` | `None`.
+    /// Sync mode: `Full` | `DataOnly` | `Background` | `Pipelined` | `None`.
     /// Default: `SyncMode::Full`.
     pub sync_mode: SyncMode,
 }

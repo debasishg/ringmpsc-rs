@@ -34,6 +34,26 @@ eliminating runtime-construction overhead from measurements.
 
 *(16 B, 256 B, 1024 B rows will be populated after running the payload sweep.)*
 
+### Streaming Pipeline — fire-and-forget appends, periodic commit
+
+50 commits/writer × 100 entries/commit, 64-byte payload, `batch_hint=2048`,
+`multi_thread` runtime.
+
+| SyncMode | Writers | Throughput (Kelem/s) | vs Full |
+|----------|---------|---------------------|---------|
+| Full | 4 | ~58 | — |
+| Full | 8 | ~109 | — |
+| Full | 16 | ~184 | — |
+| Full | 32 | ~220 | — |
+| Background | 4 | ~58 | 0% |
+| Background | 8 | ~113 | +4% |
+| Background | 16 | ~183 | 0% |
+| Background | 32 | ~216 | −2% |
+| Pipelined | 4 | ~52 | −10% |
+| Pipelined | 8 | ~97 | −11% |
+| Pipelined | 16 | ~176 | −4% |
+| Pipelined | 32 | **~283** | **+29%** |
+
 ## Key Takeaways
 
 ### 1. Group-commit scaling under fsync
@@ -95,9 +115,8 @@ At 1 writer, Background is ~6% slower due to `spawn_blocking` overhead
 Why no improvement? The flusher **awaits** the `spawn_blocking` result
 before notifying commit waiters — it doesn't pipeline. This preserves
 the durability guarantee (every committed txn is fsync'd before ack) but
-means the flusher still does one fsync per batch cycle. The win would
-come from **fire-and-forget** pipelining (start next drain while previous
-fsync runs), which trades strict per-batch durability for throughput.
+means the flusher still does one fsync per batch cycle. See takeaway #6
+below for pipelining results.
 
 ### 5. Flush interval tuning: shorter is better for durable
 
@@ -121,19 +140,37 @@ with 5 ms fsync per cycle, each cycle takes `flush_interval + fsync`.
 At 1 ms interval: ~6 ms/cycle → ~167 fsyncs/s. At 10 ms: ~15 ms/cycle
 → ~67 fsyncs/s. Shorter intervals minimize idle time between fsyncs.
 
-### 6. Additional `multi_thread` opportunities
+### 6. `SyncMode::Pipelined` — fire-and-forget fsync with overlap
 
-Beyond group-commit scaling (already demonstrated), `multi_thread`
-enables:
+`Pipelined` mode fires off `spawn_blocking(sync_all)` and immediately
+returns to drain the next batch, without awaiting the result. Commit
+waiters are notified directly from the blocking thread after *their*
+batch's fsync completes — INV-WAL-05 is preserved.
 
-1. **Pipelined fsync** — fire-and-forget `spawn_blocking(sync_all)`,
-   immediately start draining next batch. Trades per-batch durability
-   for higher throughput. Commit waiters notified after the *next* fsync
-   completes.
-2. **Compression/encryption** — if the flusher must compress or encrypt
+**Result**: At **32 writers**, Pipelined reaches **~283 Kelem/s** vs
+Full's **~220 Kelem/s** — a **29% improvement**. At lower writer counts
+(4–8), the `spawn_blocking` cross-thread overhead exceeds the overlap
+savings on fast NVMe (fsync ~50–100 µs), producing a ~10% penalty. The
+crossover occurs somewhere between 16 and 32 writers, where staggered
+commit arrivals keep the pipeline saturated.
+
+**Why commit-and-wait doesn't show the benefit**: The `wal_durable` group
+uses 1-entry-per-commit with `commit().await`. Every writer blocks on
+fsync before sending the next entry — there's no data to overlap with.
+The streaming workload decouples append from commit: writers push 100
+fire-and-forget entries then commit, ensuring the flusher always has
+data to drain while the previous fsync runs. On slower storage (spinning
+disk, network-attached), the crossover point would be lower.
+
+### 7. Additional `multi_thread` opportunities
+
+Beyond group-commit scaling and pipelined fsync (demonstrated above),
+`multi_thread` enables:
+
+1. **Compression/encryption** — if the flusher must compress or encrypt
    batches before writing, that CPU work can overlap with writers producing
    on separate cores.
-3. **Network replication** — streaming WAL segments to replicas can overlap
+2. **Network replication** — streaming WAL segments to replicas can overlap
    with local writes on a multi-threaded executor.
 
 ## Benchmark Configuration
@@ -146,10 +183,12 @@ Batch hint:        512 (default), tuning sweep: 512 / 2048 / 8192
 Flush interval:    1 ms (durable default), tuning sweep: 1 / 5 / 10 ms
                    100 µs (throughput)
 Sync modes:        Full (sync_all), Background (spawn_blocking + sync_all),
-                   DataOnly (sync_data), None (flush only)
+                   DataOnly (sync_data), Pipelined (fire-and-forget fsync),
+                   None (flush only)
 Payload sizes:     64 bytes (durable) / 16 / 64 / 256 / 1024 bytes (throughput)
 Txns per writer:   2,000 (durable) / 5,000 (throughput)
-Writer counts:     1 / 2 / 4 / 8
+Streaming:         50 commits/writer × 100 entries/commit (streaming pipeline)
+Writer counts:     1 / 2 / 4 / 8 (durable) / 4 / 8 / 16 / 32 (streaming)
 Samples:           20 (10 for tuning sweep)
 Measurement time:  10 s
 Runtimes:          multi_thread 4 workers (durable + throughput_mt)
@@ -168,6 +207,9 @@ cargo bench -p ringwal -- "wal_durable/ringwal"
 
 # Durable: Background fsync (spawn_blocking)
 cargo bench -p ringwal -- "wal_durable_bg"
+
+# Streaming pipeline: Full vs Background vs Pipelined (fire-and-forget)
+cargo bench -p ringwal -- "wal_streaming_pipeline"
 
 # Durable: config tuning sweep (flush_interval × batch_hint)
 cargo bench -p ringwal -- "wal_durable_tuning"

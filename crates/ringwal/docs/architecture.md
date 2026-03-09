@@ -58,7 +58,7 @@ on a single thread with no synchronization.
 │                    Flusher Task                          │
 │  1. Drain envelopes into batch                          │
 │  2. Serialize + CRC32 + write to SegmentManager         │
-│  3. fsync active segment                                │
+│  3. fsync active segment (Full/Background/Pipelined)    │
 │  4. Notify commit waiters (group commit)                │
 ├─────────────────────────────────────────────────────────┤
 │                  SegmentManager                          │
@@ -107,6 +107,11 @@ on a single thread with no synchronization.
    collected during the batch are fired. Each `commit()` call awaiting its oneshot
    now returns — this is the **group commit** mechanism.
 
+   In **Pipelined** mode, the fsync is fire-and-forget via `spawn_blocking` and commit
+   waiters are notified directly from the blocking thread after *their* batch's fsync
+   completes. The flusher immediately returns to drain the next batch, overlapping
+   I/O with data collection. See [`PIPELINED_FSYNC.md`](./PIPELINED_FSYNC.md) for details.
+
 ### Read Path (Recovery)
 
 1. **Discover segments** — `recover()` scans the WAL directory for files matching
@@ -150,6 +155,9 @@ on a single thread with no synchronization.
 - Flusher: single task draining `RingReceiver` (polls all rings), no mutex
 - Backpressure: built into `ringmpsc-stream` — sender awaits `backpressure_notify`
 - Commit: writer awaits `oneshot::Receiver` → group commit on fsync
+- SyncModes: `Full` (inline fsync), `Background` (awaited `spawn_blocking`),
+  `Pipelined` (fire-and-forget `spawn_blocking` — overlaps next batch drain with
+  previous fsync, 29% faster at 32 writers)
 
 ### Entry Format (Identical)
 
@@ -310,16 +318,5 @@ ringwal
 
 ## Future Directions
 
-1. **`WalStore` trait** — Define a trait so clients can plug in HashMap, LMDB,
-   or custom engines. Recovery would apply committed transactions through this trait.
-   ```rust
-   pub trait WalStore<K, V> {
-       fn apply(&mut self, entry: &WalEntry<K, V>) -> Result<(), WalError>;
-   }
-   ```
-
-2. **Benchmarks** — Throughput benchmarks comparing ringwal against async-wal-db at
-   various writer counts, leveraging the existing criterion infrastructure in `ringmpsc-rs`.
-
-3. **Examples/CLI** — A `bin/demo.rs` showing multi-writer transactions, recovery, and
-   checkpoint scheduling.
+1. **LMDB storage backend** — A persistent storage engine using the WAL, as a
+   separate crate (e.g., `ringwal-lmdb`) implementing the `WalStore` trait.

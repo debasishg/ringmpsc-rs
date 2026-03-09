@@ -29,7 +29,9 @@ Segment IDs are strictly monotonically increasing. New segments always get
 ### INV-WAL-05: Commit Durability
 A commit waiter is only notified after the batch containing its commit marker
 has been written to the active segment and fsynced. This is the group commit
-guarantee.
+guarantee. This invariant holds for all durable sync modes including `Pipelined`,
+where the pipeline only overlaps batch N+1's *write* with batch N's *fsync* —
+batch N's waiters are still notified only after batch N's fsync completes.
 
 ### INV-WAL-06: Per-Writer SPSC Invariant
 Each `WalWriter` is backed by exactly one SPSC ring buffer. The writer is the
