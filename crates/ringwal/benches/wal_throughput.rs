@@ -496,6 +496,7 @@ fn bench_pipelined_tuning(c: &mut Criterion) {
     let modes: &[(&str, SyncMode)] = &[
         ("pipelined", SyncMode::Pipelined),
         ("pipelined-data", SyncMode::PipelinedDataOnly),
+        ("pipelined-dedicated", SyncMode::PipelinedDedicated),
     ];
 
     for flush_ms in [1u64, 3, 5, 10] {
@@ -554,6 +555,7 @@ fn bench_streaming_payload(c: &mut Criterion) {
         ("full", SyncMode::Full),
         ("pipelined", SyncMode::Pipelined),
         ("pipelined-data", SyncMode::PipelinedDataOnly),
+        ("pipelined-dedicated", SyncMode::PipelinedDedicated),
     ];
 
     for payload_bytes in [64usize, 1024, 4096] {
