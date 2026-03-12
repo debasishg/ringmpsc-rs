@@ -1,8 +1,10 @@
-# RingMPSC-RS
+# ringmpsc
 
-A high-performance lock-free Multi-Producer Single-Consumer (MPSC) channel implementation in Rust.
+A high-performance lock-free Multi-Producer Single-Consumer (MPSC) channel implementation in Rust, achieving **6+ billion messages per second**.
 
-This is a Rust port of the [RingMPSC](https://github.com/boonzy00/ringmpsc) Zig implementation, maintaining the same design principles and algorithm while following Rust idioms.
+This is a Rust port of the [RingMPSC](https://github.com/boonzy00/ringmpsc) Zig implementation. Each producer gets a dedicated SPSC ring buffer (ring decomposition), eliminating producer-producer contention.
+
+> **Part of the [ringmpsc-rs](../../README.md) workspace.** This is the foundational crate — all other crates in the workspace depend on it.
 
 This is a work in progress (not safe at all to use for any serious application).
 
@@ -151,6 +153,64 @@ While maintaining the same algorithm and design principles, this Rust implementa
 4. **Trait System**: Implements `Send + Sync` traits with proper safety bounds
 5. **Arc-based Sharing**: Uses `Arc` for cloning channels and producers instead of raw pointers
 6. **No Comptime**: Runtime-based configuration instead of Zig's comptime generics
+
+## Building
+
+```bash
+# Build (always use release for lock-free correctness)
+cargo build -p ringmpsc-rs --release
+
+# Build with stack-ring feature
+cargo build -p ringmpsc-rs --features stack-ring --release
+```
+
+## Testing
+
+```bash
+# Unit and integration tests
+cargo test -p ringmpsc-rs --release
+
+# Stack-ring tests
+cargo test -p ringmpsc-rs --features stack-ring --release
+
+# Property-based tests (proptest)
+cargo test -p ringmpsc-rs --release --test property_tests
+
+# Concurrency verification (loom — exhaustive state exploration)
+cargo test -p ringmpsc-rs --features loom --test loom_tests --release
+
+# Undefined behavior detection (miri)
+cargo +nightly miri test -p ringmpsc-rs --test miri_tests
+
+# Model-based testing (Quint spec traces replayed against Ring<T>)
+cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
+```
+
+## Benchmarks
+
+```bash
+# Throughput benchmarks (criterion)
+cargo bench -p ringmpsc-rs
+
+# Stack vs heap comparison
+cargo bench -p ringmpsc-rs --features stack-ring --bench stack_vs_heap
+
+# Custom allocator benchmarks
+cargo bench -p ringmpsc-rs --bench allocator
+
+# Standalone benchmark binaries
+cargo run -p ringmpsc-rs --release --bin bench_final
+cargo run -p ringmpsc-rs --release --bin scaling_benchmark
+```
+
+## Examples
+
+```bash
+cargo run -p ringmpsc-rs --release --example basic
+cargo run -p ringmpsc-rs --release --example zero_copy
+cargo run -p ringmpsc-rs --release --example custom_allocator
+cargo run -p ringmpsc-rs --release --features stack-ring --example stack_ring
+```
 
 ## Related Work
 

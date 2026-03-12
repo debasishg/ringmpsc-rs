@@ -2,6 +2,8 @@
 
 A Write-Ahead Log backed by lock-free SPSC ring buffers via [`ringmpsc-rs`](../ringmpsc/README.md).
 
+> **Part of the [ringmpsc-rs](../../README.md) workspace.** Depends on `ringmpsc` and `ringmpsc-stream`.
+
 Instead of using a single shared queue (like [`async-wal-db`](https://github.com/debasishg/async-wal-db)),
 each writer gets a **dedicated SPSC ring buffer** — zero producer-producer contention.
 A single background flusher drains all rings, writes to rotatable segment files,
@@ -150,15 +152,38 @@ Checkpoint file: `checkpoint` (contains LSN as little-endian u64).
 - [x] **Benchmarks** — `benches/wal_throughput.rs` compares ringwal vs async-wal-db via criterion at 1/2/4/8 writer counts. ringwal scales linearly with writers; async-wal-db stays flat. Run with `cargo bench -p ringwal`.
 - [x] **README/examples parity** — documentation, examples, and compliance tracking.
 
-## Architecture
+## Building
 
-See [docs/architecture.md](docs/architecture.md) for the full design document.
+```bash
+cargo build -p ringwal --release
+```
 
 ## Running Tests
 
 ```bash
 cargo test -p ringwal --release
 ```
+
+## Benchmarks
+
+```bash
+# WAL throughput benchmarks (criterion, compares ringwal vs async-wal-db)
+cargo bench -p ringwal
+```
+
+## Examples
+
+```bash
+# Minimal CLI demo
+cargo run -p ringwal --release --bin ringwal-demo
+
+# Full lifecycle example (4 writers, recovery, checkpointing)
+cargo run -p ringwal --release --example demo
+```
+
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the full design document.
 
 ## License
 

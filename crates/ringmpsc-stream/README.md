@@ -2,6 +2,8 @@
 
 Async `Stream`/`Sink` adapters for [ringmpsc-rs](../ringmpsc) with backpressure support.
 
+> **Part of the [ringmpsc-rs](../../README.md) workspace.** Depends on the `ringmpsc` crate for lock-free ring buffers and on Tokio for the async runtime.
+
 ## Features
 
 - **`futures::Stream`** implementation for async receiving
@@ -98,6 +100,25 @@ use tokio_stream::StreamExt;
 
 let token = CancellationToken::new();
 let stream = rx.take_until(token.cancelled());
+```
+
+## Building
+
+```bash
+cargo build -p ringmpsc-stream --release
+```
+
+## Testing
+
+```bash
+# Integration tests
+cargo test -p ringmpsc-stream --release
+```
+
+## Running the Demo
+
+```bash
+cargo run -p ringmpsc-stream --release --bin demo
 ```
 
 ## Design

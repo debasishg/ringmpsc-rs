@@ -1,13 +1,20 @@
 # RingMPSC-RS Workspace Instructions
 
-Lock-free MPSC channel achieving **6+ billion msg/sec** via ring decomposition (each producer gets a dedicated SPSC ring).
+Lock-free data structures built on **ring decomposition** (each producer gets a dedicated SPSC ring). The workspace contains four crates with the following dependency graph:
+
+```
+ringmpsc  ◄── ringmpsc-stream ◄── ringwal
+    ▲
+    └──────── span_collector
+```
 
 ## Architecture
 
 | Crate | Purpose | Spec |
 |-------|---------|------|
-| `ringmpsc` | Core lock-free SPSC rings + MPSC channel | [spec.md](../crates/ringmpsc/spec.md) |
+| `ringmpsc` | Core lock-free SPSC rings + MPSC channel (heap & stack variants) | [spec.md](../crates/ringmpsc/spec.md) |
 | `ringmpsc-stream` | Async `Stream`/`Sink` adapters with backpressure | [spec.md](../crates/ringmpsc-stream/spec.md) |
+| `ringwal` | Write-Ahead Log with per-writer SPSC rings, group commit, crash recovery | [spec.md](../crates/ringwal/spec.md) |
 | `span_collector` | OpenTelemetry collector example (async batching, resilience) | [spec.md](../crates/span_collector/spec.md) |
 
 **Key design**: Ring decomposition eliminates producer-producer contention. Each `Producer` owns one `Ring<T>`. Channel polls all rings sequentially on single consumer thread.
@@ -71,6 +78,7 @@ cargo build --release && cargo test --workspace --release
 # Crate-specific
 cargo test -p ringmpsc-rs --features stack-ring --release
 cargo test -p ringmpsc-stream --release
+cargo test -p ringwal --release
 cargo test -p span_collector --release
 
 # Concurrency verification (ringmpsc only)
@@ -80,6 +88,7 @@ cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 # Benchmarks
 cargo bench -p ringmpsc-rs
 cargo bench -p ringmpsc-rs --features stack-ring --bench stack_vs_heap
+cargo bench -p ringwal
 ```
 
 ### Concurrency Testing Requirements

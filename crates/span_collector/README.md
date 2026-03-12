@@ -2,6 +2,8 @@
 
 A high-performance distributed tracing span collector implementation combining ringmpsc-rs's lock-free MPSC channels with async Rust.
 
+> **Part of the [ringmpsc-rs](../../README.md) workspace.** Depends on the `ringmpsc` crate for lock-free ring buffers and on Tokio for the async runtime.
+
 ## Overview
 
 This project demonstrates how to build a production-ready span collector for OpenTelemetry-compatible distributed tracing systems, achieving <100ns span submission latency through lock-free ring buffers and efficient batching.
@@ -53,30 +55,28 @@ This crate uses **Rust 2024 edition** features:
 
 ## Quick Start
 
-### Run the Demo
+## Building
 
 ```bash
-cargo run --release --example demo
+cargo build -p span_collector --release
 ```
 
-This will:
-- Create 8 async producer tasks
-- Generate 50 spans per producer (400 total)
-- Export batches to stdout
-- Demonstrate backpressure handling
+## Testing
 
-### Run Tests
-
-**Use release mode to avoid memory issues with `MaybeUninit` in lock-free data structures:**
+**Use release mode** to avoid memory issues with `MaybeUninit` in lock-free data structures:
 
 ```bash
-cargo test --release
+cargo test -p span_collector --release
 ```
 
-**For debugging with symbols:**
+## Running
 
 ```bash
-RUST_BACKTRACE=1 cargo test --release
+# Demo: 8 async producers, 400 spans, stdout export
+cargo run -p span_collector --release --bin demo
+
+# Multi-producer stress test
+cargo run -p span_collector --release --bin span_generator
 ```
 
 ## Usage
@@ -256,9 +256,9 @@ let exporter = ResilientExporterBuilder::new(StdoutExporter::new(true))
 ## References
 
 - [Design Document](DESIGN.md) - Detailed architecture and implementation plan
-- [RingMPSC-RS](https://github.com/yourusername/ringmpsc-rs) - Lock-free MPSC channel implementation
+- [ringmpsc-rs](../ringmpsc/README.md) - Lock-free MPSC channel implementation
 - [OpenTelemetry Specification](https://opentelemetry.io/docs/specs/otel/)
 
 ## License
 
-Same as parent project (ringmpsc-rs)
+MIT — see [LICENSE](../../LICENSE).
