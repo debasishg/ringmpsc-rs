@@ -100,16 +100,6 @@ fn ringwal_config_fast(dir: &std::path::Path) -> ringwal::WalConfig {
         .with_sync_mode(SyncMode::None)
 }
 
-fn ringwal_config_pipelined(dir: &std::path::Path) -> ringwal::WalConfig {
-    ringwal::WalConfig::new(dir)
-        .with_ring_bits(14)
-        .with_max_writers(16)
-        .with_max_segment_size(256 * 1024 * 1024)
-        .with_flush_interval(Duration::from_millis(1))
-        .with_batch_hint(512)
-        .with_sync_mode(SyncMode::Pipelined)
-}
-
 // ── ringwal bench routines ──────────────────────────────────────────────────
 
 /// Original 1-entry-per-commit benchmark (commit-and-wait pattern).
@@ -186,6 +176,16 @@ async fn ringwal_bench_streaming(
 
 // ── Durable benchmarks (fsync per batch, multi_thread) ───────────────────────
 
+/// Compares **ringwal** vs **async-wal-db** under durable (fsync) workloads.
+///
+/// - **ringwal**: sweeps 1 / 2 / 4 / 8 concurrent writers, each running
+///   `DURABLE_TXN` commit-and-wait transactions (64-byte payloads) with
+///   `SyncMode::Full`. Demonstrates group-commit scaling with writer count.
+/// - **async-wal-db**: single-writer reference point doing the same 2,000
+///   durable transactions, serving as a shared-queue baseline.
+///
+/// Both appear in the same Criterion group (`wal_durable`) so results are
+/// reported side-by-side.
 fn bench_durable(c: &mut Criterion) {
     let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_durable");
@@ -356,6 +356,12 @@ fn bench_streaming_pipeline(c: &mut Criterion) {
 
 // ── Durable tuning sweep — flush_interval × batch_hint on Background ─────────
 
+/// Explores how `flush_interval` and `batch_hint` affect durable throughput.
+///
+/// Fixes 4 writers on `SyncMode::Background` and sweeps flush intervals
+/// (1 / 5 / 10 / 20 ms) × batch hints (512 / 2048 / 8192). Larger batch
+/// hints amortise the fsync cost over more entries; longer flush intervals
+/// let more writes accumulate before the flusher wakes.
 fn bench_durable_tuning(c: &mut Criterion) {
     let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_durable_tuning");
@@ -401,6 +407,11 @@ fn bench_durable_tuning(c: &mut Criterion) {
 
 // ── Ring throughput benchmarks (no fsync, payload × writer sweep) ────────────
 
+/// Measures raw ring-buffer + serialisation throughput **without** fsync.
+///
+/// Uses `SyncMode::None` on a single-threaded Tokio runtime. Sweeps
+/// payload sizes (16 / 64 / 256 / 1024 B) × writer counts (1 / 2 / 4 / 8)
+/// to isolate ring push + bincode encoding cost from I/O.
 fn bench_ring_throughput(c: &mut Criterion) {
     let rt = make_rt();
     let mut group = c.benchmark_group("wal_throughput");
@@ -442,6 +453,9 @@ fn bench_ring_throughput(c: &mut Criterion) {
 
 // ── Ring throughput benchmarks — multi_thread runtime ────────────────────────
 
+/// Same as `bench_ring_throughput` but on a **multi-threaded** Tokio runtime
+/// (4 worker threads). Reveals cross-thread scheduling overhead vs the
+/// single-threaded baseline. `SyncMode::None`, same payload × writer sweep.
 fn bench_ring_throughput_mt(c: &mut Criterion) {
     let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_throughput_mt");
@@ -483,6 +497,13 @@ fn bench_ring_throughput_mt(c: &mut Criterion) {
 
 // ── Pipelined tuning sweep — flush_interval × batch_hint on Pipelined ────────
 
+/// Tuning sweep for pipelined sync modes with a streaming workload.
+///
+/// Fixes 16 writers using fire-and-forget `append()` + periodic `commit()`.
+/// Sweeps flush intervals (1 / 3 / 5 / 10 ms) × batch hints (2048 / 4096 /
+/// 8192 / 16384) across three modes: `Pipelined`, `PipelinedDataOnly`, and
+/// `PipelinedDedicated`. Shows how pipeline depth and batch sizes interact
+/// when the flusher is continuously saturated.
 fn bench_pipelined_tuning(c: &mut Criterion) {
     let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_pipelined_tuning");
@@ -544,6 +565,13 @@ fn bench_pipelined_tuning(c: &mut Criterion) {
 
 // ── Streaming payload sweep — larger payloads shift pressure to bandwidth ────
 
+/// Streaming workload with larger payloads to stress I/O bandwidth.
+///
+/// Sweeps payload sizes (64 / 1024 / 4096 B) × writer counts (4 / 8 / 16 /
+/// 32) across `Full`, `Pipelined`, `PipelinedDataOnly`, and
+/// `PipelinedDedicated` sync modes. Larger payloads shift the bottleneck
+/// from fsync latency to raw write bandwidth, exposing how each mode
+/// handles sustained data throughput.
 fn bench_streaming_payload(c: &mut Criterion) {
     let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_streaming_payload");
