@@ -8,7 +8,7 @@
 //! Usage: `cargo run -p ringwal --release --example demo`
 
 use ringwal::{
-    recover_into_store, InMemoryStore, Transaction, Wal, WalConfig,
+    recover_into_store, InMemoryStore, RealIo, Transaction, Wal, WalConfig,
 };
 use std::time::{Duration, Instant};
 
@@ -34,7 +34,7 @@ async fn main() -> Result<(), ringwal::WalError> {
     );
 
     // ── Phase 1: Open WAL and write concurrently ──
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config)?;
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo)?;
 
     let start = Instant::now();
     let mut handles = Vec::new();
@@ -69,12 +69,12 @@ async fn main() -> Result<(), ringwal::WalError> {
     println!("[shutdown] clean shutdown");
 
     let seg_count_before = count_segments(dir.path());
-    println!("[segments] {} segment files on disk", seg_count_before);
+    println!("[segments] {seg_count_before} segment files on disk");
 
     // ── Phase 2: Recover into in-memory store ──
     let start = Instant::now();
     let mut store = InMemoryStore::<String, Vec<u8>>::new();
-    let stats = recover_into_store::<String, Vec<u8>, _>(dir.path(), &mut store)?;
+    let stats = recover_into_store::<String, Vec<u8>, _, _>(dir.path(), &mut store, &RealIo)?;
     let elapsed = start.elapsed();
 
     println!(
@@ -101,7 +101,7 @@ async fn main() -> Result<(), ringwal::WalError> {
         }
     }
     if ok && snapshot.len() == total_txn {
-        println!("  All {} keys verified.", total_txn);
+        println!("  All {total_txn} keys verified.");
     }
 
     // ── Phase 3: Checkpoint + segment truncation ──
@@ -109,6 +109,7 @@ async fn main() -> Result<(), ringwal::WalError> {
     // checkpointing allows old segments to be cleaned up.
     let (mut wal2, _) = Wal::open::<String, Vec<u8>>(
         WalConfig::new(dir.path()).with_ring_bits(10).with_max_writers(1),
+        RealIo,
     )?;
 
     match wal2.checkpoint::<String, Vec<u8>>() {

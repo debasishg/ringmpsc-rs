@@ -120,9 +120,7 @@ impl<E: SpanExporter> SpanExporter for RetryingExporter<E> {
             // INV-RES-01: Verify attempt is bounded
             debug_assert!(
                 attempt < max_attempts,
-                "INV-RES-01: attempt {} exceeds max_attempts {}",
-                attempt,
-                max_attempts
+                "INV-RES-01: attempt {attempt} exceeds max_attempts {max_attempts}"
             );
 
             // Wait before retry (no delay on first attempt)
@@ -190,9 +188,9 @@ pub enum CircuitState {
 pub struct CircuitBreakerConfig {
     /// Number of consecutive failures before opening the circuit.
     pub failure_threshold: u32,
-    /// How long to wait before transitioning from Open to HalfOpen.
+    /// How long to wait before transitioning from Open to `HalfOpen`.
     pub reset_timeout: Duration,
-    /// Number of successes in HalfOpen state required to close the circuit.
+    /// Number of successes in `HalfOpen` state required to close the circuit.
     pub success_threshold: u32,
 }
 
@@ -331,10 +329,8 @@ impl<E: SpanExporter> CircuitBreakerExporter<E> {
         debug_assert!(
             matches!(
                 (old_state, state.state),
-                (CircuitState::Closed, CircuitState::Closed)
-                    | (CircuitState::HalfOpen, CircuitState::HalfOpen)
-                    | (CircuitState::HalfOpen, CircuitState::Closed)
-                    | (CircuitState::Open, CircuitState::Closed) // recovery case
+                (CircuitState::Closed | CircuitState::HalfOpen | CircuitState::Open,
+CircuitState::Closed) | (CircuitState::HalfOpen, CircuitState::HalfOpen) // recovery case
             ),
             "INV-RES-03: Invalid state transition on success: {:?} -> {:?}",
             old_state,
@@ -372,10 +368,8 @@ impl<E: SpanExporter> CircuitBreakerExporter<E> {
         debug_assert!(
             matches!(
                 (old_state, state.state),
-                (CircuitState::Closed, CircuitState::Closed)
-                    | (CircuitState::Closed, CircuitState::Open)
-                    | (CircuitState::HalfOpen, CircuitState::Open)
-                    | (CircuitState::Open, CircuitState::Open)
+                (CircuitState::Closed, CircuitState::Closed | CircuitState::Open) |
+(CircuitState::HalfOpen | CircuitState::Open, CircuitState::Open)
             ),
             "INV-RES-03: Invalid state transition on failure: {:?} -> {:?}",
             old_state,
@@ -569,7 +563,7 @@ mod tests {
             }
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "failing"
         }
     }
@@ -690,8 +684,7 @@ mod tests {
         // 5 exports at 10ms each = ~40-50ms (first is immediate)
         assert!(
             elapsed >= Duration::from_millis(30),
-            "Expected >= 30ms, got {:?}",
-            elapsed
+            "Expected >= 30ms, got {elapsed:?}"
         );
     }
 

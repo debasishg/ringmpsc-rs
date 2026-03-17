@@ -28,12 +28,23 @@ pub struct Transaction<K, V> {
     entries: Vec<WalEntry<K, V>>,
 }
 
+impl<K, V> Default for Transaction<K, V>
+where
+    K: Serialize + Send + 'static,
+    V: Serialize + Send + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> Transaction<K, V>
 where
     K: Serialize + Send + 'static,
     V: Serialize + Send + 'static,
 {
     /// Creates a new active transaction with a unique ID.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             id: next_tx_id(),
@@ -106,11 +117,13 @@ where
     }
 
     /// Returns the number of buffered (unsent) entries.
+    #[must_use] 
     pub fn pending_count(&self) -> usize {
         self.entries.len()
     }
 
     /// Returns the current transaction state.
+    #[must_use] 
     pub fn state(&self) -> TxState {
         self.state
     }

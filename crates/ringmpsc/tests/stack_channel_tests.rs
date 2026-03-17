@@ -1,4 +1,4 @@
-//! Integration tests for StackChannel - Multi-producer MPSC on stack.
+//! Integration tests for `StackChannel` - Multi-producer MPSC on stack.
 
 #![cfg(feature = "stack-ring")]
 

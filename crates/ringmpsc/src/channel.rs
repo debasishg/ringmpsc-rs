@@ -11,7 +11,7 @@ use thiserror::Error;
 /// Error types for channel operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ChannelError {
-    /// Too many producers registered (exceeds max_producers config).
+    /// Too many producers registered (exceeds `max_producers` config).
     #[error("too many producers registered (max: {max})")]
     TooManyProducers {
         /// The configured maximum number of producers.
@@ -49,6 +49,7 @@ impl<T> Channel<T, HeapAllocator> {
     ///
     /// Uses the default heap allocator. This is API-compatible with the
     /// pre-allocator version.
+    #[must_use] 
     pub fn new(config: Config) -> Self {
         Self::new_in(config, HeapAllocator)
     }
@@ -161,7 +162,7 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         total
     }
 
-    /// Consume up to max_total items from all producers.
+    /// Consume up to `max_total` items from all producers.
     ///
     /// Useful for real-world processing to limit batch size and avoid long pauses.
     /// Prefers earlier rings (producer 0, then 1, etc.).
@@ -244,7 +245,7 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         total
     }
 
-    /// Consume up to max_total items from all producers, transferring ownership.
+    /// Consume up to `max_total` items from all producers, transferring ownership.
     ///
     /// Similar to `consume_all_up_to`, but the handler receives ownership of each
     /// item instead of a reference. This is more efficient when you need to move
@@ -288,16 +289,19 @@ impl<T, A: BufferAllocator> Channel<T, A> {
     }
 
     /// Returns true if the channel is closed.
+    #[must_use] 
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::Acquire)
     }
 
     /// Returns the number of registered producers.
+    #[must_use] 
     pub fn producer_count(&self) -> usize {
         self.inner.producer_count.load(Ordering::Acquire)
     }
 
     /// Get aggregated metrics snapshot from all rings if enabled.
+    #[must_use] 
     pub fn metrics(&self) -> crate::MetricsSnapshot {
         let mut m = crate::MetricsSnapshot::default();
         let count = self.inner.producer_count.load(Ordering::Acquire);
@@ -319,7 +323,8 @@ impl<T, A: BufferAllocator> Channel<T, A> {
     /// This allows implementing the N-producer N-consumer pattern where each
     /// consumer has a dedicated ring to read from (matching the Zig implementation).
     ///
-    /// Returns None if the ring_id is >= max_producers.
+    /// Returns None if the `ring_id` is >= `max_producers`.
+    #[must_use] 
     pub fn get_ring(&self, ring_id: usize) -> Option<&Ring<T, A>> {
         if ring_id < self.inner.config.max_producers {
             Some(&self.inner.rings[ring_id])
@@ -353,6 +358,7 @@ pub struct Producer<T, A: BufferAllocator = HeapAllocator> {
 impl<T, A: BufferAllocator> Producer<T, A> {
     /// Get the producer's ID.
     #[inline]
+    #[must_use] 
     pub fn id(&self) -> usize {
         self.id
     }
@@ -363,12 +369,14 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     /// if the reservation wraps around the ring buffer. Always check the slice length.
     /// See [`Ring::reserve`] for details and examples.
     #[inline]
+    #[must_use] 
     pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         self.channel.rings[self.id].reserve(n)
     }
 
     /// Reserve with adaptive backoff. Spins, yields, then gives up.
     #[inline]
+    #[must_use] 
     pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         self.channel.rings[self.id].reserve_with_backoff(n)
     }
@@ -407,6 +415,7 @@ impl<T, A: BufferAllocator> Producer<T, A> {
 
     /// Returns true if the producer's ring is closed.
     #[inline]
+    #[must_use] 
     pub fn is_closed(&self) -> bool {
         self.channel.rings[self.id].is_closed()
     }

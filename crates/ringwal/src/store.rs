@@ -10,11 +10,12 @@ use std::sync::{Arc, RwLock};
 
 use crate::entry::WalEntry;
 use crate::error::WalError;
+use crate::io::IoEngine;
 use crate::recovery::{recover, RecoveredTransaction, RecoveryAction, RecoveryStats};
 
 /// A storage backend that WAL entries can be applied to.
 ///
-/// Implement this trait for your storage engine (HashMap, LMDB, RocksDB, etc.)
+/// Implement this trait for your storage engine (`HashMap`, LMDB, `RocksDB`, etc.)
 /// to enable automatic replay of committed transactions during recovery.
 ///
 /// # Type Parameters
@@ -50,6 +51,7 @@ where
     K: Eq + Hash,
 {
     /// Creates an empty in-memory store.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
@@ -57,6 +59,7 @@ where
     }
 
     /// Returns a clone of the current store contents.
+    #[must_use] 
     pub fn snapshot(&self) -> HashMap<K, V>
     where
         K: Clone,
@@ -66,11 +69,13 @@ where
     }
 
     /// Returns the number of entries in the store.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.inner.read().expect("lock poisoned").len()
     }
 
     /// Returns `true` if the store is empty.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.inner.read().expect("lock poisoned").is_empty()
     }
@@ -132,16 +137,18 @@ where
 /// Only committed transactions are replayed; aborted and incomplete are skipped.
 ///
 /// Returns the recovery statistics.
-pub fn recover_into_store<K, V, S>(
+pub fn recover_into_store<K, V, S, IO>(
     dir: &std::path::Path,
     store: &mut S,
+    io: &IO,
 ) -> Result<RecoveryStats, WalError>
 where
     K: serde::de::DeserializeOwned + Send + 'static,
     V: serde::de::DeserializeOwned + Send + 'static,
     S: WalStore<K, V>,
+    IO: IoEngine,
 {
-    let (transactions, stats) = recover::<K, V>(dir)?;
+    let (transactions, stats) = recover::<K, V, IO>(dir, io)?;
     apply_transactions(store, &transactions)?;
     Ok(stats)
 }

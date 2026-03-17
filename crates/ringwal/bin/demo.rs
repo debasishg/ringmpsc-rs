@@ -5,7 +5,7 @@
 //! This binary is the equivalent of async-wal-db's `main.rs`.
 
 use ringwal::{
-    recover_into_store, InMemoryStore, Transaction, Wal, WalConfig,
+    recover_into_store, InMemoryStore, RealIo, Transaction, Wal, WalConfig,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +33,7 @@ async fn main() -> Result<(), ringwal::WalError> {
         .with_flush_interval(Duration::from_millis(5))
         .with_batch_hint(128);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config)?;
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo)?;
 
     // Start checkpoint scheduler (every 1s for demo)
     wal.start_checkpoint_scheduler::<String, Vec<u8>>(Duration::from_secs(1));
@@ -75,7 +75,7 @@ async fn main() -> Result<(), ringwal::WalError> {
 
     // ── Recover and verify ──
     let mut store = InMemoryStore::<String, Vec<u8>>::new();
-    let _stats = recover_into_store::<String, Vec<u8>, _>(&dir, &mut store)?;
+    let _stats = recover_into_store::<String, Vec<u8>, _, _>(&dir, &mut store, &RealIo)?;
 
     let snapshot = store.snapshot();
     println!(

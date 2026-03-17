@@ -36,6 +36,7 @@
 mod config;
 mod entry;
 mod error;
+pub mod io;
 mod invariants;
 mod recovery;
 mod segment;
@@ -48,6 +49,7 @@ pub use config::WalConfig;
 pub use config::SyncMode;
 pub use entry::{ByteWalEntry, WalEntry, WalEntryHeader};
 pub use error::WalError;
+pub use io::{DirEntry as IoDirEntry, FileHandle, IoEngine, ReadHandle, RealIo};
 pub use recovery::{
     checkpoint, read_checkpoint, recover, truncate_segments_before, write_checkpoint,
     RecoveredTransaction, RecoveryAction, RecoveryStats,

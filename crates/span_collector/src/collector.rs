@@ -59,6 +59,7 @@ pub struct CollectorMetrics {
 //
 // This is the standard pattern for metrics/counters in high-performance code.
 impl CollectorMetrics {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -100,6 +101,7 @@ pub struct SpanCollector {
 
 impl SpanCollector {
     /// Creates a new span collector with the given configuration
+    #[must_use] 
     pub fn new(config: CollectorConfig) -> Self {
         let channel = Channel::new(config.clone().into());
         Self {
@@ -119,16 +121,19 @@ impl SpanCollector {
     }
 
     /// Returns the underlying channel
+    #[must_use] 
     pub fn channel(&self) -> &Arc<Channel<Span>> {
         &self.channel
     }
 
     /// Returns the collector configuration
+    #[must_use] 
     pub fn config(&self) -> &CollectorConfig {
         &self.config
     }
 
     /// Returns collector metrics
+    #[must_use] 
     pub fn metrics(&self) -> &Arc<CollectorMetrics> {
         &self.metrics
     }
@@ -205,44 +210,38 @@ impl SpanProducer {
     /// Submits a span with retry and backoff
     pub fn submit_span(&self, span: Span) -> Result<(), SubmitError> {
         // Try to reserve with backoff
-        match self.producer.reserve_with_backoff(1) {
-            Some(mut reservation) => {
-                // Write span to reservation
-                let slice = reservation.as_mut_slice();
-                slice[0].write(span);
-                reservation.commit();
-                
-                self.metrics
-                    .spans_submitted
-                    .fetch_add(1, Ordering::Relaxed);
-                
-                Ok(())
-            }
-            None => {
-                self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
-                Err(SubmitError::Full)
-            }
+        if let Some(mut reservation) = self.producer.reserve_with_backoff(1) {
+            // Write span to reservation
+            let slice = reservation.as_mut_slice();
+            slice[0].write(span);
+            reservation.commit();
+            
+            self.metrics
+                .spans_submitted
+                .fetch_add(1, Ordering::Relaxed);
+            
+            Ok(())
+        } else {
+            self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
+            Err(SubmitError::Full)
         }
     }
 
     /// Tries to submit a span without blocking
     pub fn try_submit_span(&self, span: Span) -> Result<(), SubmitError> {
-        match self.producer.reserve(1) {
-            Some(mut reservation) => {
-                let slice = reservation.as_mut_slice();
-                slice[0].write(span);
-                reservation.commit();
-                
-                self.metrics
-                    .spans_submitted
-                    .fetch_add(1, Ordering::Relaxed);
-                
-                Ok(())
-            }
-            None => {
-                self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
-                Err(SubmitError::Full)
-            }
+        if let Some(mut reservation) = self.producer.reserve(1) {
+            let slice = reservation.as_mut_slice();
+            slice[0].write(span);
+            reservation.commit();
+            
+            self.metrics
+                .spans_submitted
+                .fetch_add(1, Ordering::Relaxed);
+            
+            Ok(())
+        } else {
+            self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
+            Err(SubmitError::Full)
         }
     }
 }
@@ -297,7 +296,7 @@ mod tests {
         let producer = collector.register().unwrap();
 
         for i in 0..10 {
-            let span = Span::new(i as u128, i, 0, format!("op-{}", i), SpanKind::Internal);
+            let span = Span::new(u128::from(i), i, 0, format!("op-{i}"), SpanKind::Internal);
             producer.submit_span(span).unwrap();
         }
 

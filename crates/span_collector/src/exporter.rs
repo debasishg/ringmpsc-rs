@@ -38,7 +38,7 @@ pub trait SpanExporter: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Object-safe version of SpanExporter for dynamic dispatch.
+/// Object-safe version of `SpanExporter` for dynamic dispatch.
 ///
 /// This trait uses `Pin<Box<dyn Future>>` to allow `dyn SpanExporterBoxed`.
 pub trait SpanExporterBoxed: Send + Sync {
@@ -52,7 +52,7 @@ pub trait SpanExporterBoxed: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// Blanket implementation: any SpanExporter can be used as SpanExporterBoxed
+/// Blanket implementation: any `SpanExporter` can be used as `SpanExporterBoxed`
 impl<T: SpanExporter> SpanExporterBoxed for T {
     fn export_boxed(
         &self,
@@ -73,6 +73,7 @@ pub struct StdoutExporter {
 
 impl StdoutExporter {
     /// Creates a new stdout exporter
+    #[must_use] 
     pub fn new(verbose: bool) -> Self {
         Self { verbose }
     }
@@ -97,7 +98,7 @@ impl SpanExporter for StdoutExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "stdout"
     }
 }
@@ -109,6 +110,7 @@ pub struct JsonFileExporter {
 
 impl JsonFileExporter {
     /// Creates a new JSON file exporter
+    #[must_use] 
     pub fn new(file_path: String) -> Self {
         Self { file_path }
     }
@@ -126,7 +128,7 @@ impl SpanExporter for JsonFileExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "json_file"
     }
 }
@@ -135,6 +137,7 @@ impl SpanExporter for JsonFileExporter {
 pub struct NullExporter;
 
 impl NullExporter {
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -152,7 +155,7 @@ impl SpanExporter for NullExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "null"
     }
 }
@@ -174,6 +177,7 @@ impl Default for TestExporter {
 
 #[cfg(test)]
 impl TestExporter {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -204,7 +208,7 @@ impl SpanExporter for TestExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "test"
     }
 }
@@ -218,6 +222,7 @@ pub struct SlowExporter {
 
 #[cfg(test)]
 impl SlowExporter {
+    #[must_use] 
     pub fn new(delay: std::time::Duration) -> Self {
         Self {
             delay,
@@ -238,7 +243,7 @@ impl SpanExporter for SlowExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slow"
     }
 }
@@ -263,7 +268,7 @@ mod tests {
         let exporter = NullExporter::new();
         let mut batch = SpanBatch::new();
         for i in 0..1000 {
-            batch.add(Span::new(i as u128, i, 0, "test".to_string(), SpanKind::Internal));
+            batch.add(Span::new(u128::from(i), i, 0, "test".to_string(), SpanKind::Internal));
         }
 
         let result = exporter.export(batch).await;
@@ -276,7 +281,7 @@ mod tests {
         let mut batch = SpanBatch::new();
         
         for i in 0..10 {
-            batch.add(Span::new(i as u128, i, 0, "test".to_string(), SpanKind::Internal));
+            batch.add(Span::new(u128::from(i), i, 0, "test".to_string(), SpanKind::Internal));
         }
 
         exporter.export(batch).await.unwrap();

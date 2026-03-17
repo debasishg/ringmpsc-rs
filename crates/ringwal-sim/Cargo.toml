@@ -1,0 +1,19 @@
+[package]
+name = "ringwal-sim"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic simulation testing for ringwal"
+
+[lints]
+workspace = true
+
+[dependencies]
+ringwal = { path = "../ringwal" }
+rand = { workspace = true, features = ["small_rng"] }
+tokio = { workspace = true, features = ["sync", "rt"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

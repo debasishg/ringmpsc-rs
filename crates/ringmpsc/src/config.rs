@@ -16,6 +16,7 @@ impl Config {
     /// 
     /// Panics if `ring_bits` is greater than 20 (1M slots max) to prevent excessive memory usage.
     /// Panics if `max_producers` is 0 or greater than 128.
+    #[must_use] 
     pub const fn new(ring_bits: u8, max_producers: usize, enable_metrics: bool) -> Self {
         assert!(ring_bits > 0 && ring_bits <= 20, "ring_bits must be between 1 and 20 (max 1M slots)");
         assert!(max_producers > 0 && max_producers <= 128, "max_producers must be between 1 and 128");
@@ -29,12 +30,14 @@ impl Config {
 
     /// Returns the capacity of the ring buffer.
     #[inline]
+    #[must_use] 
     pub const fn capacity(&self) -> usize {
         1 << self.ring_bits
     }
 
     /// Returns the mask for index wrapping.
     #[inline]
+    #[must_use] 
     pub const fn mask(&self) -> usize {
         self.capacity() - 1
     }

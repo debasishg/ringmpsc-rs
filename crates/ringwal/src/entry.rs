@@ -72,6 +72,7 @@ impl<K, V> WalEntry<K, V> {
     }
 
     /// Creates a new timestamp from the system clock.
+    #[must_use] 
     pub fn new_timestamp() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -107,6 +108,7 @@ impl WalEntryHeader {
     pub const SIZE: usize = 13;
 
     /// Creates a new header for the given serialized entry data.
+    #[must_use] 
     pub fn new(data: &[u8]) -> Self {
         let checksum = crc32fast::hash(data);
         Self {
@@ -117,6 +119,7 @@ impl WalEntryHeader {
     }
 
     /// Serializes the header to bytes.
+    #[must_use] 
     pub fn to_bytes(&self) -> [u8; Self::SIZE] {
         let mut bytes = [0u8; Self::SIZE];
         bytes[0..8].copy_from_slice(&self.length.to_le_bytes());
@@ -126,6 +129,7 @@ impl WalEntryHeader {
     }
 
     /// Deserializes a header from bytes.
+    #[must_use] 
     pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
         let length = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         let checksum = u32::from_le_bytes(bytes[8..12].try_into().unwrap());

@@ -73,6 +73,7 @@ pub struct SpanBatch {
 
 impl Span {
     /// Creates a new span with the given parameters
+    #[must_use] 
     pub fn new(
         trace_id: u128,
         span_id: u64,
@@ -121,6 +122,7 @@ impl Span {
     }
 
     /// Duration of the span in nanoseconds
+    #[must_use] 
     pub fn duration_nanos(&self) -> u64 {
         self.end_time.saturating_sub(self.start_time)
     }
@@ -128,6 +130,7 @@ impl Span {
 
 impl SpanBatch {
     /// Creates a new empty span batch
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             spans: Vec::new(),
@@ -136,6 +139,7 @@ impl SpanBatch {
     }
 
     /// Creates a batch with the given spans
+    #[must_use] 
     pub fn with_spans(spans: Vec<Span>) -> Self {
         Self {
             spans,
@@ -149,11 +153,13 @@ impl SpanBatch {
     }
 
     /// Returns the number of spans in the batch
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.spans.len()
     }
 
     /// Returns true if the batch is empty
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.spans.is_empty()
     }

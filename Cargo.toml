@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ringmpsc", "crates/span_collector", "crates/ringmpsc-stream", "crates/ringwal"]
+members = ["crates/ringmpsc", "crates/span_collector", "crates/ringmpsc-stream", "crates/ringwal", "crates/ringwal-sim"]
 
 # Default to the ringmpsc library crate
 default-members = ["crates/ringmpsc"]
@@ -30,4 +30,44 @@ rand = "0.8"
 quint-connect = "0.1.1"
 itf = "0.4"
 anyhow = "1"
+
+[workspace.lints.clippy]
+# Enable pedantic as baseline (low priority so specific overrides take effect)
+pedantic = { level = "warn", priority = -1 }
+
+# Pedantic doc lints — useful but not enforced yet
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Cast lints — project targets 64-bit; casts are intentional
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_lossless = "allow"
+
+# Style preferences — not enforced
+used_underscore_binding = "allow"
+items_after_statements = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+manual_let_else = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+unreadable_literal = "allow"
+redundant_else = "allow"
+type_complexity = "allow"
+float_cmp = "allow"
+match_same_arms = "allow"
+match_wildcard_for_single_variants = "allow"
+module_name_repetitions = "allow"
+struct_excessive_bools = "allow"
+wildcard_imports = "allow"
+default_trait_access = "allow"
+if_not_else = "allow"
+semicolon_if_nothing_returned = "allow"
+single_match_else = "allow"
+uninlined_format_args = "allow"
+unnested_or_patterns = "allow"
 

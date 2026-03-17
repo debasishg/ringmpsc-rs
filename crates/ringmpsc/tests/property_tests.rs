@@ -5,7 +5,7 @@
 //!
 //! Coverage:
 //! - Ring<T> (heap-allocated)
-//! - StackRing<T, N> (stack-allocated, feature-gated)
+//! - `StackRing`<T, N> (stack-allocated, feature-gated)
 //!
 //! Both implementations share the same invariants from spec.md.
 

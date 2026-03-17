@@ -7,7 +7,7 @@ const MSG_PER_PRODUCER: u64 = 500_000_000;
 const BATCH_SIZE: usize = 32_768;
 
 fn benchmark_config(num_producers: usize) {
-    println!("\n{} Producer(s) × 1 Consumer", num_producers);
+    println!("\n{num_producers} Producer(s) × 1 Consumer");
     println!("{}", "=".repeat(50));
     
     let config = Config::new(16, num_producers, false);
@@ -75,20 +75,20 @@ fn benchmark_config(num_producers: usize) {
     let throughput = total_messages as f64 / duration.as_secs_f64();
     let per_producer = throughput / num_producers as f64;
     
-    println!("  Total messages:   {}", total_messages);
-    println!("  Duration:         {:.2?}", duration);
+    println!("  Total messages:   {total_messages}");
+    println!("  Duration:         {duration:.2?}");
     println!("  Total throughput: {:.2} B/s ({:.2} M/s)", 
              throughput / 1_000_000_000.0,
              throughput / 1_000_000.0);
     println!("  Per producer:     {:.2} M/s", per_producer / 1_000_000.0);
-    println!("  Messages consumed: {}", total);
+    println!("  Messages consumed: {total}");
 }
 
 fn main() {
     println!("\nRingMPSC Scaling Benchmark");
     println!("==========================");
-    println!("Messages per producer: {}", MSG_PER_PRODUCER);
-    println!("Batch size: {}", BATCH_SIZE);
+    println!("Messages per producer: {MSG_PER_PRODUCER}");
+    println!("Batch size: {BATCH_SIZE}");
     println!("Ring capacity: 65536 slots");
     
     for num_producers in [1, 2, 4, 6, 8] {

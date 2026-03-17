@@ -60,12 +60,12 @@ fn bench_spsc(c: &mut Criterion) {
 fn bench_mpsc(c: &mut Criterion) {
     let mut group = c.benchmark_group("mpsc");
 
-    for num_producers in [2, 4, 8].iter() {
+    for num_producers in &[2, 4, 8] {
         let total_msgs = MSG_PER_PRODUCER * (*num_producers as u64);
         group.throughput(Throughput::Elements(total_msgs));
 
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}P_{}C", num_producers, num_producers)),
+            BenchmarkId::from_parameter(format!("{num_producers}P_{num_producers}C")),
             num_producers,
             |b, &n| {
                 b.iter(|| {
@@ -138,9 +138,9 @@ fn bench_batch_sizes(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_sizes");
     group.throughput(Throughput::Elements(MSG_PER_PRODUCER));
 
-    for batch_size in [256, 1024, 4096, 16384].iter() {
+    for batch_size in &[256, 1024, 4096, 16384] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("batch_{}", batch_size)),
+            BenchmarkId::from_parameter(format!("batch_{batch_size}")),
             batch_size,
             |b, &batch| {
                 b.iter(|| {
@@ -246,12 +246,12 @@ fn bench_contention(c: &mut Criterion) {
     let config = Config::new(12, 16, false); // 4K slots
     let msgs = 100_000u64;
     
-    for num_producers in [4, 8].iter() {
+    for num_producers in &[4, 8] {
         let total = msgs * (*num_producers as u64);
         group.throughput(Throughput::Elements(total));
         
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}P_small_ring", num_producers)),
+            BenchmarkId::from_parameter(format!("{num_producers}P_small_ring")),
             num_producers,
             |b, &n| {
                 b.iter(|| {

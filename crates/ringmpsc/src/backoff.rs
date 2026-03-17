@@ -15,6 +15,7 @@ impl Backoff {
 
     /// Creates a new backoff instance.
     #[inline]
+    #[must_use] 
     pub fn new() -> Self {
         Self { step: 0 }
     }
@@ -46,6 +47,7 @@ impl Backoff {
 
     /// Check if we've exhausted patience.
     #[inline]
+    #[must_use] 
     pub fn is_completed(&self) -> bool {
         self.step > Self::YIELD_LIMIT
     }

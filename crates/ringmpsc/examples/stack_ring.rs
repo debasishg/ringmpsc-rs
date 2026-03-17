@@ -4,7 +4,7 @@
 //! variants of the lock-free SPSC/MPSC primitives that achieve 2-4x higher
 //! throughput by eliminating heap pointer indirection.
 //!
-//! Run with: cargo run --release --features stack-ring --example stack_ring
+//! Run with: cargo run --release --features stack-ring --example `stack_ring`
 
 #[cfg(not(feature = "stack-ring"))]
 fn main() {

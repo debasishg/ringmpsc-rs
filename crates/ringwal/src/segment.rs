@@ -10,41 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::entry::WalEntryHeader;
 use crate::error::WalError;
 use crate::invariants::{debug_assert_segment_id_monotonic, debug_assert_segment_size};
-
-// ── Direct I/O helpers (platform-conditional) ────────────────────────────────
-
-/// Sets direct I/O (page-cache bypass) on an open file descriptor.
-///
-/// On macOS this calls `fcntl(fd, F_NOCACHE, 1)` which tells the kernel not
-/// to cache the file's pages after write-through — reduces cache pollution in
-/// fsync-heavy append-only workloads.
-///
-/// On Linux this sets `O_DIRECT` via `fcntl(F_SETFL)` which requires all
-/// writes to be block-aligned (typically 4 KiB). Not yet wired into the
-/// write path — currently a no-op on Linux.
-#[cfg(target_os = "macos")]
-fn set_direct_io(file: &std::fs::File) -> std::io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-    // Safety: fd is a valid open file descriptor; F_NOCACHE is a safe flag
-    // that only affects caching behaviour, not file integrity.
-    let ret = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) };
-    if ret == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn set_direct_io(_file: &std::fs::File) -> std::io::Result<()> {
-    // O_DIRECT requires block-aligned writes — not yet implemented.
-    // See docs/DIRECT_IO.md for the follow-up plan.
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn set_direct_io(_file: &std::fs::File) -> std::io::Result<()> {
-    Ok(())
-}
+use crate::io::{IoEngine, FileHandle};
 
 /// Metadata for a sealed (immutable) segment.
 #[derive(Debug, Clone)]
@@ -58,10 +24,10 @@ pub struct SegmentMeta {
 }
 
 /// An active segment file being written to.
-pub struct Segment {
+pub struct Segment<IO: IoEngine> {
     pub(crate) id: u64,
     pub(crate) path: PathBuf,
-    pub(crate) file: std::io::BufWriter<std::fs::File>,
+    pub(crate) file: IO::FileHandle,
     pub(crate) size: u64,
     pub(crate) max_size: u64,
     pub(crate) entry_count: u64,
@@ -69,27 +35,17 @@ pub struct Segment {
     pub(crate) last_lsn: u64,
 }
 
-impl Segment {
-    /// Opens or creates a segment file.
-    ///
-    /// When `direct_io` is `true`, applies platform-specific page-cache bypass
-    /// (macOS `F_NOCACHE`) after opening the file.
-    pub fn open(id: u64, dir: &Path, max_size: u64, direct_io: bool) -> Result<Self, WalError> {
+impl<IO: IoEngine> Segment<IO> {
+    /// Opens or creates a segment file via the given I/O engine.
+    pub fn open(id: u64, dir: &Path, max_size: u64, direct_io: bool, io: &IO) -> Result<Self, WalError> {
         let path = segment_path(dir, id);
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        let size = file.metadata()?.len();
-
-        if direct_io {
-            set_direct_io(&file)?;
-        }
+        let file = io.open_append(&path, direct_io)?;
+        let size = file.metadata_len()?;
 
         Ok(Self {
             id,
             path,
-            file: std::io::BufWriter::new(file),
+            file,
             size,
             max_size,
             entry_count: 0,
@@ -128,8 +84,7 @@ impl Segment {
 
     /// Flushes the buffer and fsyncs data + metadata to disk.
     pub fn fsync(&mut self) -> Result<(), WalError> {
-        self.file.flush()?;
-        self.file.get_ref().sync_all()?;
+        self.file.sync_all()?;
         Ok(())
     }
 
@@ -139,19 +94,18 @@ impl Segment {
     /// the metadata write that `sync_all()` requires. On macOS this is
     /// equivalent to `sync_all()` (`F_FULLFSYNC` flushes everything).
     pub fn fsync_data(&mut self) -> Result<(), WalError> {
-        self.file.flush()?;
-        self.file.get_ref().sync_data()?;
+        self.file.sync_data()?;
         Ok(())
     }
 
-    /// Flushes the BufWriter buffer and returns a cloned file handle
+    /// Flushes the `BufWriter` buffer and returns a cloned file handle
     /// for background `sync_all()` via `spawn_blocking`.
     ///
     /// The clone shares the same underlying OS file descriptor (`dup()`),
     /// so `sync_all()` on the clone flushes the same inode.
     pub fn flush_and_clone_fd(&mut self) -> Result<std::fs::File, WalError> {
         self.file.flush()?;
-        Ok(self.file.get_ref().try_clone()?)
+        Ok(self.file.try_clone_file()?)
     }
 
     /// Seals this segment, returning its metadata. The file is fsynced and closed.
@@ -169,26 +123,27 @@ impl Segment {
 }
 
 /// Manages WAL segment creation, rotation, and cleanup.
-pub struct SegmentManager {
+pub struct SegmentManager<IO: IoEngine> {
     dir: PathBuf,
     max_segment_size: u64,
     direct_io: bool,
-    active: Segment,
+    active: Segment<IO>,
     sealed: Vec<SegmentMeta>,
     next_segment_id: u64,
+    io: IO,
 }
 
-impl SegmentManager {
+impl<IO: IoEngine> SegmentManager<IO> {
     /// Opens or creates a WAL directory and initialises the first segment.
-    pub fn open(dir: &Path, max_segment_size: u64, direct_io: bool) -> Result<Self, WalError> {
-        std::fs::create_dir_all(dir)?;
+    pub fn open(dir: &Path, max_segment_size: u64, direct_io: bool, io: IO) -> Result<Self, WalError> {
+        io.create_dir_all(dir)?;
 
         // Find existing segments
-        let mut segment_ids = discover_segment_ids(dir)?;
-        segment_ids.sort();
+        let mut segment_ids = discover_segment_ids(dir, &io)?;
+        segment_ids.sort_unstable();
 
         let next_id = segment_ids.last().map_or(1, |&id| id + 1);
-        let active = Segment::open(next_id, dir, max_segment_size, direct_io)?;
+        let active = Segment::open(next_id, dir, max_segment_size, direct_io, &io)?;
 
         Ok(Self {
             dir: dir.to_path_buf(),
@@ -197,6 +152,7 @@ impl SegmentManager {
             active,
             sealed: Vec::new(),
             next_segment_id: next_id + 1,
+            io,
         })
     }
 
@@ -225,14 +181,13 @@ impl SegmentManager {
         self.active.fsync_data()
     }
 
-    /// Flushes the active segment's BufWriter to the kernel buffer (no fsync).
+    /// Flushes the active segment's `BufWriter` to the kernel buffer (no fsync).
     pub fn flush(&mut self) -> Result<(), WalError> {
-        use std::io::Write;
         self.active.file.flush()?;
         Ok(())
     }
 
-    /// Flushes the active segment's BufWriter and returns a cloned file
+    /// Flushes the active segment's `BufWriter` and returns a cloned file
     /// handle for background `sync_all()`.
     pub fn flush_and_clone_fd(&mut self) -> Result<std::fs::File, WalError> {
         self.active.flush_and_clone_fd()
@@ -244,7 +199,7 @@ impl SegmentManager {
         debug_assert_segment_id_monotonic!(self.active.id, new_id);
         self.next_segment_id += 1;
 
-        let new_segment = Segment::open(new_id, &self.dir, self.max_segment_size, self.direct_io)?;
+        let new_segment = Segment::open(new_id, &self.dir, self.max_segment_size, self.direct_io, &self.io)?;
         let old_segment = std::mem::replace(&mut self.active, new_segment);
         let meta = old_segment.seal()?;
         self.sealed.push(meta);
@@ -265,10 +220,11 @@ impl SegmentManager {
     /// given checkpoint LSN.
     pub fn truncate_before(&mut self, checkpoint_lsn: u64) -> Result<usize, WalError> {
         let mut removed = 0;
+        let io = &self.io;
         self.sealed.retain(|meta| {
             if meta.last_lsn < checkpoint_lsn {
                 // Best-effort delete; ignore errors for already-removed files
-                let _ = std::fs::remove_file(&meta.path);
+                let _ = io.remove_file(&meta.path);
                 removed += 1;
                 false
             } else {
@@ -286,27 +242,23 @@ impl SegmentManager {
 
 /// Returns the file path for a segment with the given ID.
 pub fn segment_path(dir: &Path, id: u64) -> PathBuf {
-    dir.join(format!("wal-{:08}.log", id))
+    dir.join(format!("wal-{id:08}.log"))
 }
 
 /// Discovers existing segment IDs in a directory.
-pub fn discover_segment_ids(dir: &Path) -> Result<Vec<u64>, WalError> {
+pub fn discover_segment_ids<IO: IoEngine>(dir: &Path, io: &IO) -> Result<Vec<u64>, WalError> {
     let mut ids = Vec::new();
-    if !dir.exists() {
+    if !io.exists(dir) {
         return Ok(ids);
     }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
+    for entry in io.read_dir(dir)? {
+        let name = &entry.file_name;
         // Parse "wal-00000001.log" → 1
-        if let Some(rest) = name.strip_prefix("wal-") {
-            if let Some(num_str) = rest.strip_suffix(".log") {
-                if let Ok(id) = num_str.parse::<u64>() {
+        if let Some(rest) = name.strip_prefix("wal-")
+            && let Some(num_str) = rest.strip_suffix(".log")
+                && let Ok(id) = num_str.parse::<u64>() {
                     ids.push(id);
                 }
-            }
-        }
     }
     Ok(ids)
 }

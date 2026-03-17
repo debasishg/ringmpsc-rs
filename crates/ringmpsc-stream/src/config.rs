@@ -33,6 +33,7 @@ impl Default for StreamConfig {
 
 impl StreamConfig {
     /// Creates a low-latency configuration with shorter poll interval.
+    #[must_use] 
     pub fn low_latency() -> Self {
         Self {
             poll_interval: Duration::from_millis(1),
@@ -41,6 +42,7 @@ impl StreamConfig {
     }
 
     /// Creates a high-throughput configuration with larger batches.
+    #[must_use] 
     pub fn high_throughput() -> Self {
         Self {
             poll_interval: Duration::from_millis(50),
@@ -49,12 +51,14 @@ impl StreamConfig {
     }
 
     /// Sets the poll interval.
+    #[must_use] 
     pub fn with_poll_interval(mut self, interval: Duration) -> Self {
         self.poll_interval = interval;
         self
     }
 
     /// Sets the batch hint.
+    #[must_use] 
     pub fn with_batch_hint(mut self, hint: usize) -> Self {
         self.batch_hint = hint;
         self

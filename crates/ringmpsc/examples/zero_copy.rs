@@ -22,9 +22,9 @@ fn main() {
 
     println!("Configuration:");
     println!("  Ring capacity: {} slots", config.capacity());
-    println!("  Producers: {}", N_PRODUCERS);
-    println!("  Batches per producer: {}", BATCHES);
-    println!("  Batch size: {}", BATCH_SIZE);
+    println!("  Producers: {N_PRODUCERS}");
+    println!("  Batches per producer: {BATCHES}");
+    println!("  Batch size: {BATCH_SIZE}");
     println!("  Total items: {}\n", N_PRODUCERS * BATCHES * BATCH_SIZE);
 
     let start = Instant::now();
@@ -101,8 +101,8 @@ fn main() {
     let bytes_per_sec = items_per_sec * 64.0; // 64 bytes per item
 
     println!("\nResults:");
-    println!("  Items consumed: {}", total);
-    println!("  Duration: {:.2?}", duration);
+    println!("  Items consumed: {total}");
+    println!("  Duration: {duration:.2?}");
     println!("  Throughput: {:.2} million items/sec", items_per_sec / 1_000_000.0);
     println!("  Bandwidth: {:.2} GB/sec", bytes_per_sec / 1_000_000_000.0);
 }

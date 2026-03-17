@@ -6,6 +6,9 @@ description = "Async OpenTelemetry tracing collector using ringmpsc-rs"
 license = "MIT"
 repository = "https://github.com/debasishg/ringmpsc-rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 ringmpsc-rs = { path = "../ringmpsc" }
 tokio.workspace = true

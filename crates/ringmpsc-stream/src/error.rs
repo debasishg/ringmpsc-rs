@@ -26,12 +26,14 @@ pub enum StreamError {
 impl StreamError {
     /// Returns `true` if this is a recoverable error (e.g., `Full`).
     #[inline]
+    #[must_use] 
     pub fn is_recoverable(&self) -> bool {
         matches!(self, Self::Full)
     }
 
     /// Returns `true` if this error indicates the channel is permanently unusable.
     #[inline]
+    #[must_use] 
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Closed | Self::ShutDown)
     }

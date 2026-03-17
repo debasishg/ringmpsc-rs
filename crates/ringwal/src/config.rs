@@ -24,18 +24,18 @@ pub enum SyncMode {
     /// synced). This is the performance unlock over `Background`.
     /// Requires `multi_thread` runtime.
     Pipelined,
-    /// **PipelinedDataOnly**: same as `Pipelined` but uses `sync_data()`
+    /// **`PipelinedDataOnly`**: same as `Pipelined` but uses `sync_data()`
     /// (fdatasync) instead of `sync_all()`. Skips metadata updates
     /// (atime/mtime/size) — potentially 30–80% faster on Linux/ext4
     /// for append-mostly workloads. On macOS APFS this is equivalent
     /// to `Pipelined`. Requires `multi_thread` runtime.
     PipelinedDataOnly,
-    /// **PipelinedDedicated**: same fire-and-forget overlap as `Pipelined`
+    /// **`PipelinedDedicated`**: same fire-and-forget overlap as `Pipelined`
     /// but uses a dedicated OS thread + bounded channel instead of Tokio's
     /// `spawn_blocking` pool. Lower tail latency at high writer counts.
     /// Requires `multi_thread` runtime.
     PipelinedDedicated,
-    /// Flush BufWriter to kernel buffer only — faster but data may be
+    /// Flush `BufWriter` to kernel buffer only — faster but data may be
     /// lost on crash. Useful for benchmarks and testing.
     None,
 }
@@ -96,50 +96,59 @@ impl WalConfig {
         }
     }
 
+    #[must_use] 
     pub fn with_ring_bits(mut self, bits: u8) -> Self {
         assert!((1..=20).contains(&bits), "ring_bits must be 1..=20");
         self.ring_bits = bits;
         self
     }
 
+    #[must_use] 
     pub fn with_max_writers(mut self, n: usize) -> Self {
         assert!(n >= 1, "max_writers must be >= 1");
         self.max_writers = n;
         self
     }
 
+    #[must_use] 
     pub fn with_max_segment_size(mut self, bytes: u64) -> Self {
         assert!(bytes >= 4096, "max_segment_size must be >= 4096");
         self.max_segment_size = bytes;
         self
     }
 
+    #[must_use] 
     pub fn with_flush_interval(mut self, d: Duration) -> Self {
         self.flush_interval = d;
         self
     }
 
+    #[must_use] 
     pub fn with_batch_hint(mut self, n: usize) -> Self {
         self.batch_hint = n;
         self
     }
 
+    #[must_use] 
     pub fn with_metrics(mut self, enable: bool) -> Self {
         self.enable_metrics = enable;
         self
     }
 
+    #[must_use] 
     pub fn with_sync_mode(mut self, mode: SyncMode) -> Self {
         self.sync_mode = mode;
         self
     }
 
+    #[must_use] 
     pub fn with_direct_io(mut self, enable: bool) -> Self {
         self.direct_io = enable;
         self
     }
 
     /// Returns the ring capacity per writer.
+    #[must_use] 
     pub fn ring_capacity(&self) -> usize {
         1 << self.ring_bits
     }

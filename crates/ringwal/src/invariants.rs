@@ -58,6 +58,7 @@ macro_rules! debug_assert_segment_id_monotonic {
 
 /// INV-WAL-05: A committed transaction's entries must all be fsynced before
 /// the commit waiter is notified.
+#[allow(unused_macros)]
 macro_rules! debug_assert_commit_durable {
     ($fsynced:expr) => {
         #[cfg(debug_assertions)]

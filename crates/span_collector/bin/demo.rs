@@ -2,7 +2,7 @@
 //!
 //! A complete end-to-end demonstration showcasing all features of the span collector.
 //!
-//! **Note**: This collector uses an OpenTelemetry-compatible data model (trace_id, span_id,
+//! **Note**: This collector uses an OpenTelemetry-compatible data model (`trace_id`, `span_id`,
 //! attributes, etc.) but does **not** implement the OTLP protocol. The `SpanExporter` trait
 //! is designed to be extensible - an OTLP exporter could be added as a future enhancement.
 //!
@@ -130,8 +130,7 @@ impl SpanExporter for SimulatedBackendExporter {
 
             if should_fail {
                 Err(ExportError::Transport(format!(
-                    "Simulated backend failure (batch of {} spans)",
-                    span_count
+                    "Simulated backend failure (batch of {span_count} spans)"
                 )))
             } else {
                 Ok(())
@@ -178,9 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("📋 Demo Configuration:");
     println!("   Mode: {}", if quick { "quick" } else { "full" });
-    println!("   Verbose output: {}", verbose);
-    println!("   Producers: {}", num_producers);
-    println!("   Spans per producer: {}", spans_per_producer);
+    println!("   Verbose output: {verbose}");
+    println!("   Producers: {num_producers}");
+    println!("   Spans per producer: {spans_per_producer}");
     println!();
 
     // =========================================================================
@@ -290,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // PHASE 3: Spawn Producer Tasks
     // =========================================================================
 
-    println!("🚀 Phase 3: Starting {} Producer Tasks\n", num_producers);
+    println!("🚀 Phase 3: Starting {num_producers} Producer Tasks\n");
 
     let start_time = Instant::now();
     let shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -311,7 +310,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for producer_id in 0..num_producers {
         let collector_clone = Arc::clone(&collector);
-        let verbose = verbose;
 
         let handle = tokio::spawn(async move {
             run_producer(producer_id, spans_per_producer, collector_clone, verbose).await
@@ -325,21 +323,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match handle.await {
             Ok(Ok(stats)) => {
                 if verbose {
-                    println!("   Producer {} completed: {:?}", id, stats);
+                    println!("   Producer {id} completed: {stats:?}");
                 }
                 producer_results.push(stats);
             }
             Ok(Err(e)) => {
-                eprintln!("   ❌ Producer {} failed: {}", id, e);
+                eprintln!("   ❌ Producer {id} failed: {e}");
             }
             Err(e) => {
-                eprintln!("   ❌ Producer {} panicked: {}", id, e);
+                eprintln!("   ❌ Producer {id} panicked: {e}");
             }
         }
     }
 
     let generation_time = start_time.elapsed();
-    println!("\n   ✅ All producers finished in {:?}", generation_time);
+    println!("\n   ✅ All producers finished in {generation_time:?}");
 
     // Stop metrics display
     shutdown_flag.store(true, Ordering::Relaxed);
@@ -377,14 +375,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("┌─────────────────────────────────────────────────────┐");
     println!("│              SPAN COLLECTOR DEMO RESULTS            │");
     println!("├─────────────────────────────────────────────────────┤");
-    println!("│ Total Execution Time:      {:>12.2?}           │", total_time);
-    println!("│ Span Generation Time:      {:>12.2?}           │", generation_time);
+    println!("│ Total Execution Time:      {total_time:>12.2?}           │");
+    println!("│ Span Generation Time:      {generation_time:>12.2?}           │");
     println!("├─────────────────────────────────────────────────────┤");
     println!("│ PRODUCER METRICS                                    │");
-    println!("│   Producers:               {:>12}             │", num_producers);
-    println!("│   Spans per Producer:      {:>12}             │", spans_per_producer);
-    println!("│   Total Spans Submitted:   {:>12}             │", total_submitted);
-    println!("│   Backpressure Waits:      {:>12}             │", total_retries);
+    println!("│   Producers:               {num_producers:>12}             │");
+    println!("│   Spans per Producer:      {spans_per_producer:>12}             │");
+    println!("│   Total Spans Submitted:   {total_submitted:>12}             │");
+    println!("│   Backpressure Waits:      {total_retries:>12}             │");
     println!("├─────────────────────────────────────────────────────┤");
     println!("│ COLLECTOR METRICS                                   │");
     println!("│   Spans Submitted:         {:>12}             │", metrics.spans_submitted());
@@ -394,20 +392,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("├─────────────────────────────────────────────────────┤");
     println!("│ THROUGHPUT                                          │");
     let throughput = total_submitted as f64 / total_time.as_secs_f64();
-    println!("│   Spans/second:            {:>12.0}             │", throughput);
+    println!("│   Spans/second:            {throughput:>12.0}             │");
     let latency_ns = if total_submitted > 0 {
         total_time.as_nanos() as f64 / total_submitted as f64
     } else {
         0.0
     };
-    println!("│   Avg Latency:             {:>12.0} ns          │", latency_ns);
+    println!("│   Avg Latency:             {latency_ns:>12.0} ns          │");
     println!("└─────────────────────────────────────────────────────┘");
 
     // Print backend stats if available
     let (attempts, successes, failures) = backend_stats.stats();
     if attempts > 0 {
         println!("\n📡 Backend Export Statistics:");
-        println!("   Export Attempts: {}", attempts);
+        println!("   Export Attempts: {attempts}");
         println!("   Successful: {} ({:.1}%)", successes, 100.0 * successes as f64 / attempts as f64);
         println!("   Failed: {} ({:.1}%)", failures, 100.0 * failures as f64 / attempts as f64);
     }
@@ -438,7 +436,7 @@ async fn run_producer(
     let producer = collector
         .register_producer()
         .await
-        .map_err(|e| format!("Registration failed: {}", e))?;
+        .map_err(|e| format!("Registration failed: {e}"))?;
 
     let mut stats = ProducerStats {
         spans_submitted: 0,
@@ -460,7 +458,7 @@ async fn run_producer(
 
     // Service metadata
     let service_name = format!("service-{}", producer_id % 4);
-    let instance_id = format!("instance-{}", producer_id);
+    let instance_id = format!("instance-{producer_id}");
 
     // Rate limiter for this producer (simulating realistic span generation rates)
     let mut rate_limiter = IntervalRateLimiter::from_rate(500.0); // 500 spans/sec max
@@ -476,7 +474,7 @@ async fn run_producer(
             0 // Root span
         };
 
-        let (operation, kind) = operations[i % operations.len()].clone();
+        let (operation, kind) = operations[i % operations.len()];
 
         // Create span with realistic attributes
         let mut span = Span::new(
@@ -510,7 +508,7 @@ async fn run_producer(
                 );
                 span.set_attribute(
                     "http.url".to_string(),
-                    AttributeValue::String(format!("/api/v1/resource/{}", i)),
+                    AttributeValue::String(format!("/api/v1/resource/{i}")),
                 );
                 span.set_attribute(
                     "http.status_code".to_string(),
@@ -589,7 +587,7 @@ async fn run_producer(
             Err(e) => {
                 stats.errors += 1;
                 if verbose {
-                    eprintln!("Producer {}: submit error: {:?}", producer_id, e);
+                    eprintln!("Producer {producer_id}: submit error: {e:?}");
                 }
             }
         }
@@ -613,7 +611,7 @@ fn generate_trace_id(producer_id: usize, seq: usize) -> u128 {
         .as_nanos() as u64;
 
     ((producer_id as u128) << 112)
-        | ((timestamp as u128) << 48)
+        | (u128::from(timestamp) << 48)
         | (seq as u128)
 }
 

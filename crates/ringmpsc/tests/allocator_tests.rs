@@ -53,7 +53,7 @@ fn test_heap_allocator_channel_explicit() {
 // -------------------------------------------------------
 
 /// A custom allocator for testing. Uses Vec internally but demonstrates
-/// that the BufferAllocator trait works with non-Box buffer types.
+/// that the `BufferAllocator` trait works with non-Box buffer types.
 #[derive(Clone, Copy, Debug, Default)]
 struct VecAllocator;
 
@@ -155,7 +155,7 @@ fn test_custom_allocator_drop_behavior() {
 
     static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    struct DropTracker(u64);
+    struct DropTracker(#[allow(dead_code)] u64);
     impl Drop for DropTracker {
         fn drop(&mut self) {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -196,7 +196,7 @@ fn test_custom_allocator_concurrent_stress() {
         handles.push(thread::spawn(move || {
             let producer = ch.register().unwrap();
             for i in 0..msg_count {
-                while !producer.push(producer_id as u64 * 1_000_000 + i) {
+                while !producer.push(u64::from(producer_id) * 1_000_000 + i) {
                     std::hint::spin_loop();
                 }
             }
@@ -387,7 +387,7 @@ fn test_aligned_allocator_concurrent_stress() {
         handles.push(thread::spawn(move || {
             let producer = ch.register().unwrap();
             for i in 0..msg_count {
-                while !producer.push(producer_id as u64 * 1_000_000 + i) {
+                while !producer.push(u64::from(producer_id) * 1_000_000 + i) {
                     std::hint::spin_loop();
                 }
             }

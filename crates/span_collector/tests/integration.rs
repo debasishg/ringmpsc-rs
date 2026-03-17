@@ -43,7 +43,7 @@ impl SpanExporter for TestExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "test"
     }
 }
@@ -75,7 +75,7 @@ impl SpanExporter for SlowExporter {
         Ok(())
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slow"
     }
 }
@@ -85,7 +85,7 @@ fn create_test_span(producer_id: usize, seq: u64) -> Span {
         1, // trace_id
         (producer_id as u64) << 48 | seq,
         0,
-        format!("op-{}", seq),
+        format!("op-{seq}"),
         SpanKind::Internal,
     )
 }
@@ -120,10 +120,8 @@ async fn test_concurrent_span_submission() {
     // Wait for processing
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let collector = match Arc::try_unwrap(collector) {
-        Ok(c) => c,
-        Err(_) => panic!("Failed to unwrap Arc"),
-    };
+    let collector = Arc::try_unwrap(collector)
+        .unwrap_or_else(|_| panic!("Failed to unwrap Arc"));
     collector.shutdown().await.unwrap();
 
     // Verify no data loss
@@ -139,10 +137,7 @@ async fn test_concurrent_span_submission() {
             let seq2 = window[1].span_id & 0xFFFF_FFFF_FFFF;
             assert!(
                 seq1 < seq2,
-                "Producer {} FIFO violated: {} >= {}",
-                producer_id,
-                seq1,
-                seq2
+                "Producer {producer_id} FIFO violated: {seq1} >= {seq2}"
             );
         }
     }
@@ -175,7 +170,7 @@ async fn test_backpressure() {
     }
     let duration = start.elapsed();
     
-    println!("Submitted 10K spans with backpressure in {:?}", duration);
+    println!("Submitted 10K spans with backpressure in {duration:?}");
 
     collector.shutdown().await.unwrap();
     
@@ -248,10 +243,8 @@ async fn test_mixed_workload() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let collector = match Arc::try_unwrap(collector) {
-        Ok(c) => c,
-        Err(_) => panic!("Failed to unwrap Arc"),
-    };
+    let collector = Arc::try_unwrap(collector)
+        .unwrap_or_else(|_| panic!("Failed to unwrap Arc"));
     collector.shutdown().await.unwrap();
 
     // 4 * 1000 + 4 * 100 = 4400 spans

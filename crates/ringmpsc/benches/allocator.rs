@@ -1,7 +1,7 @@
 //! Benchmarks comparing allocator strategies.
 //!
 //! Measures SPSC throughput for:
-//! - `HeapAllocator` (default, Box<[MaybeUninit<T>]>)
+//! - `HeapAllocator` (default, Box<[`MaybeUninit`<T>]>)
 //! - `AlignedAllocator<128>` (128-byte cache-line alignment)
 //! - `AlignedAllocator<{2 MiB}>` (huge-page alignment)
 //!

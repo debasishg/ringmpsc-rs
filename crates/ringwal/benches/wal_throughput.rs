@@ -10,15 +10,15 @@
 //!    benefit of not blocking the flusher task during fsync.
 //!
 //! 3. **`wal_streaming_pipeline`** — streaming workload comparing Full,
-//!    Background, Pipelined, PipelinedDataOnly, and PipelinedDedicated
+//!    Background, Pipelined, `PipelinedDataOnly`, and `PipelinedDedicated`
 //!    sync modes side-by-side. Writers use fire-and-forget `append()`
 //!    with periodic `commit()`, so the flusher pipeline stays saturated.
 //!
-//! 4. **`wal_durable_tuning`** — flush_interval × batch_hint sweep on
+//! 4. **`wal_durable_tuning`** — `flush_interval` × `batch_hint` sweep on
 //!    `SyncMode::Background` with 4 writers. Shows batching
 //!    amortisation under different configurations.
 //!
-//! 5. **`wal_pipelined_tuning`** — flush_interval × batch_hint sweep on
+//! 5. **`wal_pipelined_tuning`** — `flush_interval` × `batch_hint` sweep on
 //!    `Pipelined` and `PipelinedDataOnly` with 16 writers.
 //!
 //! 6. **`wal_throughput`** — `SyncMode::None` on `current_thread`.
@@ -28,12 +28,12 @@
 //!
 //! 8. **`wal_streaming_payload`** — Streaming workload with larger
 //!    payloads (64/1024/4096 B) × writers (4/8/16/32) comparing Full,
-//!    Pipelined, and PipelinedDataOnly.
+//!    Pipelined, and `PipelinedDataOnly`.
 //!
 //! 9. **`wal_direct_io`** — Compares sync modes with and without direct I/O
 //!    (macOS `F_NOCACHE` / Linux `O_DIRECT`). Uses 4 KiB payloads matching
-//!    filesystem block size. Sweeps 1/4/8 writers across Full, DataOnly,
-//!    and PipelinedDataOnly — each with a `+DirectIO` variant.
+//!    filesystem block size. Sweeps 1/4/8 writers across Full, `DataOnly`,
+//!    and `PipelinedDataOnly` — each with a `+DirectIO` variant.
 //!
 //! All groups use a shared runtime per benchmark function (via
 //! `b.to_async(&rt)`). Each iteration gets a fresh `TempDir` via
@@ -126,7 +126,7 @@ async fn ringwal_bench(
     config: ringwal::WalConfig,
 ) {
     let payload = black_box(vec![0u8; payload_size]);
-    let (mut wal, factory) = ringwal::Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = ringwal::Wal::open::<String, Vec<u8>>(config, ringwal::RealIo).unwrap();
 
     let mut handles = Vec::new();
     for w in 0..num_writers {
@@ -158,7 +158,7 @@ async fn ringwal_bench_streaming(
     config: ringwal::WalConfig,
 ) {
     let payload = black_box(vec![0u8; payload_size]);
-    let (mut wal, factory) = ringwal::Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = ringwal::Wal::open::<String, Vec<u8>>(config, ringwal::RealIo).unwrap();
 
     let mut handles = Vec::new();
     for w in 0..num_writers {

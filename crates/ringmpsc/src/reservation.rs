@@ -65,7 +65,7 @@ pub struct Reservation<'a, T, A: BufferAllocator = HeapAllocator> {
     /// complications when the slice already borrows from the Ring's buffer.
     ring_ptr: *const Ring<T, A>,
 
-    /// Number of slots reserved (cached from slice.len()).
+    /// Number of slots reserved (cached from `slice.len()`).
     len: usize,
 }
 
@@ -88,12 +88,14 @@ impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
 
     /// Returns the number of reserved slots.
     #[inline]
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns true if the reservation is empty.
     #[inline]
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -108,7 +110,7 @@ impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
         unsafe { self.commit_n_unchecked(len) };
     }
 
-    /// Commits exactly n items (where n <= len()).
+    /// Commits exactly n items (where n <= `len()`).
     ///
     /// Returns `Ok(())` on success, or `Err(CommitError)` if `n > len()`.
     ///
@@ -145,12 +147,13 @@ impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
         ring.commit_internal(n);
     }
 
-    /// Commits n items, saturating at len() if n is too large.
+    /// Commits n items, saturating at `len()` if n is too large.
     ///
     /// This never fails - if you request more than available, it commits
     /// all available items.
     ///
     /// Returns the number of items actually committed.
+    #[must_use] 
     pub fn commit_up_to(self, n: usize) -> usize {
         let to_commit = n.min(self.len);
         // SAFETY: to_commit <= self.len by construction

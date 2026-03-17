@@ -32,6 +32,7 @@ use crate::invariants::debug_assert_explicit_registration;
 /// let tx1 = factory.register().unwrap();
 /// let tx2 = factory.register().unwrap();
 /// ```
+#[must_use] 
 pub fn channel<T: Send + 'static>(config: Config) -> (SenderFactory<T>, RingReceiver<T>) {
     channel_with_stream_config(config, StreamConfig::default())
 }
@@ -42,6 +43,7 @@ pub fn channel<T: Send + 'static>(config: Config) -> (SenderFactory<T>, RingRece
 ///
 /// * `config` - The ringmpsc configuration (ring size, max producers, etc.)
 /// * `stream_config` - The stream-specific configuration (poll interval, batch hint)
+#[must_use] 
 pub fn channel_with_stream_config<T: Send + 'static>(
     config: Config,
     stream_config: StreamConfig,
@@ -132,11 +134,13 @@ impl<T: Send + 'static> SenderFactory<T> {
     }
 
     /// Returns `true` if the channel is closed for new registrations.
+    #[must_use] 
     pub fn is_closed(&self) -> bool {
         self.shutdown_state.is_closed()
     }
 
     /// Returns the number of registered producers.
+    #[must_use] 
     pub fn producer_count(&self) -> usize {
         self.channel.producer_count()
     }

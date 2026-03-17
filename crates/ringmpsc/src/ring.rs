@@ -108,6 +108,7 @@ impl<T> Ring<T, HeapAllocator> {
     ///
     /// Uses the default heap allocator (`Box<[MaybeUninit<T>]>`).
     /// This is API-compatible with the pre-allocator version.
+    #[must_use] 
     pub fn new(config: Config) -> Self {
         Self::new_in(config, HeapAllocator)
     }
@@ -210,7 +211,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// Slow path refreshes the cache only when needed.
     ///
     /// # TLA+ Actions
-    /// - Fast path: `ProducerReserveFast` (check cached_head)
+    /// - Fast path: `ProducerReserveFast` (check `cached_head`)
     /// - Slow path: `ProducerRefreshCache` (Acquire load on head)
     #[allow(clippy::cast_possible_truncation)]
     pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T, A>> {

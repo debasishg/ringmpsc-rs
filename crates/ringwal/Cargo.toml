@@ -6,6 +6,9 @@ description = "Write-Ahead Log backed by lock-free SPSC ring buffers via ringmps
 license = "MIT"
 repository = "https://github.com/debasishg/ringmpsc-rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 ringmpsc-rs = { path = "../ringmpsc" }
 ringmpsc-stream = { path = "../ringmpsc-stream" }

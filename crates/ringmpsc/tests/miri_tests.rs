@@ -46,7 +46,7 @@ fn miri_ring_wrap_around() {
     for round in 0..3 {
         // Fill
         for i in 0..4 {
-            assert!(ring.push(round * 10 + i), "push failed at round {} item {}", round, i);
+            assert!(ring.push(round * 10 + i), "push failed at round {round} item {i}");
         }
         
         // Drain
@@ -78,7 +78,7 @@ fn miri_ring_partial_reservation() {
     if let Some(mut res) = ring.reserve(3) {
         let len = res.as_mut_slice().len();
         // Should get 1 or 2, not 3 (depends on internal state)
-        assert!(len <= 2, "Expected partial reservation, got {}", len);
+        assert!(len <= 2, "Expected partial reservation, got {len}");
         for slot in res.as_mut_slice().iter_mut() {
             *slot = MaybeUninit::new(999);
         }
@@ -153,7 +153,7 @@ fn miri_reservation_drop_without_commit() {
     assert!(ring.is_empty());
 }
 
-/// Test consume_up_to boundary conditions.
+/// Test `consume_up_to` boundary conditions.
 #[test]
 fn miri_consume_up_to_limits() {
     let config = Config::new(4, 1, false);
@@ -175,7 +175,7 @@ fn miri_consume_up_to_limits() {
     assert_eq!(items, vec![0, 1, 2]);
 }
 
-/// Test the push() convenience method for UB.
+/// Test the `push()` convenience method for UB.
 #[test]
 fn miri_push_convenience() {
     let config = Config::new(2, 1, false); // capacity = 4

@@ -14,7 +14,7 @@
 ///
 /// **Invariant**: `0 ≤ (tail - head) ≤ capacity`
 ///
-/// Used in: `commit_internal()` after computing new_tail
+/// Used in: `commit_internal()` after computing `new_tail`
 macro_rules! debug_assert_bounded_count {
     ($count:expr, $capacity:expr) => {
         debug_assert!(

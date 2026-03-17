@@ -47,7 +47,7 @@ pub trait RateLimiter: Send {
 use std::future::Future;
 use std::pin::Pin;
 
-/// Object-safe version of RateLimiter for dynamic dispatch.
+/// Object-safe version of `RateLimiter` for dynamic dispatch.
 ///
 /// This trait uses `Pin<Box<dyn Future>>` to allow `dyn RateLimiterBoxed`.
 pub trait RateLimiterBoxed: Send {
@@ -60,7 +60,7 @@ pub trait RateLimiterBoxed: Send {
     }
 }
 
-/// Blanket implementation: any RateLimiter can be used as RateLimiterBoxed
+/// Blanket implementation: any `RateLimiter` can be used as `RateLimiterBoxed`
 impl<T: RateLimiter> RateLimiterBoxed for T {
     fn wait_boxed(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(self.wait())
@@ -94,6 +94,7 @@ impl IntervalRateLimiter {
     /// Create a rate limiter with a specific interval between operations.
     ///
     /// If `period` is zero, creates an unlimited rate limiter that only yields.
+    #[must_use] 
     pub fn new(period: Duration) -> Self {
         if period.is_zero() {
             return Self {
@@ -119,6 +120,7 @@ impl IntervalRateLimiter {
     /// # Panics
     ///
     /// Panics if `rate_per_sec` is zero or negative.
+    #[must_use] 
     pub fn from_rate(rate_per_sec: f64) -> Self {
         assert!(rate_per_sec > 0.0, "rate must be positive");
         let period = Duration::from_secs_f64(1.0 / rate_per_sec);
@@ -131,6 +133,7 @@ impl IntervalRateLimiter {
     ///
     /// Useful for testing or when backpressure from the ring buffer
     /// is the only desired rate control.
+    #[must_use] 
     pub fn unlimited() -> Self {
         Self::new(Duration::ZERO)
     }
@@ -194,8 +197,7 @@ mod tests {
         // Allow some tolerance for scheduling jitter
         assert!(
             elapsed >= Duration::from_millis(80) && elapsed <= Duration::from_millis(150),
-            "Expected ~90ms, got {:?}",
-            elapsed
+            "Expected ~90ms, got {elapsed:?}"
         );
     }
 
@@ -212,8 +214,7 @@ mod tests {
         // Should be very fast - just yielding
         assert!(
             elapsed < Duration::from_millis(50),
-            "Unlimited limiter too slow: {:?}",
-            elapsed
+            "Unlimited limiter too slow: {elapsed:?}"
         );
     }
 

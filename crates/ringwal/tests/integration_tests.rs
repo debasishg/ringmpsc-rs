@@ -2,7 +2,7 @@
 
 use ringwal::{
     recover, recover_into_store, read_checkpoint, write_checkpoint, InMemoryStore,
-    RecoveryAction, SyncMode, Transaction, Wal, WalConfig, WalEntry,
+    RealIo, RecoveryAction, SyncMode, Transaction, Wal, WalConfig, WalEntry,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -20,7 +20,7 @@ fn test_config(dir: &std::path::Path) -> WalConfig {
 async fn single_writer_commit() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     let mut tx = Transaction::new();
@@ -31,7 +31,7 @@ async fn single_writer_commit() {
     wal.shutdown().await.unwrap();
 
     // Recover and verify
-    let (recovered, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert_eq!(stats.committed, 1);
     assert_eq!(stats.aborted, 0);
     assert_eq!(stats.incomplete, 0);
@@ -48,7 +48,7 @@ async fn single_writer_commit() {
 async fn multi_writer_concurrent_commits() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let factory = Arc::new(factory);
 
     let mut handles = Vec::new();
@@ -70,7 +70,7 @@ async fn multi_writer_concurrent_commits() {
 
     wal.shutdown().await.unwrap();
 
-    let (recovered, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert_eq!(stats.committed, 40); // 4 writers × 10 txns
     assert_eq!(stats.incomplete, 0);
 
@@ -86,7 +86,7 @@ async fn multi_writer_concurrent_commits() {
 async fn abort_discards_entries() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     // Committed transaction
@@ -101,7 +101,7 @@ async fn abort_discards_entries() {
 
     wal.shutdown().await.unwrap();
 
-    let (recovered, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert_eq!(stats.committed, 1);
     assert_eq!(stats.aborted, 1);
 
@@ -121,15 +121,15 @@ async fn abort_discards_entries() {
 async fn checkpoint_write_read() {
     let tmp = TempDir::new().unwrap();
 
-    write_checkpoint(tmp.path(), 42).unwrap();
-    let lsn = read_checkpoint(tmp.path()).unwrap();
+    write_checkpoint(tmp.path(), 42, &RealIo).unwrap();
+    let lsn = read_checkpoint(tmp.path(), &RealIo).unwrap();
     assert_eq!(lsn, 42);
 }
 
 #[tokio::test]
 async fn checkpoint_missing_returns_zero() {
     let tmp = TempDir::new().unwrap();
-    let lsn = read_checkpoint(tmp.path()).unwrap();
+    let lsn = read_checkpoint(tmp.path(), &RealIo).unwrap();
     assert_eq!(lsn, 0);
 }
 
@@ -143,7 +143,7 @@ async fn segment_rotation() {
         .with_flush_interval(std::time::Duration::from_millis(5))
         .with_batch_hint(32);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     // Write enough data to trigger segment rotation (each entry ~530 bytes)
@@ -158,7 +158,7 @@ async fn segment_rotation() {
     // Verify multiple segment files were created
     let segment_files: Vec<_> = std::fs::read_dir(tmp.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
@@ -172,7 +172,7 @@ async fn segment_rotation() {
     );
 
     // Recovery should still find all committed transactions
-    let (_, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (_, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert_eq!(stats.committed, 50);
 }
 
@@ -186,7 +186,7 @@ async fn backpressure_no_data_loss() {
         .with_flush_interval(std::time::Duration::from_millis(20))
         .with_batch_hint(16);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let factory = Arc::new(factory);
 
     let mut handles = Vec::new();
@@ -208,7 +208,7 @@ async fn backpressure_no_data_loss() {
 
     wal.shutdown().await.unwrap();
 
-    let (_, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (_, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert_eq!(stats.committed, 400); // 4 × 100, no loss
     assert_eq!(stats.incomplete, 0);
 }
@@ -216,7 +216,7 @@ async fn backpressure_no_data_loss() {
 #[tokio::test]
 async fn recovery_handles_empty_dir() {
     let tmp = TempDir::new().unwrap();
-    let (recovered, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert!(recovered.is_empty());
     assert_eq!(stats.total_transactions, 0);
 }
@@ -228,7 +228,7 @@ async fn writer_factory_max_writers() {
         .with_ring_bits(8)
         .with_max_writers(2);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let _w1 = factory.register().unwrap();
     let _w2 = factory.register().unwrap();
     // Third registration should fail
@@ -241,7 +241,7 @@ async fn writer_factory_max_writers() {
 async fn checkpoint_advancement() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     // Write two transactions
@@ -275,7 +275,7 @@ async fn checkpoint_scheduler_truncates_segments() {
         .with_flush_interval(std::time::Duration::from_millis(5))
         .with_batch_hint(64);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     // Write enough data to generate multiple segments
@@ -294,7 +294,7 @@ async fn checkpoint_scheduler_truncates_segments() {
     wal.shutdown().await.unwrap();
 
     // Verify checkpoint file exists and is non-zero
-    let lsn = read_checkpoint(tmp.path()).unwrap();
+    let lsn = read_checkpoint(tmp.path(), &RealIo).unwrap();
     assert!(lsn > 0, "scheduler should have advanced the checkpoint");
 }
 
@@ -302,7 +302,7 @@ async fn checkpoint_scheduler_truncates_segments() {
 async fn recover_into_store_replays_committed() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     // Committed transaction
@@ -320,7 +320,7 @@ async fn recover_into_store_replays_committed() {
     // Recover into InMemoryStore
     let mut store = InMemoryStore::<String, Vec<u8>>::new();
     let stats =
-        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
 
     assert_eq!(stats.committed, 1);
     assert_eq!(stats.aborted, 1);
@@ -337,7 +337,7 @@ async fn pipelined_multi_writer_commits() {
     let config = test_config(tmp.path())
         .with_sync_mode(SyncMode::Pipelined);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
 
     let mut handles = Vec::new();
     for w in 0..4u8 {
@@ -358,7 +358,7 @@ async fn pipelined_multi_writer_commits() {
     // Recover and verify all 200 committed transactions
     let mut store = InMemoryStore::<String, Vec<u8>>::new();
     let stats =
-        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
 
     assert_eq!(stats.committed, 200);
     assert_eq!(stats.aborted, 0);
@@ -371,7 +371,7 @@ async fn pipelined_single_writer_commit() {
     let config = test_config(tmp.path())
         .with_sync_mode(SyncMode::Pipelined);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
     let writer = factory.register().unwrap();
 
     let mut tx = Transaction::new();
@@ -381,7 +381,7 @@ async fn pipelined_single_writer_commit() {
 
     wal.shutdown().await.unwrap();
 
-    let (recovered, stats) = recover::<String, Vec<u8>>(tmp.path()).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
     assert_eq!(stats.committed, 1);
     let committed: Vec<_> = recovered
         .iter()
@@ -399,7 +399,7 @@ async fn pipelined_data_only_multi_writer_commits() {
     let config = test_config(tmp.path())
         .with_sync_mode(SyncMode::PipelinedDataOnly);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
 
     let mut handles = Vec::new();
     for w in 0..4u8 {
@@ -419,7 +419,7 @@ async fn pipelined_data_only_multi_writer_commits() {
 
     let mut store = InMemoryStore::<String, Vec<u8>>::new();
     let stats =
-        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
 
     assert_eq!(stats.committed, 200);
     assert_eq!(stats.aborted, 0);
@@ -434,7 +434,7 @@ async fn pipelined_dedicated_multi_writer_commits() {
     let config = test_config(tmp.path())
         .with_sync_mode(SyncMode::PipelinedDedicated);
 
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config).unwrap();
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
 
     let mut handles = Vec::new();
     for w in 0..4u8 {
@@ -454,7 +454,7 @@ async fn pipelined_dedicated_multi_writer_commits() {
 
     let mut store = InMemoryStore::<String, Vec<u8>>::new();
     let stats =
-        recover_into_store::<String, Vec<u8>, _>(tmp.path(), &mut store).unwrap();
+        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
 
     assert_eq!(stats.committed, 200);
     assert_eq!(stats.aborted, 0);

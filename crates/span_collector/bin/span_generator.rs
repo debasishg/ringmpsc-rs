@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = tokio::signal::ctrl_c() => {
             println!("\nReceived Ctrl+C, initiating graceful shutdown...");
         }
-        _ = tokio::time::sleep(shutdown_timeout) => {
+        () = tokio::time::sleep(shutdown_timeout) => {
             println!("\nTimeout reached, initiating graceful shutdown...");
         }
     }
@@ -132,10 +132,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 all_stats.push(stats);
             }
             Ok(Err(e)) => {
-                eprintln!("Producer task failed: {}", e);
+                eprintln!("Producer task failed: {e}");
             }
             Err(e) => {
-                eprintln!("Task join error: {}", e);
+                eprintln!("Task join error: {e}");
             }
         }
     }
@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max()
         .unwrap_or(Duration::ZERO);
 
-    println!("Total spans generated: {}", total_spans);
+    println!("Total spans generated: {total_spans}");
     println!("Total duration: {:.2}s", max_duration.as_secs_f64());
     if max_duration.as_secs_f64() > 0.0 {
         println!(
@@ -186,7 +186,7 @@ async fn producer_task(
     let producer = collector
         .register_producer()
         .await
-        .map_err(|e| format!("Producer {} registration failed: {}", producer_id, e))?;
+        .map_err(|e| format!("Producer {producer_id} registration failed: {e}"))?;
 
     let target_rate = rate_limiter.target_rate();
     let start_time = Instant::now();
@@ -207,7 +207,7 @@ async fn producer_task(
         // Submit using async backpressure (waits on Notify if ring full)
         if let Err(e) = producer.submit_span(span).await {
             // Log error but continue - span collector may have closed
-            eprintln!("Producer {} submit error: {}", producer_id, e);
+            eprintln!("Producer {producer_id} submit error: {e}");
             break;
         }
 
@@ -283,7 +283,7 @@ fn generate_random_span(producer_id: usize, sequence: u64) -> Span {
     );
     span.set_attribute(
         "service.name".to_string(),
-        AttributeValue::String(format!("service-{}", producer_id)),
+        AttributeValue::String(format!("service-{producer_id}")),
     );
 
     // Add operation-specific attributes

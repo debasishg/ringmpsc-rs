@@ -1,6 +1,6 @@
 #![cfg_attr(feature = "allocator-api", feature(allocator_api))]
 
-//! RingMPSC - Lock-Free Multi-Producer Single-Consumer Channel
+//! `RingMPSC` - Lock-Free Multi-Producer Single-Consumer Channel
 //!
 //! A ring-decomposed MPSC implementation where each producer has a dedicated
 //! SPSC ring buffer. This eliminates producer-producer contention entirely.

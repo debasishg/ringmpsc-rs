@@ -79,6 +79,7 @@ where
     }
 
     /// Returns the number of registered writers.
+    #[must_use] 
     pub fn writer_count(&self) -> usize {
         self.factory.producer_count()
     }

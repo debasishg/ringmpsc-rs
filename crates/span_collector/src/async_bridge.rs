@@ -135,6 +135,7 @@ impl AsyncSpanCollector {
     ///
     /// Uses `SpanExporterBoxed` for object safety with native async traits.
     /// Supports concurrent exports using a Semaphore to limit parallelism.
+    #[allow(clippy::unused_async)]
     pub async fn new(config: AsyncCollectorConfig, exporter: Arc<dyn SpanExporterBoxed>) -> Self {
         let collector = Arc::new(SpanCollector::new(config.collector_config));
         let backpressure_notify = Arc::new(Notify::new());
@@ -169,10 +170,10 @@ impl AsyncSpanCollector {
                                 // Export succeeded - metrics already recorded in task
                             }
                             Ok(Err(e)) => {
-                                eprintln!("Export error: {}", e);
+                                eprintln!("Export error: {e}");
                             }
                             Err(e) => {
-                                eprintln!("Export task panicked: {}", e);
+                                eprintln!("Export task panicked: {e}");
                             }
                         }
                     }
@@ -189,8 +190,8 @@ impl AsyncSpanCollector {
                         }
 
                         // Spawn concurrent export if batch is ready
-                        if batch_processor.should_flush() {
-                            if let Some(batch) = batch_processor.take_batch() {
+                        if batch_processor.should_flush()
+                            && let Some(batch) = batch_processor.take_batch() {
                                 let permit = export_semaphore.clone().acquire_owned().await;
                                 if let Ok(permit) = permit {
                                     let exporter = Arc::clone(&exporter);
@@ -207,7 +208,6 @@ impl AsyncSpanCollector {
                                     });
                                 }
                             }
-                        }
                     }
 
                     _ = &mut shutdown_rx => {
@@ -217,16 +217,15 @@ impl AsyncSpanCollector {
                         });
 
                         // Final flush - sequential, pass exporter directly
-                        if let Some(batch) = batch_processor.take_batch() {
-                            if let Err(e) = exporter.export_boxed(batch).await {
-                                eprintln!("Final export error: {}", e);
+                        if let Some(batch) = batch_processor.take_batch()
+                            && let Err(e) = exporter.export_boxed(batch).await {
+                                eprintln!("Final export error: {e}");
                             }
-                        }
 
                         // Wait for all in-flight exports to complete
                         while let Some(result) = export_tasks.join_next().await {
                             if let Ok(Err(e)) = result {
-                                eprintln!("In-flight export error during shutdown: {}", e);
+                                eprintln!("In-flight export error during shutdown: {e}");
                             }
                         }
 
@@ -246,6 +245,7 @@ impl AsyncSpanCollector {
     }
 
     /// Registers a new async span producer
+    #[allow(clippy::unused_async)]
     pub async fn register_producer(&self) -> Result<AsyncSpanProducer, AsyncError> {
         let producer = self.collector.register()
             .map_err(|e| AsyncError::RegistrationFailed(e.to_string()))?;
@@ -256,6 +256,7 @@ impl AsyncSpanCollector {
     }
 
     /// Returns collector metrics
+    #[must_use] 
     pub fn metrics(&self) -> &Arc<CollectorMetrics> {
         self.collector.metrics()
     }
@@ -263,6 +264,7 @@ impl AsyncSpanCollector {
     /// Returns export metrics (thread-safe for concurrent exports)
     ///
     /// These metrics track spans/batches exported across concurrent tasks.
+    #[must_use] 
     pub fn export_metrics(&self) -> &Arc<ExportMetrics> {
         &self.export_metrics
     }
@@ -280,7 +282,7 @@ impl AsyncSpanCollector {
         // Wait for consumer task to finish
         if let Some(task) = self.consumer_task.take() {
             task.await.map_err(|e| {
-                AsyncError::ExportFailed(ExportError::Transport(format!("task join error: {}", e)))
+                AsyncError::ExportFailed(ExportError::Transport(format!("task join error: {e}")))
             })?;
         }
 
@@ -334,7 +336,7 @@ mod tests {
 
         // Submit spans
         for i in 0..10 {
-            let span = Span::new(1, i, 0, format!("op-{}", i), SpanKind::Internal);
+            let span = Span::new(1, i, 0, format!("op-{i}"), SpanKind::Internal);
             producer.submit_span(span).await.unwrap();
         }
 
@@ -363,7 +365,7 @@ mod tests {
                         1,
                         (producer_id as u64) << 48 | seq,
                         0,
-                        format!("op-{}", seq),
+                        format!("op-{seq}"),
                         SpanKind::Internal,
                     );
                     producer.submit_span(span).await.unwrap();
@@ -380,10 +382,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Unwrap Arc to get ownership
-        let collector = match Arc::try_unwrap(collector) {
-            Ok(c) => c,
-            Err(_) => panic!("Failed to unwrap Arc"),
-        };
+        let collector = Arc::try_unwrap(collector)
+            .unwrap_or_else(|_| panic!("Failed to unwrap Arc"));
         collector.shutdown().await.unwrap();
 
         assert_eq!(exporter.exported_count(), 400);
@@ -399,7 +399,7 @@ mod tests {
 
         // Submit spans
         for i in 0..100 {
-            let span = Span::new(1, i, 0, format!("op-{}", i), SpanKind::Internal);
+            let span = Span::new(1, i, 0, format!("op-{i}"), SpanKind::Internal);
             producer.submit_span(span).await.unwrap();
         }
 

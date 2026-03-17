@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 
 use crate::entry::{WalEntry, WalEntryHeader};
 use crate::error::WalError;
+use crate::io::{IoEngine, ReadHandle};
 use crate::segment::{discover_segment_ids, segment_path};
 use crate::writer::reset_tx_id;
 
@@ -48,22 +49,24 @@ pub struct RecoveredTransaction<K, V> {
 /// Recovers WAL state from all segment files in `dir`.
 ///
 /// Returns the set of recovered transactions and aggregate statistics.
-pub fn recover<K, V>(
+pub fn recover<K, V, IO>(
     dir: &Path,
+    io: &IO,
 ) -> Result<(Vec<RecoveredTransaction<K, V>>, RecoveryStats), WalError>
 where
     K: DeserializeOwned + Send + 'static,
     V: DeserializeOwned + Send + 'static,
+    IO: IoEngine,
 {
-    let mut segment_ids = discover_segment_ids(dir)?;
-    segment_ids.sort();
+    let mut segment_ids = discover_segment_ids(dir, io)?;
+    segment_ids.sort_unstable();
 
     let mut all_entries: Vec<WalEntry<K, V>> = Vec::new();
     let mut stats = RecoveryStats::default();
 
     for &seg_id in &segment_ids {
         let path = segment_path(dir, seg_id);
-        read_segment_entries(&path, &mut all_entries, &mut stats)?;
+        read_segment_entries(&path, &mut all_entries, &mut stats, io)?;
     }
 
     // Classify transactions
@@ -127,22 +130,24 @@ where
 }
 
 /// Reads all valid entries from a single segment file.
-fn read_segment_entries<K, V>(
+fn read_segment_entries<K, V, IO>(
     path: &Path,
     entries: &mut Vec<WalEntry<K, V>>,
     stats: &mut RecoveryStats,
+    io: &IO,
 ) -> Result<(), WalError>
 where
     K: DeserializeOwned,
     V: DeserializeOwned,
+    IO: IoEngine,
 {
-    let mut file = match std::fs::File::open(path) {
+    let mut file = match io.open_read(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e.into()),
     };
 
-    let file_len = file.metadata()?.len();
+    let file_len = file.metadata_len()?;
     let mut offset: u64 = 0;
 
     loop {
@@ -178,19 +183,16 @@ where
         offset += header.length;
 
         // Validate checksum
-        if let Err(_) = header.validate(&data) {
+        if header.validate(&data).is_err() {
             stats.checksum_failures += 1;
             // Stop at first corruption — tail may be torn
             break;
         }
 
         // Deserialize
-        match bincode::deserialize::<WalEntry<K, V>>(&data) {
-            Ok(entry) => entries.push(entry),
-            Err(_) => {
-                stats.checksum_failures += 1;
-                break;
-            }
+        if let Ok(entry) = bincode::deserialize::<WalEntry<K, V>>(&data) { entries.push(entry) } else {
+            stats.checksum_failures += 1;
+            break;
         }
     }
 
@@ -198,20 +200,17 @@ where
 }
 
 /// Writes a checkpoint file recording the highest durable LSN.
-pub fn write_checkpoint(dir: &Path, lsn: u64) -> Result<(), WalError> {
+pub fn write_checkpoint<IO: IoEngine>(dir: &Path, lsn: u64, io: &IO) -> Result<(), WalError> {
     let path = dir.join("checkpoint");
     let data = lsn.to_le_bytes();
-    std::fs::write(&path, data)?;
-    // Fsync the checkpoint file
-    let f = std::fs::File::open(&path)?;
-    f.sync_all()?;
+    io.write_file_bytes(&path, &data)?;
     Ok(())
 }
 
 /// Reads the last checkpoint LSN, or 0 if no checkpoint exists.
-pub fn read_checkpoint(dir: &Path) -> Result<u64, WalError> {
+pub fn read_checkpoint<IO: IoEngine>(dir: &Path, io: &IO) -> Result<u64, WalError> {
     let path = dir.join("checkpoint");
-    match std::fs::read(&path) {
+    match io.read_file_bytes(&path) {
         Ok(data) if data.len() == 8 => {
             let bytes: [u8; 8] = data.try_into().unwrap();
             Ok(u64::from_le_bytes(bytes))
@@ -231,13 +230,14 @@ pub fn read_checkpoint(dir: &Path) -> Result<u64, WalError> {
 /// This is the analog of async-wal-db's `checkpoint()` method which
 /// filters committed-only transactions and advances to the highest
 /// committed `tx_id`.
-pub fn checkpoint<K, V>(dir: &Path) -> Result<u64, WalError>
+pub fn checkpoint<K, V, IO>(dir: &Path, io: &IO) -> Result<u64, WalError>
 where
     K: DeserializeOwned + Send + 'static,
     V: DeserializeOwned + Send + 'static,
+    IO: IoEngine,
 {
-    let current_lsn = read_checkpoint(dir)?;
-    let (recovered, _stats) = recover::<K, V>(dir)?;
+    let current_lsn = read_checkpoint(dir, io)?;
+    let (recovered, _stats) = recover::<K, V, IO>(dir, io)?;
 
     // Find the highest tx_id among committed transactions
     let max_committed_tx_id = recovered
@@ -248,7 +248,7 @@ where
 
     match max_committed_tx_id {
         Some(tx_id) if tx_id > current_lsn => {
-            write_checkpoint(dir, tx_id)?;
+            write_checkpoint(dir, tx_id, io)?;
             Ok(tx_id)
         }
         Some(_) | None => Err(WalError::NoNewCheckpoints),
@@ -261,12 +261,9 @@ where
 /// This is a directory-level operation that does not require access to
 /// the live `SegmentManager`. It complements `SegmentManager::truncate_before()`
 /// for use outside the flusher task (e.g., from the checkpoint scheduler).
-pub fn truncate_segments_before(dir: &Path, checkpoint_lsn: u64) -> Result<usize, WalError> {
-    // We remove segment files that are clearly older by scanning on-disk entries.
-    // For safety, we re-read each candidate segment and only remove those whose
-    // highest entry LSN (tx_id) is below the checkpoint.
-    let mut segment_ids = discover_segment_ids(dir)?;
-    segment_ids.sort();
+pub fn truncate_segments_before<IO: IoEngine>(dir: &Path, checkpoint_lsn: u64, io: &IO) -> Result<usize, WalError> {
+    let mut segment_ids = discover_segment_ids(dir, io)?;
+    segment_ids.sort_unstable();
 
     // Keep at least the last segment (even if empty) to avoid removing the active one
     if segment_ids.len() <= 1 {
@@ -283,9 +280,9 @@ pub fn truncate_segments_before(dir: &Path, checkpoint_lsn: u64) -> Result<usize
         // We read each segment cheaply with the raw header parser
         // to find the highest tx_id. If it's below the checkpoint,
         // every entry in that segment is already checkpointed.
-        let max_tx_id = read_segment_max_tx_id(&path)?;
+        let max_tx_id = read_segment_max_tx_id(&path, io)?;
         if max_tx_id > 0 && max_tx_id < checkpoint_lsn {
-            let _ = std::fs::remove_file(&path);
+            let _ = io.remove_file(&path);
             removed += 1;
         }
     }
@@ -293,15 +290,15 @@ pub fn truncate_segments_before(dir: &Path, checkpoint_lsn: u64) -> Result<usize
     Ok(removed)
 }
 
-/// Reads a segment file and returns the maximum tx_id found, or 0 if empty/unreadable.
-fn read_segment_max_tx_id(path: &Path) -> Result<u64, WalError> {
-    let mut file = match std::fs::File::open(path) {
+/// Reads a segment file and returns the maximum `tx_id` found, or 0 if empty/unreadable.
+fn read_segment_max_tx_id<IO: IoEngine>(path: &Path, io: &IO) -> Result<u64, WalError> {
+    let mut file = match io.open_read(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e.into()),
     };
 
-    let file_len = file.metadata()?.len();
+    let file_len = file.metadata_len()?;
     let mut offset: u64 = 0;
     let mut max_tx_id: u64 = 0;
 

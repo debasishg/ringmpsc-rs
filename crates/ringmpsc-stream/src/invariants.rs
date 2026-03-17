@@ -69,7 +69,7 @@ macro_rules! debug_assert_recheck_after_register {
 // INV-STREAM-06: Timer Tick Loop (Waker Registration Guarantee)
 // =============================================================================
 
-/// Assert that the timer poll_tick loop consumed at least one tick before
+/// Assert that the timer `poll_tick` loop consumed at least one tick before
 /// reaching the Pending state that registers the waker.
 ///
 /// **Invariant**: `poll_tick()` is called in a loop until it returns `Pending`.
@@ -81,6 +81,7 @@ macro_rules! debug_assert_recheck_after_register {
 /// guarantees this by construction. The assert documents the requirement.
 ///
 /// Used in: `RingReceiver::poll_next()` timer polling loop
+#[allow(unused_macros)]
 macro_rules! debug_assert_timer_pending_reached {
     () => {
         // Structural assertion: this macro is placed at the `Pending` branch
@@ -97,7 +98,7 @@ macro_rules! debug_assert_timer_pending_reached {
 ///
 /// **Invariant**: `try_send(item) returns Err(item) on full ring`
 ///
-/// Used in: `RingSender::try_send()` when reserve() returns None
+/// Used in: `RingSender::try_send()` when `reserve()` returns None
 macro_rules! debug_assert_item_preserved {
     ($reserve_failed:expr, $item_returned:expr) => {
         debug_assert!(
@@ -143,7 +144,7 @@ macro_rules! debug_assert_data_notified {
 ///
 /// **Invariant**: `SenderFactory::register() → Result<RingSender>`
 ///
-/// This is enforced by API design - RingSender is not Clone.
+/// This is enforced by API design - `RingSender` is not Clone.
 /// The macro is called after successful registration to document the invariant.
 macro_rules! debug_assert_explicit_registration {
     // Simple form: just document that registration happened
@@ -203,7 +204,6 @@ macro_rules! debug_assert_senders_woken {
 pub(crate) use debug_assert_backpressure_signaled;
 pub(crate) use debug_assert_data_notified;
 pub(crate) use debug_assert_recheck_after_register;
-pub(crate) use debug_assert_timer_pending_reached;
 pub(crate) use debug_assert_explicit_registration;
 pub(crate) use debug_assert_item_preserved;
 pub(crate) use debug_assert_senders_woken;

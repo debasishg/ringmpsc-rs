@@ -169,7 +169,7 @@ async fn test_fifo_ordering_single_producer() {
     let mut prev = None;
     while let Some(item) = rx.next().await {
         if let Some(p) = prev {
-            assert!(item > p, "FIFO violation: {} came after {}", item, p);
+            assert!(item > p, "FIFO violation: {item} came after {p}");
         }
         prev = Some(item);
     }
@@ -205,10 +205,10 @@ async fn test_fifo_ordering_single_producer() {
 
 /// Deterministic proof that the re-drain catches items the timer can't reach.
 ///
-/// On current_thread, try_send pre-fills the ring synchronously. The receiver
-/// then runs. With batch_hint=64 and 100 items, the first drain gets 64 items.
-/// The next poll_next finds buffer empty, data_pending=false, and creates
-/// data_notified → Pending (Notify is EMPTY, no stored permit). Without the
+/// On `current_thread`, `try_send` pre-fills the ring synchronously. The receiver
+/// then runs. With `batch_hint=64` and 100 items, the first drain gets 64 items.
+/// The next `poll_next` finds buffer empty, `data_pending=false`, and creates
+/// `data_notified` → Pending (Notify is EMPTY, no stored permit). Without the
 /// re-drain, the remaining 36 items would be stuck until the 60s timer fires.
 /// WITH the re-drain, they're caught immediately.
 #[tokio::test(flavor = "current_thread")]
@@ -252,9 +252,9 @@ async fn test_recheck_catches_prefilled_ring() {
 
 /// Multi-producer correctness test with realistic timer.
 ///
-/// 4 producers send concurrently on a multi_thread runtime. The 100ms timer
-/// catches items arriving between poll_next calls (when Notified is dropped).
-/// The re-drain catches items arriving during poll_next (in-flight race).
+/// 4 producers send concurrently on a `multi_thread` runtime. The 100ms timer
+/// catches items arriving between `poll_next` calls (when Notified is dropped).
+/// The re-drain catches items arriving during `poll_next` (in-flight race).
 /// Together they ensure all items are received with per-producer FIFO order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_no_lost_wakeup_multi_producer() {
@@ -331,7 +331,7 @@ async fn test_no_lost_wakeup_multi_producer() {
 ///
 /// The 5ms pauses create windows where the receiver returns Pending with no
 /// active senders. The 50ms timer catches these inter-burst gaps. Within
-/// each burst, the re-drain catches items pushed during poll_next execution.
+/// each burst, the re-drain catches items pushed during `poll_next` execution.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_no_lost_wakeup_burst_pattern() {
     let stream_config = StreamConfig::default()

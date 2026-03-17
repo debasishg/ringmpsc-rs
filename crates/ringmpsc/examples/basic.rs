@@ -14,8 +14,8 @@ fn main() {
     const ITEMS_PER_PRODUCER: usize = 1_000_000;
 
     println!("Configuration:");
-    println!("  Producers: {}", N_PRODUCERS);
-    println!("  Items per producer: {}", ITEMS_PER_PRODUCER);
+    println!("  Producers: {N_PRODUCERS}");
+    println!("  Items per producer: {ITEMS_PER_PRODUCER}");
     println!("  Total items: {}\n", N_PRODUCERS * ITEMS_PER_PRODUCER);
 
     let start = Instant::now();
@@ -33,7 +33,7 @@ fn main() {
                     thread::yield_now();
                 }
             }
-            println!("Producer {} finished", id);
+            println!("Producer {id} finished");
         });
         handles.push(handle);
     }
@@ -69,9 +69,9 @@ fn main() {
     let duration = start.elapsed();
 
     println!("\nResults:");
-    println!("  Items consumed: {}", total);
-    println!("  Sum: {}", sum);
-    println!("  Duration: {:.2?}", duration);
+    println!("  Items consumed: {total}");
+    println!("  Sum: {sum}");
+    println!("  Duration: {duration:.2?}");
     println!("  Throughput: {:.2} million items/sec", 
              total as f64 / duration.as_secs_f64() / 1_000_000.0);
 }

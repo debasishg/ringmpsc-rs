@@ -1,7 +1,7 @@
 //! Batch Processor - Pure Batching Abstraction
 //!
 //! This module provides a **pure batching abstraction** with no concurrency overhead.
-//! It groups spans by trace_id and decides when to flush based on size/time thresholds.
+//! It groups spans by `trace_id` and decides when to flush based on size/time thresholds.
 //!
 //! # Design Philosophy: Separation of Concerns
 //!
@@ -80,7 +80,7 @@
 //! }
 //! ```
 //!
-//! # Metrics: BatchMetrics vs ExportMetrics
+//! # Metrics: `BatchMetrics` vs `ExportMetrics`
 //!
 //! | Type | Location | Fields | Use Case |
 //! |------|----------|--------|----------|
@@ -88,7 +88,7 @@
 //! | `ExportMetrics` | `async_bridge.rs` | `AtomicU64` | Concurrent export tasks |
 //!
 //! The `AsyncSpanCollector` in `async_bridge` uses `ExportMetrics` internally
-//! and handles all concurrency concerns (Semaphore, JoinSet, atomic metrics).
+//! and handles all concurrency concerns (Semaphore, `JoinSet`, atomic metrics).
 //! Most users should use `AsyncSpanCollector` rather than managing concurrency manually.
 //!
 //! # See Also
@@ -144,12 +144,12 @@ impl BatchMetrics {
     }
 }
 
-/// Batch processor that groups spans by trace_id and decides when to flush.
+/// Batch processor that groups spans by `trace_id` and decides when to flush.
 ///
 /// This is a pure batching abstraction with no concurrency concerns.
 /// For concurrent exports, use `take_batch()` and manage export tasks externally.
 pub struct BatchProcessor {
-    /// Pending spans grouped by trace_id
+    /// Pending spans grouped by `trace_id`
     pending: HashMap<u128, Vec<Span>>,
     /// Configuration
     config: BatchConfig,
@@ -161,6 +161,7 @@ pub struct BatchProcessor {
 
 impl BatchProcessor {
     /// Creates a new batch processor
+    #[must_use] 
     pub fn new(config: BatchConfig) -> Self {
         Self {
             pending: HashMap::new(),
@@ -177,11 +178,13 @@ impl BatchProcessor {
     }
 
     /// Returns the total number of pending spans
+    #[must_use] 
     pub fn total_pending(&self) -> usize {
-        self.pending.values().map(|v| v.len()).sum()
+        self.pending.values().map(std::vec::Vec::len).sum()
     }
 
     /// Checks if the batch should be flushed
+    #[must_use] 
     pub fn should_flush(&self) -> bool {
         !self.pending.is_empty()
             && (self.total_pending() >= self.config.batch_size_limit
@@ -240,6 +243,7 @@ impl BatchProcessor {
     }
 
     /// Returns current metrics (for sequential use)
+    #[must_use] 
     pub fn metrics(&self) -> &BatchMetrics {
         &self.metrics
     }
@@ -268,7 +272,7 @@ mod tests {
 
         // Add spans
         for i in 0..3 {
-            let span = Span::new(1, i, 0, format!("op-{}", i), SpanKind::Internal);
+            let span = Span::new(1, i, 0, format!("op-{i}"), SpanKind::Internal);
             processor.add(span);
         }
 
@@ -277,7 +281,7 @@ mod tests {
 
         // Add more to trigger flush
         for i in 3..5 {
-            let span = Span::new(1, i, 0, format!("op-{}", i), SpanKind::Internal);
+            let span = Span::new(1, i, 0, format!("op-{i}"), SpanKind::Internal);
             processor.add(span);
         }
 
@@ -302,7 +306,7 @@ mod tests {
                     trace_id,
                     span_id,
                     0,
-                    format!("trace-{}-span-{}", trace_id, span_id),
+                    format!("trace-{trace_id}-span-{span_id}"),
                     SpanKind::Internal,
                 );
                 processor.add(span);
@@ -324,7 +328,7 @@ mod tests {
 
         // Add some spans
         for i in 0..5 {
-            let span = Span::new(1, i, 0, format!("op-{}", i), SpanKind::Internal);
+            let span = Span::new(1, i, 0, format!("op-{i}"), SpanKind::Internal);
             processor.add(span);
         }
 

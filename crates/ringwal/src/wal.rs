@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use crate::config::WalConfig;
 use crate::config::SyncMode;
 use crate::error::WalError;
-use crate::invariants::debug_assert_commit_durable;
+use crate::io::{IoEngine, RealIo};
 use crate::recovery;
 use crate::segment::SegmentManager;
 use crate::writer::{Envelope, WalWriterFactory};
@@ -35,21 +35,25 @@ impl CommitRegistry {
 /// Owns the background flusher task and the segment manager.
 /// Created via [`Wal::open`], which returns both the `Wal` handle
 /// and a [`WalWriterFactory`] for creating writers.
-pub struct Wal {
+///
+/// The `IO` parameter selects the I/O backend: [`RealIo`] for production
+/// (default) or a simulation backend for deterministic testing.
+pub struct Wal<IO: IoEngine = RealIo> {
     dir: PathBuf,
     shutdown_notify: Arc<Notify>,
     flusher_handle: Option<JoinHandle<()>>,
     checkpoint_handle: Option<JoinHandle<()>>,
     next_lsn: Arc<AtomicU64>,
+    io: IO,
 }
 
-impl Wal {
+impl<IO: IoEngine> Wal<IO> {
     /// Opens or creates a WAL at the configured directory.
     ///
     /// Spawns a background flusher task on the tokio runtime.
     /// Returns the `Wal` handle and a `WalWriterFactory` for
     /// registering per-writer ring buffers.
-    pub fn open<K, V>(config: WalConfig) -> Result<(Self, WalWriterFactory<K, V>), WalError>
+    pub fn open<K, V>(config: WalConfig, io: IO) -> Result<(Self, WalWriterFactory<K, V>), WalError>
     where
         K: Serialize + DeserializeOwned + Send + 'static,
         V: Serialize + DeserializeOwned + Send + 'static,
@@ -66,7 +70,7 @@ impl Wal {
         let (sender_factory, receiver) =
             channel_with_stream_config::<Envelope<K, V>>(ring_config, stream_config);
 
-        let segment_mgr = SegmentManager::open(&config.dir, config.max_segment_size, config.direct_io)?;
+        let segment_mgr = SegmentManager::open(&config.dir, config.max_segment_size, config.direct_io, io.clone())?;
 
         let shutdown_notify = Arc::new(Notify::new());
         let next_lsn = Arc::new(AtomicU64::new(1));
@@ -94,6 +98,7 @@ impl Wal {
                 flusher_handle: Some(flusher_handle),
                 checkpoint_handle: None,
                 next_lsn,
+                io,
             },
             writer_factory,
         ))
@@ -120,8 +125,7 @@ impl Wal {
         self.shutdown_notify.notify_one();
         if let Some(handle) = self.flusher_handle.take() {
             handle.await.map_err(|_| {
-                WalError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                WalError::Io(std::io::Error::other(
                     "flusher task panicked",
                 ))
             })?;
@@ -147,8 +151,8 @@ impl Wal {
         K: DeserializeOwned + Send + 'static,
         V: DeserializeOwned + Send + 'static,
     {
-        let lsn = recovery::checkpoint::<K, V>(&self.dir)?;
-        let _ = recovery::truncate_segments_before(&self.dir, lsn);
+        let lsn = recovery::checkpoint::<K, V, IO>(&self.dir, &self.io)?;
+        let _ = recovery::truncate_segments_before(&self.dir, lsn, &self.io);
         Ok(lsn)
     }
 
@@ -171,6 +175,7 @@ impl Wal {
 
         let dir = self.dir.clone();
         let shutdown_notify = Arc::clone(&self.shutdown_notify);
+        let io = self.io.clone();
 
         self.checkpoint_handle = Some(tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -180,9 +185,9 @@ impl Wal {
                 tokio::select! {
                     _ = ticker.tick() => {
                         // Best-effort checkpoint — ignore NoNewCheckpoints
-                        match recovery::checkpoint::<K, V>(&dir) {
+                        match recovery::checkpoint::<K, V, IO>(&dir, &io) {
                             Ok(lsn) => {
-                                let _ = recovery::truncate_segments_before(&dir, lsn);
+                                let _ = recovery::truncate_segments_before(&dir, lsn, &io);
                             }
                             Err(WalError::NoNewCheckpoints) => {}
                             Err(e) => {
@@ -190,7 +195,7 @@ impl Wal {
                             }
                         }
                     }
-                    _ = shutdown_notify.notified() => {
+                    () = shutdown_notify.notified() => {
                         return;
                     }
                 }
@@ -202,8 +207,9 @@ impl Wal {
 /// Pipelined flush: write batch, spawn fire-and-forget background fsync
 /// that notifies commit waiters directly when fsync completes.
 /// The flusher returns immediately and can start writing the next batch.
-async fn pipelined_flush(
-    segment_mgr: &mut SegmentManager,
+#[allow(clippy::unused_async)]
+async fn pipelined_flush<IO: IoEngine>(
+    segment_mgr: &mut SegmentManager<IO>,
     batch: &mut Vec<(u64, Vec<u8>)>,
     commit_waiters: &mut Vec<oneshot::Sender<()>>,
     in_flight: &mut tokio::task::JoinSet<()>,
@@ -254,8 +260,8 @@ async fn pipelined_flush(
 
 /// Dedicated-thread flush: write batch, send fd + waiters over bounded channel
 /// to a dedicated OS thread that performs fsync and notifies waiters.
-fn dedicated_flush(
-    segment_mgr: &mut SegmentManager,
+fn dedicated_flush<IO: IoEngine>(
+    segment_mgr: &mut SegmentManager<IO>,
     batch: &mut Vec<(u64, Vec<u8>)>,
     commit_waiters: &mut Vec<oneshot::Sender<()>>,
     tx: &std::sync::mpsc::SyncSender<(std::fs::File, Vec<oneshot::Sender<()>>)>,
@@ -297,9 +303,9 @@ type DedicatedHandle = (
 
 /// Background task: drains entries from the ring receiver, serialises them,
 /// writes to the segment manager, fsyncs, and notifies commit waiters.
-async fn flusher_task<K, V>(
+async fn flusher_task<K, V, IO: IoEngine>(
     mut receiver: RingReceiver<Envelope<K, V>>,
-    mut segment_mgr: SegmentManager,
+    mut segment_mgr: SegmentManager<IO>,
     shutdown_notify: Arc<Notify>,
     next_lsn: Arc<AtomicU64>,
     batch_hint: usize,
@@ -349,7 +355,7 @@ async fn flusher_task<K, V>(
                 // First item: block until data arrives OR shutdown is signalled
                 tokio::select! {
                     item = receiver.next() => item,
-                    _ = shutdown_notify.notified() => {
+                    () = shutdown_notify.notified() => {
                         // Shutdown requested — trigger receiver shutdown to drain
                         receiver.shutdown();
                         // Drain remaining items from the stream
@@ -384,37 +390,34 @@ async fn flusher_task<K, V>(
                 tokio::select! {
                     biased;
                     item = receiver.next() => item,
-                    _ = tokio::time::sleep(std::time::Duration::from_micros(100)) => break,
+                    () = tokio::time::sleep(std::time::Duration::from_micros(100)) => break,
                 }
             };
 
-            match maybe_item {
-                Some(envelope) => {
-                    collect_envelope(envelope, &next_lsn, &mut batch, &mut commit_waiters);
-                    drained += 1;
-                }
-                None => {
-                    // Stream ended (all senders dropped)
-                    if is_pipelined {
-                        if sync_mode == SyncMode::PipelinedDedicated {
-                            if let Some((ref tx, _)) = dedicated {
-                                dedicated_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, tx);
-                            }
-                        } else {
-                            pipelined_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, &mut in_flight, sync_mode).await;
-                        }
-                        while in_flight.join_next().await.is_some() {}
-                        if let Some((tx, handle)) = dedicated.take() {
-                            drop(tx);
-                            if let Some(h) = handle {
-                                let _ = tokio::task::spawn_blocking(move || h.join()).await;
-                            }
+            if let Some(envelope) = maybe_item {
+                collect_envelope(envelope, &next_lsn, &mut batch, &mut commit_waiters);
+                drained += 1;
+            } else {
+                // Stream ended (all senders dropped)
+                if is_pipelined {
+                    if sync_mode == SyncMode::PipelinedDedicated {
+                        if let Some((ref tx, _)) = dedicated {
+                            dedicated_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, tx);
                         }
                     } else {
-                        flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
+                        pipelined_flush(&mut segment_mgr, &mut batch, &mut commit_waiters, &mut in_flight, sync_mode).await;
                     }
-                    return;
+                    while in_flight.join_next().await.is_some() {}
+                    if let Some((tx, handle)) = dedicated.take() {
+                        drop(tx);
+                        if let Some(h) = handle {
+                            let _ = tokio::task::spawn_blocking(move || h.join()).await;
+                        }
+                    }
+                } else {
+                    flush_and_notify(&mut segment_mgr, &mut batch, &mut commit_waiters, sync_mode).await;
                 }
+                return;
             }
         }
 
@@ -461,8 +464,8 @@ fn collect_envelope<K, V>(
 }
 
 /// Writes a batch to the segment manager, optionally fsyncs, and notifies commit waiters.
-async fn flush_and_notify(
-    segment_mgr: &mut SegmentManager,
+async fn flush_and_notify<IO: IoEngine>(
+    segment_mgr: &mut SegmentManager<IO>,
     batch: &mut Vec<(u64, Vec<u8>)>,
     commit_waiters: &mut Vec<oneshot::Sender<()>>,
     sync_mode: SyncMode,
@@ -482,13 +485,21 @@ async fn flush_and_notify(
     match sync_mode {
         SyncMode::Full => {
             // Fsync the active segment — guarantees durability
-            let _fsynced = segment_mgr.fsync().is_ok();
-            debug_assert_commit_durable!(_fsynced);
+            if let Err(e) = segment_mgr.fsync() {
+                eprintln!("ringwal: fsync error: {e}");
+                batch.clear();
+                commit_waiters.clear();
+                return;
+            }
         }
         SyncMode::DataOnly => {
             // Fsync data only (skip metadata) — faster on Linux/ext4
-            let _fsynced = segment_mgr.fsync_data().is_ok();
-            debug_assert_commit_durable!(_fsynced);
+            if let Err(e) = segment_mgr.fsync_data() {
+                eprintln!("ringwal: fsync_data error: {e}");
+                batch.clear();
+                commit_waiters.clear();
+                return;
+            }
         }
         SyncMode::Background => {
             // Offload fsync to Tokio's blocking thread pool.
@@ -498,11 +509,18 @@ async fn flush_and_notify(
                 Ok(fd) => {
                     let result = tokio::task::spawn_blocking(move || fd.sync_all())
                         .await;
-                    let _fsynced = matches!(result, Ok(Ok(())));
-                    debug_assert_commit_durable!(_fsynced);
+                    if !matches!(result, Ok(Ok(()))) {
+                        eprintln!("ringwal: background fsync error");
+                        batch.clear();
+                        commit_waiters.clear();
+                        return;
+                    }
                 }
                 Err(e) => {
                     eprintln!("ringwal: flush_and_clone_fd error: {e}");
+                    batch.clear();
+                    commit_waiters.clear();
+                    return;
                 }
             }
         }

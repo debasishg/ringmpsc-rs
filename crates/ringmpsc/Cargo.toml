@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["mpsc", "lock-free", "channel", "concurrent", "ring-buffer"]
 categories = ["concurrency", "data-structures"]
 
+[lints]
+workspace = true
+
 [features]
 # Enable loom for concurrency testing (cargo test --features loom)
 loom = ["dep:loom"]

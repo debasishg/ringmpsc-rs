@@ -11,13 +11,13 @@ fn test_fifo_ordering_single_producer() {
 
     // Send N items using push() convenience method
     for i in 0..N {
-        assert!(producer.push(i), "push failed at item {}", i);
+        assert!(producer.push(i), "push failed at item {i}");
     }
 
     // Verify FIFO order
     let mut expected = 0;
     let consumed = channel.consume_all(|item| {
-        assert_eq!(*item, expected, "FIFO violation: expected {}, got {}", expected, item);
+        assert_eq!(*item, expected, "FIFO violation: expected {expected}, got {item}");
         expected += 1;
     });
 
@@ -66,8 +66,7 @@ fn test_fifo_ordering_multi_producer() {
     for (id, &count) in last_seen.iter().enumerate() {
         assert_eq!(
             count, ITEMS_PER_PRODUCER,
-            "Producer {} sent {} items instead of {}",
-            id, count, ITEMS_PER_PRODUCER
+            "Producer {id} sent {count} items instead of {ITEMS_PER_PRODUCER}"
         );
     }
 }

@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["mpsc", "stream", "async", "backpressure", "pipeline"]
 categories = ["asynchronous", "concurrency"]
 
+[lints]
+workspace = true
+
 [dependencies]
 ringmpsc-rs = { path = "../ringmpsc" }
 tokio = { workspace = true, features = ["sync", "time", "rt"] }

@@ -1,4 +1,4 @@
-//! Custom allocator example for RingMPSC.
+//! Custom allocator example for `RingMPSC`.
 //!
 //! Demonstrates three allocator strategies:
 //! 1. Default `HeapAllocator` (zero overhead, identical to `Ring::new()`)

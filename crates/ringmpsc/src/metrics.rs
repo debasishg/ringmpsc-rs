@@ -15,6 +15,7 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             messages_sent: AtomicU64::new(0),

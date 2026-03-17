@@ -1,6 +1,6 @@
-//! Integration tests for StackRing
+//! Integration tests for `StackRing`
 //!
-//! These tests verify the StackRing implementation under realistic conditions
+//! These tests verify the `StackRing` implementation under realistic conditions
 //! including multi-threaded access and stress testing.
 
 #![cfg(feature = "stack-ring")]

@@ -128,6 +128,7 @@ impl ShutdownSignal {
     }
 
     /// Returns `true` if shutdown has been initiated.
+    #[must_use] 
     pub fn is_shutdown(&self) -> bool {
         self.state.is_shutdown_initiated()
     }

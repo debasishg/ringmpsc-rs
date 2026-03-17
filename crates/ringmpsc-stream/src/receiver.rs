@@ -100,6 +100,7 @@ impl<T: Send + 'static> RingReceiver<T> {
     }
 
     /// Returns `true` if the stream has been shut down.
+    #[must_use] 
     pub fn is_shutdown(&self) -> bool {
         self.shutdown_state.is_shutdown_initiated()
     }
@@ -122,6 +123,7 @@ impl<T: Send + 'static> RingReceiver<T> {
     ///     signal.shutdown(); // Trigger shutdown from another task
     /// });
     /// ```
+    #[must_use] 
     pub fn shutdown_signal(&self) -> ShutdownSignal {
         ShutdownSignal::new(
             Arc::clone(&self.shutdown_state),
@@ -130,6 +132,7 @@ impl<T: Send + 'static> RingReceiver<T> {
     }
 
     /// Returns the number of items currently buffered.
+    #[must_use] 
     pub fn buffered_count(&self) -> usize {
         self.buffer.len()
     }
@@ -260,6 +263,7 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
         // ticks and eventually get Pending, which registers for the next tick.
         // Without this loop, after the first Ready the timer is effectively dead
         // and the task is never re-woken by the timer.
+        #[allow(clippy::while_let_loop)]
         loop {
             match this.poll_timer.as_mut().poll_tick(cx) {
                 Poll::Ready(_) => {

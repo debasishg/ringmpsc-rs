@@ -42,7 +42,7 @@ async fn demo_basic_usage() -> Result<(), Box<dyn std::error::Error>> {
     let producer = tokio::spawn(async move {
         for i in 0..5 {
             tx.send(i).await.expect("send failed");
-            println!("  Sent: {}", i);
+            println!("  Sent: {i}");
         }
         // Sender dropped here - no more items from this producer
     });
@@ -50,7 +50,7 @@ async fn demo_basic_usage() -> Result<(), Box<dyn std::error::Error>> {
     // Consume items via Stream
     let mut count = 0;
     while let Ok(Some(item)) = timeout(Duration::from_millis(100), rx.next()).await {
-        println!("  Received: {}", item);
+        println!("  Received: {item}");
         count += 1;
         if count >= 5 {
             break;
@@ -79,19 +79,19 @@ async fn demo_multiple_producers() -> Result<(), Box<dyn std::error::Error>> {
     // Each producer sends from its own thread
     let p1 = tokio::spawn(async move {
         for i in 0..3 {
-            tx1.send(format!("P1-{}", i)).await.ok();
+            tx1.send(format!("P1-{i}")).await.ok();
         }
     });
 
     let p2 = tokio::spawn(async move {
         for i in 0..3 {
-            tx2.send(format!("P2-{}", i)).await.ok();
+            tx2.send(format!("P2-{i}")).await.ok();
         }
     });
 
     let p3 = tokio::spawn(async move {
         for i in 0..3 {
-            tx3.send(format!("P3-{}", i)).await.ok();
+            tx3.send(format!("P3-{i}")).await.ok();
         }
     });
 
@@ -111,14 +111,14 @@ async fn demo_multiple_producers() -> Result<(), Box<dyn std::error::Error>> {
     let p2_items: Vec<_> = received.iter().filter(|s| s.starts_with("P2")).collect();
     let p3_items: Vec<_> = received.iter().filter(|s| s.starts_with("P3")).collect();
 
-    println!("  P1 order: {:?}", p1_items);
-    println!("  P2 order: {:?}", p2_items);
-    println!("  P3 order: {:?}", p3_items);
+    println!("  P1 order: {p1_items:?}");
+    println!("  P2 order: {p2_items:?}");
+    println!("  P3 order: {p3_items:?}");
     println!("  ✓ Multiple producers complete\n");
     Ok(())
 }
 
-/// Demo 3: Backpressure handling with try_send
+/// Demo 3: Backpressure handling with `try_send`
 async fn demo_backpressure() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Demo 3: Backpressure Handling ---");
 
@@ -144,7 +144,7 @@ async fn demo_backpressure() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("  Sent {} items, {} were rejected (Full)", sent, full_count);
+    println!("  Sent {sent} items, {full_count} were rejected (Full)");
 
     // Drain to relieve backpressure
     let mut drained = 0;
@@ -152,7 +152,7 @@ async fn demo_backpressure() -> Result<(), Box<dyn std::error::Error>> {
         drained += 1;
     }
 
-    println!("  Drained {} items", drained);
+    println!("  Drained {drained} items");
 
     // Now async send() handles backpressure automatically
     let tx2 = factory.register()?;
@@ -177,7 +177,7 @@ async fn demo_backpressure() -> Result<(), Box<dyn std::error::Error>> {
 
     producer.await?;
     let consumed = consumer.await?;
-    println!("  Consumer received {} items with backpressure", consumed);
+    println!("  Consumer received {consumed} items with backpressure");
     println!("  ✓ Backpressure handling complete\n");
     Ok(())
 }
@@ -200,7 +200,7 @@ async fn demo_sink_trait() -> Result<(), Box<dyn std::error::Error>> {
     // Check ready
     match pinned.as_mut().poll_ready(&mut cx) {
         std::task::Poll::Ready(Ok(())) => println!("  Sink is ready"),
-        std::task::Poll::Ready(Err(e)) => println!("  Sink error: {:?}", e),
+        std::task::Poll::Ready(Err(e)) => println!("  Sink error: {e:?}"),
         std::task::Poll::Pending => println!("  Sink pending (would wait for space)"),
     }
 
@@ -216,7 +216,7 @@ async fn demo_sink_trait() -> Result<(), Box<dyn std::error::Error>> {
 
     // Receive
     if let Ok(Some(item)) = timeout(Duration::from_millis(100), rx.next()).await {
-        println!("  Received via Stream: {}", item);
+        println!("  Received via Stream: {item}");
     }
 
     // Close the sink
@@ -247,7 +247,7 @@ async fn demo_configuration_presets() -> Result<(), Box<dyn std::error::Error>> 
     tx.send(1).await?;
 
     if let Ok(Some(v)) = timeout(Duration::from_millis(50), rx.next()).await {
-        println!("  Received {} with low-latency config", v);
+        println!("  Received {v} with low-latency config");
     }
 
     // High-throughput configuration (50ms poll, batch 256)
@@ -270,7 +270,7 @@ async fn demo_configuration_presets() -> Result<(), Box<dyn std::error::Error>> 
     while let Ok(Some(_)) = timeout(Duration::from_millis(100), rx.next()).await {
         count += 1;
     }
-    println!("  Received {} items with high-throughput config", count);
+    println!("  Received {count} items with high-throughput config");
 
     // Custom configuration
     let custom = StreamConfig {
@@ -286,7 +286,7 @@ async fn demo_configuration_presets() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Demo 6: Graceful shutdown with ShutdownSignal
+/// Demo 6: Graceful shutdown with `ShutdownSignal`
 async fn demo_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Demo 6: Graceful Shutdown ---");
 
@@ -304,7 +304,7 @@ async fn demo_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             // Check if shutdown was requested
             if signal_for_producer.is_shutdown() {
-                println!("  Producer observed shutdown after {} sends", sent);
+                println!("  Producer observed shutdown after {sent} sends");
                 break;
             }
 
@@ -325,11 +325,11 @@ async fn demo_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
         let mut received = 0u64;
         while let Some(_item) = rx.next().await {
             received += 1;
-            if received % 100 == 0 {
+            if received.is_multiple_of(100) {
                 tokio::task::yield_now().await;
             }
         }
-        println!("  Consumer received {} items before Stream ended", received);
+        println!("  Consumer received {received} items before Stream ended");
         received
     });
 
@@ -345,7 +345,7 @@ async fn demo_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
     let sent = sent?;
     let received = received?;
 
-    println!("  Final: sent={}, received={}", sent, received);
+    println!("  Final: sent={sent}, received={received}");
     println!("  ✓ Graceful shutdown complete (all in-flight items drained)\n");
     Ok(())
 }
