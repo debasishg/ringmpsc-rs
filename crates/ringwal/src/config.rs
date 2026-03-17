@@ -67,6 +67,17 @@ pub struct WalConfig {
     /// `PipelinedDataOnly` | `PipelinedDedicated` | `None`.
     /// Default: `SyncMode::Full`.
     pub sync_mode: SyncMode,
+    /// Enable direct I/O (bypass page cache) on segment files.
+    ///
+    /// On macOS this sets `F_NOCACHE` via `fcntl()`, which avoids polluting
+    /// the page cache with append-only WAL data. On Linux this would use
+    /// `O_DIRECT` (not yet implemented — requires aligned writes).
+    ///
+    /// Best combined with `SyncMode::DataOnly` or `SyncMode::PipelinedDataOnly`
+    /// and 4 KiB+ payloads for optimal fsync latency on Apple Silicon.
+    ///
+    /// Default: `false`.
+    pub direct_io: bool,
 }
 
 impl WalConfig {
@@ -81,6 +92,7 @@ impl WalConfig {
             batch_hint: 256,
             enable_metrics: false,
             sync_mode: SyncMode::Full,
+            direct_io: false,
         }
     }
 
@@ -119,6 +131,11 @@ impl WalConfig {
 
     pub fn with_sync_mode(mut self, mode: SyncMode) -> Self {
         self.sync_mode = mode;
+        self
+    }
+
+    pub fn with_direct_io(mut self, enable: bool) -> Self {
+        self.direct_io = enable;
         self
     }
 

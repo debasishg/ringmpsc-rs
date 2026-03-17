@@ -66,7 +66,7 @@ impl Wal {
         let (sender_factory, receiver) =
             channel_with_stream_config::<Envelope<K, V>>(ring_config, stream_config);
 
-        let segment_mgr = SegmentManager::open(&config.dir, config.max_segment_size)?;
+        let segment_mgr = SegmentManager::open(&config.dir, config.max_segment_size, config.direct_io)?;
 
         let shutdown_notify = Arc::new(Notify::new());
         let next_lsn = Arc::new(AtomicU64::new(1));

@@ -11,6 +11,41 @@ use crate::entry::WalEntryHeader;
 use crate::error::WalError;
 use crate::invariants::{debug_assert_segment_id_monotonic, debug_assert_segment_size};
 
+// ── Direct I/O helpers (platform-conditional) ────────────────────────────────
+
+/// Sets direct I/O (page-cache bypass) on an open file descriptor.
+///
+/// On macOS this calls `fcntl(fd, F_NOCACHE, 1)` which tells the kernel not
+/// to cache the file's pages after write-through — reduces cache pollution in
+/// fsync-heavy append-only workloads.
+///
+/// On Linux this sets `O_DIRECT` via `fcntl(F_SETFL)` which requires all
+/// writes to be block-aligned (typically 4 KiB). Not yet wired into the
+/// write path — currently a no-op on Linux.
+#[cfg(target_os = "macos")]
+fn set_direct_io(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // Safety: fd is a valid open file descriptor; F_NOCACHE is a safe flag
+    // that only affects caching behaviour, not file integrity.
+    let ret = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) };
+    if ret == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_direct_io(_file: &std::fs::File) -> std::io::Result<()> {
+    // O_DIRECT requires block-aligned writes — not yet implemented.
+    // See docs/DIRECT_IO.md for the follow-up plan.
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn set_direct_io(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Metadata for a sealed (immutable) segment.
 #[derive(Debug, Clone)]
 pub struct SegmentMeta {
@@ -36,13 +71,20 @@ pub struct Segment {
 
 impl Segment {
     /// Opens or creates a segment file.
-    pub fn open(id: u64, dir: &Path, max_size: u64) -> Result<Self, WalError> {
+    ///
+    /// When `direct_io` is `true`, applies platform-specific page-cache bypass
+    /// (macOS `F_NOCACHE`) after opening the file.
+    pub fn open(id: u64, dir: &Path, max_size: u64, direct_io: bool) -> Result<Self, WalError> {
         let path = segment_path(dir, id);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
         let size = file.metadata()?.len();
+
+        if direct_io {
+            set_direct_io(&file)?;
+        }
 
         Ok(Self {
             id,
@@ -130,6 +172,7 @@ impl Segment {
 pub struct SegmentManager {
     dir: PathBuf,
     max_segment_size: u64,
+    direct_io: bool,
     active: Segment,
     sealed: Vec<SegmentMeta>,
     next_segment_id: u64,
@@ -137,7 +180,7 @@ pub struct SegmentManager {
 
 impl SegmentManager {
     /// Opens or creates a WAL directory and initialises the first segment.
-    pub fn open(dir: &Path, max_segment_size: u64) -> Result<Self, WalError> {
+    pub fn open(dir: &Path, max_segment_size: u64, direct_io: bool) -> Result<Self, WalError> {
         std::fs::create_dir_all(dir)?;
 
         // Find existing segments
@@ -145,11 +188,12 @@ impl SegmentManager {
         segment_ids.sort();
 
         let next_id = segment_ids.last().map_or(1, |&id| id + 1);
-        let active = Segment::open(next_id, dir, max_segment_size)?;
+        let active = Segment::open(next_id, dir, max_segment_size, direct_io)?;
 
         Ok(Self {
             dir: dir.to_path_buf(),
             max_segment_size,
+            direct_io,
             active,
             sealed: Vec::new(),
             next_segment_id: next_id + 1,
@@ -200,7 +244,7 @@ impl SegmentManager {
         debug_assert_segment_id_monotonic!(self.active.id, new_id);
         self.next_segment_id += 1;
 
-        let new_segment = Segment::open(new_id, &self.dir, self.max_segment_size)?;
+        let new_segment = Segment::open(new_id, &self.dir, self.max_segment_size, self.direct_io)?;
         let old_segment = std::mem::replace(&mut self.active, new_segment);
         let meta = old_segment.seal()?;
         self.sealed.push(meta);

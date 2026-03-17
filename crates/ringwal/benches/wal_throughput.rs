@@ -30,6 +30,11 @@
 //!    payloads (64/1024/4096 B) × writers (4/8/16/32) comparing Full,
 //!    Pipelined, and PipelinedDataOnly.
 //!
+//! 9. **`wal_direct_io`** — Compares sync modes with and without direct I/O
+//!    (macOS `F_NOCACHE` / Linux `O_DIRECT`). Uses 4 KiB payloads matching
+//!    filesystem block size. Sweeps 1/4/8 writers across Full, DataOnly,
+//!    and PipelinedDataOnly — each with a `+DirectIO` variant.
+//!
 //! All groups use a shared runtime per benchmark function (via
 //! `b.to_async(&rt)`). Each iteration gets a fresh `TempDir` via
 //! `iter_batched`, which auto-cleans on drop.
@@ -98,6 +103,17 @@ fn ringwal_config_fast(dir: &std::path::Path) -> ringwal::WalConfig {
         .with_flush_interval(Duration::from_micros(100))
         .with_batch_hint(512)
         .with_sync_mode(SyncMode::None)
+}
+
+fn ringwal_config_direct_io(dir: &std::path::Path, mode: SyncMode) -> ringwal::WalConfig {
+    ringwal::WalConfig::new(dir)
+        .with_ring_bits(14)
+        .with_max_writers(32)
+        .with_max_segment_size(256 * 1024 * 1024)
+        .with_flush_interval(Duration::from_millis(1))
+        .with_batch_hint(512)
+        .with_sync_mode(mode)
+        .with_direct_io(true)
 }
 
 // ── ringwal bench routines ──────────────────────────────────────────────────
@@ -632,5 +648,83 @@ fn bench_streaming_payload(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_durable, bench_durable_bg, bench_streaming_pipeline, bench_durable_tuning, bench_pipelined_tuning, bench_ring_throughput, bench_ring_throughput_mt, bench_streaming_payload);
+// ── Direct I/O benchmark (F_NOCACHE on macOS) ─────────────────────────────
+
+/// Compares sync modes with and without direct I/O (page-cache bypass).
+///
+/// Uses 4 KiB payloads (matching filesystem block size) per the recommendation
+/// that `F_NOCACHE` + `fdatasync` works best with block-aligned writes.
+///
+/// Sweeps 1 / 4 / 8 / 16 writers across three sync modes, each with a
+/// `+DirectIO` variant, so Criterion reports them side-by-side.
+fn bench_direct_io(c: &mut Criterion) {
+    let rt = make_mt_rt();
+    let mut group = c.benchmark_group("wal_direct_io");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(3));
+
+    let payload_size = 4096; // 4 KiB — aligned block size
+
+    let modes: &[(&str, SyncMode)] = &[
+        ("Full", SyncMode::Full),
+        ("DataOnly", SyncMode::DataOnly),
+        ("PipelinedDataOnly", SyncMode::PipelinedDataOnly),
+    ];
+
+    for &(label, mode) in modes {
+        for num_writers in [1, 4, 8, 16] {
+            let total_txn = num_writers as u64 * DURABLE_TXN;
+            group.throughput(Throughput::Elements(total_txn));
+
+            // Without direct I/O (baseline)
+            group.bench_with_input(
+                BenchmarkId::new(format!("{label}/{num_writers}w"), "default"),
+                &num_writers,
+                |b, &nw| {
+                    b.to_async(&rt).iter_batched(
+                        || {
+                            let dir = tempfile::tempdir().unwrap();
+                            let config = ringwal::WalConfig::new(dir.path())
+                                .with_ring_bits(14)
+                                .with_max_writers(32)
+                                .with_max_segment_size(256 * 1024 * 1024)
+                                .with_flush_interval(Duration::from_millis(1))
+                                .with_batch_hint(512)
+                                .with_sync_mode(mode);
+                            (dir, config)
+                        },
+                        |(_dir, config)| {
+                            ringwal_bench(nw, DURABLE_TXN, payload_size, config)
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+
+            // With direct I/O (F_NOCACHE on macOS)
+            group.bench_with_input(
+                BenchmarkId::new(format!("{label}/{num_writers}w"), "direct_io"),
+                &num_writers,
+                |b, &nw| {
+                    b.to_async(&rt).iter_batched(
+                        || {
+                            let dir = tempfile::tempdir().unwrap();
+                            let config = ringwal_config_direct_io(dir.path(), mode);
+                            (dir, config)
+                        },
+                        |(_dir, config)| {
+                            ringwal_bench(nw, DURABLE_TXN, payload_size, config)
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_durable, bench_durable_bg, bench_streaming_pipeline, bench_durable_tuning, bench_pipelined_tuning, bench_ring_throughput, bench_ring_throughput_mt, bench_streaming_payload, bench_direct_io);
 criterion_main!(benches);

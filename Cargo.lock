@@ -1416,6 +1416,7 @@ dependencies = [
  "bincode",
  "crc32fast",
  "criterion",
+ "libc",
  "ringmpsc-rs",
  "ringmpsc-stream",
  "serde",
