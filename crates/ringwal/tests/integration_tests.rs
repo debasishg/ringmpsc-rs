@@ -1,9 +1,10 @@
 //! Integration tests for ringwal.
 
 use ringwal::{
-    recover, recover_into_store, read_checkpoint, write_checkpoint, InMemoryStore,
+    recover, read_checkpoint, write_checkpoint,
     RealIo, RecoveryAction, SyncMode, Transaction, Wal, WalConfig, WalEntry,
 };
+use ringwal_store::{recover_into_store, InMemoryStore};
 use std::sync::Arc;
 use tempfile::TempDir;
 

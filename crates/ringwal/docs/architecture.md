@@ -87,6 +87,8 @@ on a single thread with no synchronization.
 | `SegmentMeta` | Per-segment metadata: id, path, size, entry count, first/last LSN |
 | `TxState` | Transaction lifecycle: Active / Committed / Aborted |
 | `WalError` | Error enum: ChecksumMismatch, SegmentFull, NoNewCheckpoints, etc. |
+| `WalStore<K, V>` | Storage backend trait — lives in `ringwal-store` crate |
+| `InMemoryStore<K, V>` | Thread-safe HashMap store — lives in `ringwal-store` crate |
 
 ## Data Flow
 
@@ -259,13 +261,15 @@ and **client-side** (belongs in consumer crates or user code).
 | ~~Benchmarks~~ | ✅ | Throughput benchmarks in `crates/ringwal/benches/wal_throughput.rs` comparing ringwal vs async-wal-db at 1/2/4/8 writer counts via criterion. ringwal scales linearly; async-wal-db is flat. |
 | ~~CLI demo tool~~ | ✅ | `bin/demo.rs` (minimal CLI) and `examples/demo.rs` (full lifecycle) showing multi-writer transactions, recovery into `InMemoryStore`, and checkpoint scheduling. |
 
-#### Client-Side (belongs in consumer crate or user code)
+#### Client-Side (lives in `ringwal-store` crate)
 
-| Feature | Rationale |
-|---------|-----------|
-| ~~In-memory HashMap store~~ | ✅ — `InMemoryStore<K,V>` ships with ringwal (backed by `Arc<RwLock<HashMap>>`). The `WalStore` trait allows external implementations. |
-| LMDB storage backend | A persistent storage engine that *uses* the WAL. Should be a separate crate (e.g., `ringwal-lmdb`) depending on ringwal. |
-| ~~Apply-to-store on recovery~~ | ✅ — `recover_into_store()` and `apply_transactions()` bridge WAL recovery to any `WalStore` implementation. |
+| Feature | Status |
+|---------|:---:|
+| `WalStore<K,V>` trait | ✅ — `ringwal-store` crate |
+| `InMemoryStore<K,V>` | ✅ — `ringwal-store` crate |
+| `recover_into_store()` | ✅ — `ringwal-store` crate |
+| `apply_transactions()` | ✅ — `ringwal-store` crate |
+| LMDB storage backend | A persistent storage engine that *uses* the WAL. Should be a separate crate (e.g., `ringwal-lmdb`) depending on `ringwal-store`. |
 
 #### Dependency Graph
 
@@ -296,8 +300,9 @@ and **client-side** (belongs in consumer crates or user code).
 ┌──────▼──────┐    ┌──────▼──────┐
 │ InMemory    │    │ LMDB store  │
 │ Store    ✅  │    │ (ringwal-   │
-│ (ringwal)   │    │  lmdb)      │
-└─────────────┘    └─────────────┘
+│ (ringwal-   │    │  lmdb)      │
+│  store)     │    └─────────────┘
+└─────────────┘
 
 ┌──────────────┐    ┌──────────────┐
 │ Benchmarks ✅ │    │ CLI demo  ✅  │
@@ -361,6 +366,10 @@ ringwal
 ├── serde + bincode      (entry serialization)
 ├── crc32fast            (CRC32 checksums)
 └── thiserror            (error derive)
+
+ringwal-store
+├── ringwal              (WAL engine)
+└── serde                (DeserializeOwned bounds)
 ```
 
 ## Benchmarks

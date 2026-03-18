@@ -7,9 +7,8 @@
 //!
 //! Usage: `cargo run -p ringwal --release --example demo`
 
-use ringwal::{
-    recover_into_store, InMemoryStore, RealIo, Transaction, Wal, WalConfig,
-};
+use ringwal::{RealIo, Transaction, Wal, WalConfig};
+use ringwal_store::{recover_into_store, InMemoryStore};
 use std::time::{Duration, Instant};
 
 const NUM_WRITERS: usize = 4;

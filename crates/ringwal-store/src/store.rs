@@ -8,10 +8,9 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
-use crate::entry::WalEntry;
-use crate::error::WalError;
-use crate::io::IoEngine;
-use crate::recovery::{recover, RecoveredTransaction, RecoveryAction, RecoveryStats};
+use ringwal::{
+    recover, IoEngine, RecoveredTransaction, RecoveryAction, RecoveryStats, WalEntry, WalError,
+};
 
 /// A storage backend that WAL entries can be applied to.
 ///
@@ -37,9 +36,11 @@ pub trait WalStore<K, V> {
 /// # Example
 ///
 /// ```ignore
-/// use ringwal::{InMemoryStore, recover_into_store};
-/// let store = InMemoryStore::<String, Vec<u8>>::new();
-/// let stats = recover_into_store(dir, &store)?;
+/// use ringwal::RealIo;
+/// use ringwal_store::{InMemoryStore, recover_into_store};
+///
+/// let mut store = InMemoryStore::<String, Vec<u8>>::new();
+/// let stats = recover_into_store(dir, &mut store, &RealIo)?;
 /// let snapshot = store.snapshot();
 /// ```
 pub struct InMemoryStore<K, V> {
@@ -51,7 +52,7 @@ where
     K: Eq + Hash,
 {
     /// Creates an empty in-memory store.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
@@ -59,7 +60,7 @@ where
     }
 
     /// Returns a clone of the current store contents.
-    #[must_use] 
+    #[must_use]
     pub fn snapshot(&self) -> HashMap<K, V>
     where
         K: Clone,
@@ -69,13 +70,13 @@ where
     }
 
     /// Returns the number of entries in the store.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner.read().expect("lock poisoned").len()
     }
 
     /// Returns `true` if the store is empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.read().expect("lock poisoned").is_empty()
     }

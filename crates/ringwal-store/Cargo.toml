@@ -1,0 +1,19 @@
+[package]
+name = "ringwal-store"
+version = "0.1.0"
+edition = "2024"
+description = "Storage backend trait and recovery-to-store bridge for ringwal"
+license = "MIT"
+repository = "https://github.com/debasishg/ringmpsc-rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+ringwal = { path = "../ringwal" }
+serde.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
+
+[[bin]]
+name = "ringwal-demo"
+path = "bin/demo.rs"

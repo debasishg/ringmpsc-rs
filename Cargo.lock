@@ -1419,6 +1419,7 @@ dependencies = [
  "libc",
  "ringmpsc-rs",
  "ringmpsc-stream",
+ "ringwal-store",
  "serde",
  "tempfile",
  "thiserror",
@@ -1430,6 +1431,15 @@ name = "ringwal-sim"
 version = "0.1.0"
 dependencies = [
  "rand 0.8.5",
+ "ringwal",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "ringwal-store"
+version = "0.1.0"
+dependencies = [
  "ringwal",
  "serde",
  "tokio",

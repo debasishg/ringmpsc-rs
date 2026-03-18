@@ -1,12 +1,11 @@
 //! ringwal CLI demo — self-contained binary showing the full WAL lifecycle.
 //!
-//! Usage: `cargo run -p ringwal --release --bin ringwal-demo`
+//! Usage: `cargo run -p ringwal-store --release --bin ringwal-demo`
 //!
 //! This binary is the equivalent of async-wal-db's `main.rs`.
 
-use ringwal::{
-    recover_into_store, InMemoryStore, RealIo, Transaction, Wal, WalConfig,
-};
+use ringwal::{RealIo, Transaction, Wal, WalConfig};
+use ringwal_store::{recover_into_store, InMemoryStore};
 use std::sync::Arc;
 use std::time::Duration;
 

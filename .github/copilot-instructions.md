@@ -1,11 +1,11 @@
 # RingMPSC-RS Workspace Instructions
 
-Lock-free data structures built on **ring decomposition** (each producer gets a dedicated SPSC ring). The workspace contains four crates with the following dependency graph:
+Lock-free data structures built on **ring decomposition** (each producer gets a dedicated SPSC ring). The workspace contains six crates with the following dependency graph:
 
 ```
-ringmpsc  ◄── ringmpsc-stream ◄── ringwal
-    ▲
-    └──────── span_collector
+ringmpsc  ◄── ringmpsc-stream ◄── ringwal ◄── ringwal-store
+    ▲                              ▲
+    └──────── span_collector       └── ringwal-sim
 ```
 
 ## Architecture
@@ -15,6 +15,8 @@ ringmpsc  ◄── ringmpsc-stream ◄── ringwal
 | `ringmpsc` | Core lock-free SPSC rings + MPSC channel (heap & stack variants) | [spec.md](../crates/ringmpsc/spec.md) |
 | `ringmpsc-stream` | Async `Stream`/`Sink` adapters with backpressure | [spec.md](../crates/ringmpsc-stream/spec.md) |
 | `ringwal` | Write-Ahead Log with per-writer SPSC rings, group commit, crash recovery | [spec.md](../crates/ringwal/spec.md) |
+| `ringwal-store` | Storage backend trait and recovery-to-store bridge for ringwal | [spec.md](../crates/ringwal-store/spec.md) |
+| `ringwal-sim` | Deterministic simulation testing framework for ringwal | — |
 | `span_collector` | OpenTelemetry collector example (async batching, resilience) | [spec.md](../crates/span_collector/spec.md) |
 
 **Key design**: Ring decomposition eliminates producer-producer contention. Each `Producer` owns one `Ring<T>`. Channel polls all rings sequentially on single consumer thread.

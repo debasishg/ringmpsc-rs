@@ -12,15 +12,17 @@ ringmpsc-rs/
     ├── ringmpsc/          Core lock-free SPSC ring + MPSC channel
     ├── ringmpsc-stream/   Async Stream/Sink adapters (depends on ringmpsc)
     ├── ringwal/           Write-Ahead Log engine  (depends on ringmpsc, ringmpsc-stream)
+    ├── ringwal-store/     Storage backend trait + recovery-to-store bridge (depends on ringwal)
+    ├── ringwal-sim/       Deterministic simulation testing for ringwal (depends on ringwal)
     └── span_collector/    OpenTelemetry span collector example (depends on ringmpsc)
 ```
 
 ### Dependency Graph
 
 ```
-ringmpsc  ◄── ringmpsc-stream ◄── ringwal
-    ▲
-    └──────── span_collector
+ringmpsc  ◄── ringmpsc-stream ◄── ringwal ◄── ringwal-store
+    ▲                              ▲
+    └──────── span_collector       └── ringwal-sim
 ```
 
 | Crate | Description | Docs |
@@ -28,6 +30,7 @@ ringmpsc  ◄── ringmpsc-stream ◄── ringwal
 | [ringmpsc](crates/ringmpsc/) | Lock-free SPSC rings and MPSC channel with zero-copy reservation API. Heap and stack-allocated variants. | [README](crates/ringmpsc/README.md) · [spec](crates/ringmpsc/spec.md) |
 | [ringmpsc-stream](crates/ringmpsc-stream/) | `futures::Stream` / `futures::Sink` adapters with backpressure, hybrid polling, and graceful shutdown. | [README](crates/ringmpsc-stream/README.md) · [spec](crates/ringmpsc-stream/spec.md) |
 | [ringwal](crates/ringwal/) | Write-Ahead Log backed by per-writer SPSC rings. Group commit, segment rotation, CRC32 checksums, crash recovery. | [README](crates/ringwal/README.md) · [spec](crates/ringwal/spec.md) |
+| [ringwal-store](crates/ringwal-store/) | Storage backend trait (`WalStore`) and in-memory reference implementation. Bridges WAL recovery to application state. | [spec](crates/ringwal-store/spec.md) |
 | [span_collector](crates/span_collector/) | Async OpenTelemetry-compatible span collector with batching, retry, circuit breaker, and rate limiting. | [README](crates/span_collector/README.md) · [spec](crates/span_collector/spec.md) |
 
 ## Architecture

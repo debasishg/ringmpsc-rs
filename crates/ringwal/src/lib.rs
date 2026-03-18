@@ -40,7 +40,6 @@ pub mod io;
 mod invariants;
 mod recovery;
 mod segment;
-mod store;
 mod transaction;
 mod wal;
 mod writer;
@@ -55,7 +54,6 @@ pub use recovery::{
     RecoveredTransaction, RecoveryAction, RecoveryStats,
 };
 pub use segment::{SegmentMeta, SegmentManager};
-pub use store::{apply_transactions, recover_into_store, InMemoryStore, WalStore};
 pub use transaction::{Transaction, TxState};
 pub use wal::Wal;
 pub use writer::{next_tx_id, WalWriter, WalWriterFactory};
