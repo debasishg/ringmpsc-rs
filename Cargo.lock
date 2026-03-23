@@ -1386,6 +1386,7 @@ dependencies = [
  "criterion",
  "crossbeam-utils",
  "itf",
+ "libc",
  "loom",
  "proptest",
  "quint-connect",

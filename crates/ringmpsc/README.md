@@ -224,7 +224,7 @@ cargo run -p ringmpsc-rs --release --features stack-ring --example stack_ring
 
 ### Future Optimizations
 
-- [ ] **NUMA-aware ring allocation** - Allocate ring buffers on NUMA nodes local to their producer/consumer threads for multi-socket systems
+- [x] **NUMA-aware ring allocation** - `NumaAllocator` binds ring buffer memory to NUMA nodes via `libc::mbind` on Linux with graceful fallback on other platforms. Supports `Fixed(node)`, `RoundRobin`, and `ProducerLocal` policies. See [numa-aware-allocation.md](numa-aware-allocation.md) for design details.
 - [x] **Custom allocator integration** - `BufferAllocator` trait allows custom allocators (arena, aligned, huge pages, etc.) without modifying core ring logic. Includes `AlignedAllocator<ALIGN>` and nightly `StdAllocator` bridge. See examples below.
 - [x] **Stack-allocated ring variant** - `StackRing<T, N>` and `StackChannel<T, N, P>` for latency-critical expert use. See [STACK_RING_IMPL.md](STACK_RING_IMPL.md) for design details.
 
@@ -239,6 +239,30 @@ ringmpsc-rs = { version = "0.1", features = ["stack-ring"] }
 |---------|-------------|
 | `stack-ring` | Enables `StackRing<T, N>` and `StackChannel<T, N, P>` — stack-allocated variants with **2-4x higher throughput** |
 | `allocator-api` | **(nightly only)** Enables `StdAllocator<A>` adapter to bridge any `std::alloc::Allocator` to `BufferAllocator` |
+| `numa` | Enables `NumaAllocator` for NUMA-aware ring allocation (Linux: `mbind`, others: heap fallback) |
+
+### NUMA-Aware Allocation Example
+
+```rust
+use ringmpsc_rs::{Channel, Config, NumaAllocator, NumaPolicy};
+
+// Round-robin: distribute ring buffers across NUMA nodes
+let channel = Channel::<u64, NumaAllocator>::new_in(
+    Config::default(),
+    NumaAllocator::new(NumaPolicy::RoundRobin),
+);
+
+// Or use the convenience constructor
+let channel = Channel::<u64, NumaAllocator>::new_numa(
+    Config::default(),
+    NumaPolicy::Fixed(0), // Pin all rings to NUMA node 0
+);
+
+// Usage is identical to any other Channel
+let producer = channel.register().unwrap();
+producer.push(42);
+channel.consume_all(|item: &u64| println!("Got: {}", item));
+```
 
 ### Custom Allocator Example
 

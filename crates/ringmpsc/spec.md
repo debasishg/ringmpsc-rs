@@ -44,6 +44,21 @@ Violating these invariants causes undefined behavior in the ring buffer's unsafe
 
 **Verified by**: `static_assert!(size_of::<HeapAllocator>() == 0)` (compile-time)
 
+### INV-NUMA-01: Memory Placement
+`NumaAllocator::allocate()` must place memory on the requested NUMA node (when `mbind` succeeds). On single-node systems or when `mbind` returns `ENOSYS`/`EINVAL`, pages remain on the default node.
+
+**Verified by**: `/proc/self/numa_maps` inspection in tests (Linux only), `debug_assert_numa_placement!` macro.
+
+### INV-NUMA-02: Fallback Safety
+On non-NUMA platforms (macOS, Windows), `NumaAllocator` must produce a valid buffer satisfying INV-MEM-04. The fallback delegates to `HeapAllocator`.
+
+**Verified by**: `test_numa_allocator_fallback` in `tests/numa_tests.rs`.
+
+### INV-NUMA-03: Policy Determinism
+`NumaPolicy::RoundRobin` assigns nodes in strictly increasing cyclic order across sequential `allocate()` calls: `0, 1, ..., N-1, 0, 1, ...` where N is the number of NUMA nodes.
+
+**Verified by**: `test_numa_allocator_round_robin` in `tests/numa_tests.rs`, `debug_assert!` on counter monotonicity.
+
 ## 2. Sequence Number Invariants
 
 ### INV-SEQ-01: Bounded Count

@@ -211,3 +211,54 @@ pub(crate) use debug_assert_valid_ring_ptr;
 pub(crate) use debug_assert_aligned;
 #[allow(unused_imports)]
 pub(crate) use static_assert_zst;
+
+// =============================================================================
+// INV-NUMA-01: Memory Placement (Linux only)
+// =============================================================================
+
+/// Assert that a buffer was placed on the expected NUMA node.
+///
+/// **Invariant**: `NumaAllocator::allocate()` places memory on the requested
+/// NUMA node (INV-NUMA-01). On Linux, reads `/proc/self/numa_maps` to verify.
+/// No-op on non-Linux platforms.
+///
+/// Used in: `numa.rs` allocate path (debug builds only)
+#[allow(unused_macros)]
+macro_rules! debug_assert_numa_placement {
+    ($ptr:expr, $node:expr) => {
+        #[cfg(all(debug_assertions, target_os = "linux"))]
+        {
+            // Best-effort verification — read /proc/self/numa_maps and look
+            // for the page containing $ptr. If found, verify it maps to $node.
+            let addr = $ptr as usize;
+            if let Ok(contents) = std::fs::read_to_string("/proc/self/numa_maps") {
+                for line in contents.lines() {
+                    // Lines: "<hex_addr> <policy> <details>..."
+                    if let Some(hex) = line.split_whitespace().next() {
+                        if let Ok(map_addr) = usize::from_str_radix(
+                            hex.trim_start_matches("0x"),
+                            16,
+                        ) {
+                            if map_addr == (addr & !0xFFF) {
+                                // Look for "N<node>=<pages>" in the line
+                                let expected = format!("N{}=", $node);
+                                debug_assert!(
+                                    line.contains(&expected),
+                                    "INV-NUMA-01 violated: ptr {:p} expected on node {}, \
+                                     but numa_maps says: {}",
+                                    $ptr as *const u8,
+                                    $node,
+                                    line
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
+#[allow(unused_imports)]
+pub(crate) use debug_assert_numa_placement;

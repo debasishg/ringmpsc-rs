@@ -55,6 +55,24 @@ impl<T> Channel<T, HeapAllocator> {
     }
 }
 
+#[cfg(feature = "numa")]
+impl<T> Channel<T, crate::numa::NumaAllocator> {
+    /// Creates a new channel with NUMA-aware ring allocation.
+    ///
+    /// Convenience constructor equivalent to:
+    /// ```ignore
+    /// Channel::new_in(config, NumaAllocator::new(policy))
+    /// ```
+    ///
+    /// On Linux, each ring buffer's backing memory is bound to a NUMA node
+    /// according to the given [`NumaPolicy`](crate::numa::NumaPolicy).
+    /// On non-Linux platforms, falls back to heap allocation.
+    #[must_use]
+    pub fn new_numa(config: Config, policy: crate::numa::NumaPolicy) -> Self {
+        Self::new_in(config, crate::numa::NumaAllocator::new(policy))
+    }
+}
+
 impl<T, A: BufferAllocator + Clone> Channel<T, A> {
     /// Creates a new channel with the given configuration and allocator.
     ///

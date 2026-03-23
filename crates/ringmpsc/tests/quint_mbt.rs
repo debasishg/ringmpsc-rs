@@ -69,6 +69,9 @@
 //! | `initialized`      | `initialized_slots`   | Set of init'd indices (INV-INIT-01)|
 //! | `buffer_aligned`   | `buffer_aligned`      | true for HeapAllocator (INV-ALLOC-01)|
 //! | `allocator_zst`    | `allocator_zst`       | true for HeapAllocator (INV-ALLOC-02)|
+//! | `numa_placement_valid` | `numa_placement_valid` | true (INV-NUMA-01)           |
+//! | `numa_fallback_safe`   | `numa_fallback_safe`   | true (INV-NUMA-02)           |
+//! | `numa_policy_deterministic` | `numa_policy_deterministic` | true (INV-NUMA-03) |
 
 #![cfg(feature = "quint-mbt")]
 
@@ -137,11 +140,20 @@ struct RingSPSCState {
     /// Buffer capacity as allocated (Quint: `buffer_capacity`, INV-MEM-04)
     buffer_capacity: i64,
     /// Set of initialized buffer indices (Quint: `initialized`, INV-INIT-01)
-    initialized: itf::value::Set<i64>,
+    /// Note: We use BTreeSet<i64> rather than itf::value::Set<i64> because the
+    /// ITF Value deserializer presents Value::Set as a sequence, which BTreeSet
+    /// handles correctly, while itf::value::Set expects a JSON map {"#set": [...]}.
+    initialized: BTreeSet<i64>,
     /// Whether buffer is aligned (Quint: `buffer_aligned`, INV-ALLOC-01)
     buffer_aligned: bool,
     /// Whether allocator is ZST (Quint: `allocator_zst`, INV-ALLOC-02)
     allocator_zst: bool,
+    /// Whether NUMA placement is valid (Quint: `numa_placement_valid`, INV-NUMA-01)
+    numa_placement_valid: bool,
+    /// Whether NUMA fallback is safe (Quint: `numa_fallback_safe`, INV-NUMA-02)
+    numa_fallback_safe: bool,
+    /// Whether NUMA policy is deterministic (Quint: `numa_policy_deterministic`, INV-NUMA-03)
+    numa_policy_deterministic: bool,
 }
 
 impl State<RingSPSCDriver> for RingSPSCState {
@@ -156,6 +168,9 @@ impl State<RingSPSCDriver> for RingSPSCState {
             initialized: driver.initialized_slots.iter().map(|&i| i as i64).collect(),
             buffer_aligned: driver.buffer_aligned,
             allocator_zst: driver.allocator_zst,
+            numa_placement_valid: driver.numa_placement_valid,
+            numa_fallback_safe: driver.numa_fallback_safe,
+            numa_policy_deterministic: driver.numa_policy_deterministic,
         })
     }
 }
@@ -194,6 +209,12 @@ struct RingSPSCDriver {
     buffer_aligned: bool,
     /// Whether allocator is ZST — matches Quint's `allocator_zst` (INV-ALLOC-02)
     allocator_zst: bool,
+    /// Whether NUMA placement is valid — matches Quint's `numa_placement_valid` (INV-NUMA-01)
+    numa_placement_valid: bool,
+    /// Whether NUMA fallback is safe — matches Quint's `numa_fallback_safe` (INV-NUMA-02)
+    numa_fallback_safe: bool,
+    /// Whether NUMA policy is deterministic — matches Quint's `numa_policy_deterministic` (INV-NUMA-03)
+    numa_policy_deterministic: bool,
 }
 
 /// Ring capacity (2^2 = 4), matching CAPACITY = 4 in RingSPSC.qnt
@@ -214,6 +235,9 @@ impl Default for RingSPSCDriver {
             initialized_slots: BTreeSet::new(), // INV-INIT-01: empty at start
             buffer_aligned: true,            // INV-ALLOC-01: HeapAllocator is aligned
             allocator_zst: true,             // INV-ALLOC-02: HeapAllocator is ZST
+            numa_placement_valid: true,      // INV-NUMA-01: placement valid
+            numa_fallback_safe: true,        // INV-NUMA-02: fallback safe
+            numa_policy_deterministic: true,  // INV-NUMA-03: policy deterministic
         }
     }
 }
@@ -229,7 +253,7 @@ impl Driver for RingSPSCDriver {
             init => {
                 *self = Self::default();
                 if verbose {
-                    eprintln!("  [init] head=0 tail=0 cached_head=0 cached_tail=0 items_produced=0 buffer_capacity={} initialized={{}} buffer_aligned=true allocator_zst=true", CAPACITY);
+                    eprintln!("  [init] head=0 tail=0 cached_head=0 cached_tail=0 items_produced=0 buffer_capacity={} initialized={{}} buffer_aligned=true allocator_zst=true numa_placement_valid=true numa_fallback_safe=true numa_policy_deterministic=true", CAPACITY);
                 }
             },
 

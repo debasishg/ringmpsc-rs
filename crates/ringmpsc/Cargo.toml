@@ -22,9 +22,12 @@ stack-ring = []
 quint-mbt = ["dep:quint-connect", "dep:itf", "dep:serde", "dep:anyhow"]
 # Enable nightly std::alloc::Allocator bridge (requires nightly Rust)
 allocator-api = []
+# Enable NUMA-aware ring buffer allocation (Linux: libc mbind, others: fallback)
+numa = ["dep:libc"]
 
 [dependencies]
 crossbeam-utils.workspace = true
+libc = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }
 thiserror.workspace = true
 quint-connect = { workspace = true, optional = true }

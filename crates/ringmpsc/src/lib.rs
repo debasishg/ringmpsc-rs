@@ -55,7 +55,12 @@ mod stack_ring;
 #[cfg(feature = "stack-ring")]
 mod stack_channel;
 
+#[cfg(feature = "numa")]
+pub mod numa;
+
 pub use allocator::{AlignedAllocator, BufferAllocator, HeapAllocator};
+#[cfg(feature = "numa")]
+pub use numa::{NumaAllocator, NumaPolicy};
 #[cfg(feature = "allocator-api")]
 pub use allocator::StdAllocator;
 pub use backoff::Backoff;

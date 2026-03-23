@@ -13,6 +13,7 @@ This document describes the custom allocator subsystem in `ringmpsc`, which allo
   - [`HeapAllocator` (default)](#heapallocator-default)
   - [`AlignedAllocator<ALIGN>`](#alignedallocatoralign)
   - [`StdAllocator<A>` (nightly)](#stdallocatora-nightly)
+  - [`NumaAllocator` (feature `numa`)](#numaallocator-feature-numa)
 - [Using Custom Allocators](#using-custom-allocators)
   - [With `Ring<T, A>`](#with-ringt-a)
   - [With `Channel<T, A>`](#with-channelt-a)
@@ -145,6 +146,65 @@ let ring = Ring::new_in(Config::default(), StdAllocator(Global));
 ```
 
 This enables integration with nightly allocator implementations such as `jemalloc`, `mimalloc`, or custom `Allocator` impls.
+
+### `NumaAllocator` (feature `numa`)
+
+Behind the `numa` feature flag, `NumaAllocator` binds ring buffer memory to specific NUMA nodes on Linux via `mmap` + `mbind`. On non-Linux platforms it falls back to `HeapAllocator` (INV-NUMA-02).
+
+Three placement policies are available via `NumaPolicy`:
+
+| Policy | Behaviour | Best for |
+|---|---|---|
+| `Fixed(node)` | All allocations pinned to one NUMA node | Consumer-local placement |
+| `RoundRobin` | Cycle across available nodes per `allocate()` call | Even memory distribution |
+| `ProducerLocal` | Allocate on the calling thread's local node | Per-producer affinity |
+
+```rust
+use ringmpsc_rs::{Channel, Config, NumaAllocator, NumaPolicy};
+
+// Round-robin across NUMA nodes
+let channel = Channel::<u64, NumaAllocator>::new_in(
+    Config::default(),
+    NumaAllocator::new(NumaPolicy::RoundRobin),
+);
+
+// Pin all rings to NUMA node 0
+let channel = Channel::<u64, NumaAllocator>::new_in(
+    Config::default(),
+    NumaAllocator::new(NumaPolicy::Fixed(0)),
+);
+
+// Convenience constructor
+let channel = Channel::<u64, NumaAllocator>::new_numa(
+    Config::default(),
+    NumaPolicy::RoundRobin,
+);
+
+// Enable 2 MiB huge pages for large rings
+let channel = Channel::<u64, NumaAllocator>::new_in(
+    Config::default(),
+    NumaAllocator::with_huge_pages(NumaPolicy::Fixed(0)),
+);
+```
+
+**Platform behaviour:**
+
+| Platform | Allocation | Binding | Deallocation |
+|---|---|---|---|
+| Linux | `mmap(MAP_PRIVATE \| MAP_ANONYMOUS)` | `mbind(MPOL_BIND, nodemask)` | `munmap` |
+| macOS / others | `HeapAllocator` fallback | N/A (one-time warning) | `Box::drop` |
+
+**Topology detection** happens once at `NumaAllocator::new()` — on Linux it reads `/sys/devices/system/node/` to discover available nodes; on other platforms it reports 1 node.
+
+**Invariants:**
+
+| Invariant | Description |
+|---|---|
+| INV-NUMA-01 | Memory placed on the requested NUMA node (verified via `/proc/self/numa_maps` in debug builds) |
+| INV-NUMA-02 | Non-Linux platforms fall back to `HeapAllocator` — no panic, no data loss |
+| INV-NUMA-03 | `RoundRobin` counter is deterministic per `NumaAllocator` instance (clones share the counter via `Arc<AtomicU16>`) |
+
+**Caveat with `Channel` + `ProducerLocal`:** `Channel::new_in()` pre-allocates all rings on a single thread, so `ProducerLocal` resolves to the *channel creator's* node. For true per-producer placement, construct individual `Ring::new_in()` instances from each producer thread.
 
 ## Using Custom Allocators
 
@@ -330,6 +390,7 @@ The `_backing: Vec<u8>` field keeps the original allocation alive. When `Aligned
 | `AlignedAllocator<64>` | ~63 bytes slack per ring | Single-cache-line alignment |
 | `AlignedAllocator<128>` | ~127 bytes slack per ring | Intel false-sharing prevention (prefetcher reads 2 lines) |
 | `AlignedAllocator<2097152>` | ~2 MiB slack per ring | Huge-page TLB optimization |
+| `NumaAllocator` | `mmap`/`mbind` syscall overhead at construction | Multi-socket NUMA systems |
 | Custom arena | Depends on implementation | Pre-allocated pools, latency-sensitive systems |
 
 **Important notes:**
@@ -340,7 +401,7 @@ The `_backing: Vec<u8>` field keeps the original allocation alive. When `Aligned
 
 ## Testing
 
-The allocator subsystem has 22 tests in [crates/ringmpsc/tests/allocator_tests.rs](../crates/ringmpsc/tests/allocator_tests.rs):
+The allocator subsystem has 22 tests in [crates/ringmpsc/tests/allocator_tests.rs](../crates/ringmpsc/tests/allocator_tests.rs) plus 13 NUMA-specific tests in [crates/ringmpsc/tests/numa_tests.rs](../crates/ringmpsc/tests/numa_tests.rs):
 
 | Test Category | Count | What it verifies |
 |---|---|---|
@@ -348,11 +409,15 @@ The allocator subsystem has 22 tests in [crates/ringmpsc/tests/allocator_tests.r
 | `VecAllocator` | 5 | Same scenarios with a custom allocator |
 | `AlignedAllocator` | 8 | Basic ops, **actual pointer alignment**, reserve/commit, channel, wrap-around, drop safety, concurrent stress |
 | `BumpAllocator` (bumpalo) | 4 | Arena allocator integration, channel, concurrent |
+| `NumaAllocator` | 13 | Fixed/RR/ProducerLocal policies, channel integration, drop safety, multi-threaded |
 
 Run the tests:
 
 ```bash
 cargo test -p ringmpsc-rs --test allocator_tests --release
+
+# NUMA allocator (requires the numa feature)
+cargo test -p ringmpsc-rs --features numa --test numa_tests --release
 ```
 
 Benchmarks comparing allocator strategies are in [crates/ringmpsc/benches/allocator.rs](../crates/ringmpsc/benches/allocator.rs):
@@ -373,16 +438,22 @@ The allocator invariants are formally verified in the Quint specification [crate
 | **INV-ALLOC-01** | `alignmentGuarantee` | `buffer_aligned == true` — buffer pointer alignment (structural in Rust, modeled as flag) |
 | **INV-ALLOC-02** | `zeroOverheadDefault` | `allocator_zst == true` — HeapAllocator is ZST (structural in Rust, modeled as flag) |
 | **INV-INIT-01** | `initializedRange` | `initialized == { (hd+k) % CAPACITY : k ∈ 0..count-1 }` — buffer slot initialization tracked via set. *Note: this invariant bridges the allocator and ring protocol domains — it verifies that the set of initialized buffer slots (an allocator-level concern) matches the range implied by the head/tail sequence numbers (a protocol-level concern).* |
+| **INV-NUMA-01** | `numaPlacementValid` | `numa_placement_valid == true` — memory placed on requested NUMA node (runtime on Linux, modeled as flag) |
+| **INV-NUMA-02** | `numaFallbackSafe` | `numa_fallback_safe == true` — non-Linux platforms fall back to HeapAllocator (compile-time `#[cfg]`, modeled as flag) |
+| **INV-NUMA-03** | `numaPolicyDeterministic` | `numa_policy_deterministic == true` — RoundRobin counter deterministic per NumaAllocator instance (modeled as flag) |
 
 ### State Variables
 
-The Quint model adds four state variables for allocator verification:
+The Quint model adds seven state variables for allocator and NUMA verification:
 
 ```
-buffer_capacity : int       — allocated buffer size (must equal CAPACITY)
-initialized     : Set[int]  — set of buffer indices holding valid data
-buffer_aligned  : bool      — alignment guarantee flag
-allocator_zst   : bool      — zero-overhead default flag
+buffer_capacity          : int       — allocated buffer size (must equal CAPACITY)
+initialized              : Set[int]  — set of buffer indices holding valid data
+buffer_aligned           : bool      — alignment guarantee flag
+allocator_zst            : bool      — zero-overhead default flag
+numa_placement_valid     : bool      — NUMA memory placement flag
+numa_fallback_safe       : bool      — NUMA fallback safety flag
+numa_policy_deterministic: bool      — NUMA policy determinism flag
 ```
 
 The `initialized` set is the most interesting: `producerWrite` adds `tl % CAPACITY` to the set, and `consumerAdvance` removes `hd % CAPACITY`. The `initializedRange` invariant verifies that this set always matches the expected range derived from `[hd, tl)`.
@@ -402,6 +473,10 @@ The specification includes allocator-specific embedded tests:
 | `initializedRangeWrapAround` | INV-INIT-01 | Modular arithmetic correct after wrap-around |
 | `emptyRingNoInitializedSlots` | INV-INIT-01 | Empty ring has empty initialized set |
 | `allocatorInvariantsThroughCycle` | All | Full safety invariant at every step of a cycle |
+| `numaPlacementAtInit` | INV-NUMA-01 | NUMA placement flag set at construction |
+| `numaFallbackAtInit` | INV-NUMA-02 | NUMA fallback flag set at construction |
+| `numaPolicyAtInit` | INV-NUMA-03 | NUMA policy determinism flag set at construction |
+| `numaInvariantsStableAcrossOps` | INV-NUMA-01/02/03 | All NUMA flags stable after produce/consume |
 
 Run the Quint tests:
 
@@ -428,6 +503,9 @@ The Rust MBT driver in [crates/ringmpsc/tests/quint_mbt.rs](../crates/ringmpsc/t
 | `initialized` | `initialized_slots: BTreeSet<u64>` | Slot initialization tracking (INV-INIT-01) |
 | `buffer_aligned` | `buffer_aligned: bool` | `true` for HeapAllocator (INV-ALLOC-01) |
 | `allocator_zst` | `allocator_zst: bool` | `true` for HeapAllocator (INV-ALLOC-02) |
+| `numa_placement_valid` | `numa_placement_valid: bool` | `true` (INV-NUMA-01) |
+| `numa_fallback_safe` | `numa_fallback_safe: bool` | `true` (INV-NUMA-02) |
+| `numa_policy_deterministic` | `numa_policy_deterministic: bool` | `true` (INV-NUMA-03) |
 
 Run the MBT tests:
 
@@ -440,13 +518,15 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 | File | Purpose |
 |---|---|
 | [crates/ringmpsc/src/allocator.rs](../crates/ringmpsc/src/allocator.rs) | `BufferAllocator` trait, `HeapAllocator`, `AlignedAllocator`, `StdAllocator` |
+| [crates/ringmpsc/src/numa.rs](../crates/ringmpsc/src/numa.rs) | `NumaAllocator`, `NumaPolicy`, `NumaBuffer` — NUMA-aware allocation (feature `numa`) |
 | [crates/ringmpsc/src/ring.rs](../crates/ringmpsc/src/ring.rs) | `Ring<T, A>` — generic over allocator, `new_in()` constructor |
 | [crates/ringmpsc/src/channel.rs](../crates/ringmpsc/src/channel.rs) | `Channel<T, A>` — allocator propagated to per-producer rings |
 | [crates/ringmpsc/src/invariants.rs](../crates/ringmpsc/src/invariants.rs) | `debug_assert_aligned!`, `static_assert_zst!` macros |
-| [crates/ringmpsc/src/lib.rs](../crates/ringmpsc/src/lib.rs) | Public exports: `AlignedAllocator`, `BufferAllocator`, `HeapAllocator`, `StdAllocator` |
-| [crates/ringmpsc/spec.md](../crates/ringmpsc/spec.md) | INV-MEM-04, INV-ALLOC-01, INV-ALLOC-02 specifications |
+| [crates/ringmpsc/src/lib.rs](../crates/ringmpsc/src/lib.rs) | Public exports: `AlignedAllocator`, `BufferAllocator`, `HeapAllocator`, `StdAllocator`, `NumaAllocator`, `NumaPolicy` |
+| [crates/ringmpsc/spec.md](../crates/ringmpsc/spec.md) | INV-MEM-04, INV-ALLOC-01, INV-ALLOC-02, INV-NUMA-01/02/03 specifications |
 | [crates/ringmpsc/tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt) | Quint formal spec — allocator invariants, `initialized` set, model checking |
 | [crates/ringmpsc/tests/quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) | Quint model-based testing driver — allocator state tracking via `quint-connect` |
 | [crates/ringmpsc/tests/allocator_tests.rs](../crates/ringmpsc/tests/allocator_tests.rs) | 22 allocator tests |
+| [crates/ringmpsc/tests/numa_tests.rs](../crates/ringmpsc/tests/numa_tests.rs) | 13 NUMA allocator tests |
 | [crates/ringmpsc/benches/allocator.rs](../crates/ringmpsc/benches/allocator.rs) | Criterion benchmarks (single-thread, SPSC, MPSC) |
 | [crates/ringmpsc/examples/custom_allocator.rs](../crates/ringmpsc/examples/custom_allocator.rs) | Runnable demo comparing all allocator strategies |

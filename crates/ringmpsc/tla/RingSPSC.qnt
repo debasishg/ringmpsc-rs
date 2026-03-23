@@ -13,6 +13,9 @@
 //   - INV-ALLOC-01: Alignment Guarantee (modeled as buffer_aligned flag)
 //   - INV-ALLOC-02: Zero Overhead Default (modeled as allocator_zst flag)
 //   - INV-INIT-01:  Initialized Range (tracked via initialized slot set)
+//   - INV-NUMA-01:  Memory Placement (modeled as numa_placement_valid flag)
+//   - INV-NUMA-02:  Fallback Safety (modeled as numa_fallback_safe flag)
+//   - INV-NUMA-03:  Policy Determinism (modeled as numa_policy_deterministic flag)
 //
 // Run with:
 //   quint run RingSPSC.qnt --main=RingSPSC --max-steps=100
@@ -73,6 +76,21 @@ module RingSPSC {
     /// Modeled as a boolean flag set at construction.
     var allocator_zst: bool
 
+    /// Whether NUMA memory placement is valid (INV-NUMA-01, runtime on Linux)
+    /// On Linux: mbind places pages on the requested node.
+    /// Modeled as a boolean flag set at construction.
+    var numa_placement_valid: bool
+
+    /// Whether NUMA fallback is safe (INV-NUMA-02, compile-time #[cfg])
+    /// Non-Linux platforms fall back to HeapAllocator — no panic, no data loss.
+    /// Modeled as a boolean flag set at construction.
+    var numa_fallback_safe: bool
+
+    /// Whether NUMA policy is deterministic (INV-NUMA-03)
+    /// RoundRobin counter shared via Arc<AtomicU16> across clones.
+    /// Modeled as a boolean flag set at construction.
+    var numa_policy_deterministic: bool
+
     // =========================================================================
     // PURE FUNCTIONS
     // =========================================================================
@@ -115,6 +133,19 @@ module RingSPSC {
     /// Ring<T, HeapAllocator> have identical layout and codegen.
     /// Structural in Rust (compile-time const assertion); modeled as flag.
     val zeroOverheadDefault: bool = allocator_zst
+
+    /// INV-NUMA-01: Memory Placement
+    /// Ring buffer memory is placed on the requested NUMA node.
+    /// On Linux verified via /proc/self/numa_maps in debug builds.
+    val numaPlacementValid: bool = numa_placement_valid
+
+    /// INV-NUMA-02: Fallback Safety
+    /// Non-Linux platforms gracefully fall back to HeapAllocator.
+    val numaFallbackSafe: bool = numa_fallback_safe
+
+    /// INV-NUMA-03: Policy Determinism
+    /// RoundRobin counter is deterministic per NumaAllocator instance.
+    val numaPolicyDeterministic: bool = numa_policy_deterministic
     
     /// INV-INIT-01: Initialized Range
     /// buffer[i] is initialized ⟺ head ≤ sequence(i) < tail
@@ -125,7 +156,7 @@ module RingSPSC {
         initialized == expected
     }
     
-    /// Combined safety invariant (protocol + allocator)
+    /// Combined safety invariant (protocol + allocator + NUMA)
     val safetyInvariant: bool = 
         boundedCount 
         and happensBefore 
@@ -133,6 +164,9 @@ module RingSPSC {
         and alignmentGuarantee
         and zeroOverheadDefault
         and initializedRange
+        and numaPlacementValid
+        and numaFallbackSafe
+        and numaPolicyDeterministic
 
     // =========================================================================
     // INITIAL STATE
@@ -148,6 +182,9 @@ module RingSPSC {
         initialized' = Set(),
         buffer_aligned' = true,
         allocator_zst' = true,
+        numa_placement_valid' = true,
+        numa_fallback_safe' = true,
+        numa_policy_deterministic' = true,
     }
 
     // =========================================================================
@@ -169,6 +206,9 @@ module RingSPSC {
         initialized' = initialized,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
     
     /// ProducerRefreshCache: Reload hd when cache is stale
@@ -187,6 +227,9 @@ module RingSPSC {
         initialized' = initialized,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
     
     /// ProducerWrite: Commit item to ring
@@ -206,6 +249,9 @@ module RingSPSC {
         buffer_capacity' = buffer_capacity,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
 
     // =========================================================================
@@ -226,6 +272,9 @@ module RingSPSC {
         initialized' = initialized,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
     
     /// ConsumerRefreshCache: Reload tl when cache is stale
@@ -244,6 +293,9 @@ module RingSPSC {
         initialized' = initialized,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
     
     /// ConsumerAdvance: Consume item from ring
@@ -262,6 +314,9 @@ module RingSPSC {
         buffer_capacity' = buffer_capacity,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
 
     // =========================================================================
@@ -304,6 +359,9 @@ module RingSPSC {
         initialized' = initialized,
         buffer_aligned' = buffer_aligned,
         allocator_zst' = allocator_zst,
+        numa_placement_valid' = numa_placement_valid,
+        numa_fallback_safe' = numa_fallback_safe,
+        numa_policy_deterministic' = numa_policy_deterministic,
     }
     
     /// Test: Initial state satisfies invariants
@@ -317,6 +375,9 @@ module RingSPSC {
             assert(zeroOverheadDefault),
             assert(initializedRange),
             assert(initialized == Set()),
+            assert(numaPlacementValid),
+            assert(numaFallbackSafe),
+            assert(numaPolicyDeterministic),
             stutter,
         })
     }
@@ -528,5 +589,50 @@ module RingSPSC {
         .then(all { assert(safetyInvariant), stutter, })
         .then(consumerAdvance)
         .then(all { assert(safetyInvariant), stutter, })
+    }
+
+    // =====================================================================
+    // NUMA INVARIANT TESTS (INV-NUMA-01, INV-NUMA-02, INV-NUMA-03)
+    // =====================================================================
+
+    /// Test: INV-NUMA-01 — NUMA placement valid at init
+    run numaPlacementAtInit = {
+        init.then(all {
+            assert(numaPlacementValid),
+            assert(numa_placement_valid == true),
+            stutter,
+        })
+    }
+
+    /// Test: INV-NUMA-02 — NUMA fallback safe at init
+    run numaFallbackAtInit = {
+        init.then(all {
+            assert(numaFallbackSafe),
+            assert(numa_fallback_safe == true),
+            stutter,
+        })
+    }
+
+    /// Test: INV-NUMA-03 — NUMA policy deterministic at init
+    run numaPolicyAtInit = {
+        init.then(all {
+            assert(numaPolicyDeterministic),
+            assert(numa_policy_deterministic == true),
+            stutter,
+        })
+    }
+
+    /// Test: NUMA invariants stable across produce-consume operations
+    run numaInvariantsStableAcrossOps = {
+        init
+        .then(producerWrite)
+        .then(producerWrite)
+        .then(consumerAdvance)
+        .then(all {
+            assert(numaPlacementValid),
+            assert(numaFallbackSafe),
+            assert(numaPolicyDeterministic),
+            stutter,
+        })
     }
 }

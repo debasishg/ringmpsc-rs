@@ -194,6 +194,22 @@ Linear scaling up to 6 producers/consumers:
 | Commit | ~3ns | Single atomic store |
 | Consume (batch) | ~2ns/item | Amortized over batch |
 
+### NUMA Latency Impact (multi-socket systems)
+
+On multi-socket NUMA systems, memory locality dominates ring buffer performance. Cross-socket memory accesses incur ~80–100 ns additional latency per cache-line miss compared to ~10 ns for local accesses. Since ring buffers are accessed sequentially in the hot path, NUMA-remote placement causes sustained throughput degradation.
+
+Expected improvements with `NumaAllocator` (feature `numa`) on 2-socket systems:
+
+| Scenario | Without NUMA pinning | With NUMA pinning | Improvement |
+|---|---|---|---|
+| SPSC (cross-socket) | ~30-40 ns/op | ~6-10 ns/op | 3-5× |
+| MPSC 4P (mixed nodes) | ~50-80 ns/op | ~10-20 ns/op | 3-4× |
+| Reserve+commit (remote) | ~40-60 ns/op | ~8-12 ns/op | 3-5× |
+
+**Key insight:** The improvements are largest for write-heavy paths (producer reserve/commit) because `mbind` ensures the backing buffer's physical pages reside on the target node, eliminating remote memory controller hops. The consumer side benefits from `Fixed(node)` policy when pinning all rings to the consumer's local node.
+
+**Note:** These are projected based on published Intel QPI / AMD Infinity Fabric latency numbers. Actual gains depend on hardware topology, OS page migration policies, and workload. On single-socket systems (including Apple Silicon), `NumaAllocator` falls back to `HeapAllocator` with no overhead (INV-NUMA-02).
+
 ## Configuration Recommendations
 
 ### Low Latency (< 100ns)
@@ -255,7 +271,7 @@ Config::default(): {
 1. **Optional StackRing variant** (behind feature flag for experts)
 2. **SIMD batch operations** for bulk data transfer
 3. **Adaptive batch sizing** based on load patterns
-4. **NUMA-aware ring allocation** for multi-socket systems
+4. ~~**NUMA-aware ring allocation** for multi-socket systems~~ — ✅ Implemented (feature `numa`). See [numa-aware-allocation.md](numa-aware-allocation.md)
 5. **Custom allocator integration** for specialized use cases
 
 ## Benchmark Methodology
