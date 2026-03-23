@@ -126,3 +126,71 @@ Index wrapping is the hottest operation in the ring — it runs on every `reserv
 The `Config` constructor enforces this at creation time, and `StackRing` enforces it at compile time.
 
 > **Spec reference:** INV-MEM-02 in [spec.md](spec.md)
+
+---
+
+## 9. What does NUMA-aware allocation give me and when should I use it?
+
+On multi-socket servers, memory accesses to a remote NUMA node cost 1.5–2× the latency of local accesses. By default, `HeapAllocator` lets the OS place ring buffer memory on whatever node happens to be convenient. `NumaAllocator` (behind the `numa` feature flag) uses `mmap` + `mbind` on Linux to **pin each ring buffer's backing memory to a specific NUMA node**, keeping producer-hot data local to the core that writes it.
+
+Use it when:
+
+- You run on **multi-socket** hardware (2+ NUMA nodes) and care about tail latency.
+- Producer threads are pinned to specific cores/nodes and you want their ring buffers co-located.
+- You see **cross-node memory traffic** in `perf stat` (`node-load-misses`, `node-store-misses`).
+
+Skip it when:
+
+- Your system is single-socket (UMA) — `NumaAllocator` detects this and falls back to `HeapAllocator` automatically.
+- Producers are not pinned — thread migration defeats the benefit of NUMA binding.
+
+Three policies are available:
+
+| Policy | Behavior | Best for |
+|--------|----------|----------|
+| `Fixed(node)` | All rings on one specified node | Consumer-local placement |
+| `RoundRobin` | Cycle across all detected nodes | Spreading memory pressure evenly |
+| `ProducerLocal` | Allocate on the calling thread's node | Per-producer placement when constructing rings from producer threads |
+
+> **Spec reference:** INV-NUMA-01, INV-NUMA-02, INV-NUMA-03 in [spec.md](spec.md)
+
+---
+
+## 10. Does `NumaAllocator` work on macOS / Windows / non-Linux?
+
+Yes, it compiles and runs everywhere. On non-Linux platforms, `NumaAllocator` **transparently falls back** to heap allocation (`Box<[MaybeUninit<T>]>`). No conditional compilation is needed in user code — the same `Channel::<T, NumaAllocator>::new_in(...)` call works on any platform.
+
+This is guaranteed by **INV-NUMA-02** (graceful fallback): on unsupported platforms, the allocator reports `num_nodes() == 1` and `is_numa_available() == false`, and every allocation goes through the standard allocator.
+
+---
+
+## 11. Why does `ProducerLocal` not always do what I expect with `Channel`?
+
+`Channel::new_in()` pre-allocates **all** ring buffers at construction time, on a single thread. If you pass `NumaPolicy::ProducerLocal`, every ring resolves to the *channel creator's* NUMA node — not the producer's node.
+
+For true per-producer NUMA placement, construct individual `Ring::new_in()` instances from each producer thread:
+
+```rust
+// On producer thread (pinned to NUMA node 1):
+let ring = Ring::<u64, NumaAllocator>::new_in(
+    Config::new(1024),
+    NumaAllocator::new(NumaPolicy::ProducerLocal),
+);
+// Backing memory is now on node 1.
+```
+
+This is a conscious design trade-off: `Channel` values simplicity and a single-allocation constructor over thread-aware allocation. When NUMA topology matters, the lower-level `Ring` API gives full control.
+
+---
+
+## 12. What are huge pages and when should I enable them?
+
+`NumaAllocator::with_huge_pages(policy)` adds `MAP_HUGETLB` to the `mmap` flags on Linux, requesting **2 MiB pages** instead of the default 4 KiB pages. This reduces TLB (Translation Lookaside Buffer) misses when traversing large ring buffers.
+
+Enable huge pages when:
+
+- Ring buffers are large (≥ 64 KiB, ideally ≥ 1 MiB).
+- The system has huge pages reserved (`/proc/sys/vm/nr_hugepages > 0`).
+- `perf stat` shows significant `dTLB-load-misses` or `dTLB-store-misses`.
+
+If huge pages are not available, the `mmap` call fails and the allocator falls back to regular pages automatically. There is no crash or error — just standard 4 KiB pages.
