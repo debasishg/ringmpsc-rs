@@ -161,8 +161,6 @@ impl<IO: IoEngine> Wal<IO> {
     ///
     /// The scheduler runs until `shutdown()` is called. Only one scheduler
     /// can be active at a time; calling this again replaces the previous one.
-    ///
-    /// This matches async-wal-db's `start_checkpoint_scheduler(interval_secs)`.
     pub fn start_checkpoint_scheduler<K, V>(&mut self, interval: Duration)
     where
         K: DeserializeOwned + Send + 'static,

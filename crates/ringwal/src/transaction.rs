@@ -1,7 +1,7 @@
 //! Optional transaction wrapper for atomic multi-operation commits.
 //!
 //! Buffers operations locally and flushes them to the ring atomically
-//! on `commit()`. This matches `async-wal-db`'s `Transaction` pattern.
+//! on `commit()`.
 
 use serde::Serialize;
 

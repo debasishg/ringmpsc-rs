@@ -226,10 +226,6 @@ pub fn read_checkpoint<IO: IoEngine>(dir: &Path, io: &IO) -> Result<u64, WalErro
 /// Scans all segment files, identifies committed transactions, and writes
 /// a checkpoint at the highest committed LSN. Returns `NoNewCheckpoints`
 /// if no committed transactions exist beyond the current checkpoint.
-///
-/// This is the analog of async-wal-db's `checkpoint()` method which
-/// filters committed-only transactions and advances to the highest
-/// committed `tx_id`.
 pub fn checkpoint<K, V, IO>(dir: &Path, io: &IO) -> Result<u64, WalError>
 where
     K: DeserializeOwned + Send + 'static,

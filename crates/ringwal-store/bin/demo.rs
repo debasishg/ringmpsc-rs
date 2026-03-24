@@ -1,8 +1,6 @@
 //! ringwal CLI demo — self-contained binary showing the full WAL lifecycle.
 //!
 //! Usage: `cargo run -p ringwal-store --release --bin ringwal-demo`
-//!
-//! This binary is the equivalent of async-wal-db's `main.rs`.
 
 use ringwal::{RealIo, Transaction, Wal, WalConfig};
 use ringwal_store::{recover_into_store, InMemoryStore};
@@ -39,7 +37,7 @@ async fn main() -> Result<(), ringwal::WalError> {
 
     let factory = Arc::new(factory);
 
-    // ── Concurrent transactions (matching async-wal-db's main.rs pattern) ──
+    // ── Concurrent transactions ──
     let f1 = Arc::clone(&factory);
     let handle1 = tokio::spawn(async move {
         let writer = f1.register().expect("register writer 1");

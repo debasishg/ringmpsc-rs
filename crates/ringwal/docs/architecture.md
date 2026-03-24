@@ -4,12 +4,12 @@
 
 `ringwal` is a Write-Ahead Log that uses **per-writer SPSC ring buffers** (via `ringmpsc-rs`)
 instead of a single shared queue. This document describes the architecture, data flow,
-and design decisions — compared against the reference implementation
-[`async-wal-db`](https://github.com/debasishg/async-wal-db).
+and design decisions.
 
 ## Design Motivation
 
-`async-wal-db` uses a single `crossbeam::SegQueue` shared by all writers:
+A traditional shared-queue WAL uses a single concurrent queue (e.g. `crossbeam::SegQueue`)
+shared by all writers:
 
 ```
 Writer A ──push──┐
@@ -153,11 +153,11 @@ All modes preserve [INV-WAL-05](#invariants) (commit durability).
 4. **Return structured data** — `recover()` returns `Vec<RecoveredTransaction<K, V>>`
    and `RecoveryStats`. The caller decides what to replay.
 
-## Comparison with async-wal-db
+## Design Comparison: Shared Queue vs Ring Decomposition
 
 ### Architecture Differences
 
-| Aspect | async-wal-db | ringwal |
+| Aspect | Shared-queue WAL | ringwal |
 |--------|--------------|---------|
 | Writer channels | Single shared `SegQueue` | Dedicated SPSC ring per writer |
 | Contention model | CAS on shared tail pointer | Zero writer-writer contention |
@@ -169,10 +169,10 @@ All modes preserve [INV-WAL-05](#invariants) (commit durability).
 
 ### Concurrency Model
 
-**async-wal-db:**
+**Shared-queue WAL:**
 - Writers: `SegQueue::push()` — lock-free CAS, contention ∝ writer count
 - Flusher: `Mutex<BufWriter>` guarded, 10ms poll interval
-- Backpressure: `Notify` when `queue_size >= max_queue_size`, checked with `Acquire`/`Release`
+- Backpressure: `Notify` when queue full, checked with `Acquire`/`Release`
 - Commit: writer calls `wal.flush()` directly, which acquires `Mutex` → sequential fsyncs
 
 **ringwal:**
@@ -189,9 +189,9 @@ All modes preserve [INV-WAL-05](#invariants) (commit durability).
   - `PipelinedDedicated` — dedicated OS thread + bounded channel for fsync, lower tail latency
   - `None` — flush BufWriter to kernel only (no fsync, for benchmarks/testing)
 
-### Entry Format (Identical)
+### Entry Format
 
-Both use the same 13-byte header:
+ringwal uses a standard 13-byte header:
 
 ```
 Offset  Size  Field
@@ -203,7 +203,7 @@ Offset  Size  Field
 
 ### Recovery Protocol
 
-| Step | async-wal-db | ringwal |
+| Step | Shared-queue WAL | ringwal |
 |------|--------------|---------|
 | File discovery | Single `wal.log` | Multiple `wal-{id}.log` segments |
 | Scan order | Sequential from offset 0 | Per-segment, segments in ascending ID order |
@@ -212,28 +212,28 @@ Offset  Size  Field
 | Checkpoint | `wal.log.checkpoint` with tx_id | `checkpoint` file with LSN (u64 LE) |
 | Cleanup after checkpoint | None | `truncate_before(lsn)` deletes old segments |
 
-## Feature Compliance Matrix
+## Feature Matrix
 
-### Completed (parity with async-wal-db)
+### Core Features
 
-| Feature | async-wal-db | ringwal | Notes |
-|---------|:---:|:---:|-------|
-| Core WAL engine | ✅ | ✅ | Different concurrency models |
-| Lock-free writes | ✅ | ✅ | SegQueue vs SPSC rings |
-| Async/await support | ✅ | ✅ | Both tokio-based |
-| CRC32 checksums | ✅ | ✅ | Identical 13-byte header |
-| Multi-writer support | ✅ | ✅ | Shared queue vs dedicated rings |
-| Transaction abstraction | ✅ | ✅ | Matching `TxState` enum |
-| Commit / Abort markers | ✅ | ✅ | Same `WalEntry` variants |
-| Graceful shutdown | ✅ | ✅ | Both drain in-flight entries |
-| Crash recovery | ✅ | ✅ | Different file layouts, same logic |
-| Recovery statistics | ✅ | ✅ | Same fields |
-| Checkpoint read/write | ✅ | ✅ | Different file conventions |
-| Partial write detection | ✅ | ✅ | Both handle truncated headers |
-| Backpressure | ✅ | ✅ | Notify-based vs ring-based |
-| Error types | ✅ | ✅ | Overlapping error variants |
+| Feature | Status | Notes |
+|---------|:---:|-------|
+| Core WAL engine | ✅ | Per-writer SPSC rings with background flusher |
+| Lock-free writes | ✅ | SPSC rings — zero writer-writer contention |
+| Async/await support | ✅ | tokio-based |
+| CRC32 checksums | ✅ | 13-byte header |
+| Multi-writer support | ✅ | Dedicated ring per writer |
+| Transaction abstraction | ✅ | `TxState` enum |
+| Commit / Abort markers | ✅ | `WalEntry` variants |
+| Graceful shutdown | ✅ | Drains in-flight entries |
+| Crash recovery | ✅ | Multi-segment scan with CRC32 validation |
+| Recovery statistics | ✅ | committed, aborted, incomplete, partial_writes, checksum_failures |
+| Checkpoint read/write | ✅ | LSN-based |
+| Partial write detection | ✅ | Handles truncated headers |
+| Backpressure | ✅ | Ring-based via `ringmpsc-stream` |
+| Error types | ✅ | ChecksumMismatch, SegmentFull, NoNewCheckpoints, etc. |
 
-### Features Beyond async-wal-db (ringwal extras)
+### Advanced Features
 
 | Feature | Status | Description |
 |---------|:---:|-------------|
@@ -241,7 +241,7 @@ Offset  Size  Field
 | Group commit | ✅ | One fsync unblocks all commits in batch |
 | Segment rotation | ✅ | Configurable max segment size |
 | Segment truncation | ✅ | `truncate_before(lsn)` removes old segments |
-| Generic K/V types | ✅ | Not limited to `String/Vec<u8>` |
+| Generic K/V types | ✅ | Any `Serialize + DeserializeOwned` types |
 | Configurable max writers | ✅ | Enforced at registration time |
 | Configurable batch hint | ✅ | Flusher aggregation tuning |
 | Per-ring metrics | ✅ | Optional via ringmpsc-rs |
@@ -258,7 +258,7 @@ and **client-side** (belongs in consumer crates or user code).
 |---------|:---:|-------------|
 | ~~Checkpoint advancement logic~~ | ✅ | `Wal::checkpoint()` scans recovery state, filters committed txns, advances to highest committed LSN, returns `NoNewCheckpoints` when idle. |
 | ~~Automatic checkpoint scheduler~~ | ✅ | `Wal::start_checkpoint_scheduler(interval)` — periodic background task calling `checkpoint()` + `truncate_before()`. |
-| ~~Benchmarks~~ | ✅ | Throughput benchmarks in `crates/ringwal/benches/wal_throughput.rs` comparing ringwal vs async-wal-db at 1/2/4/8 writer counts via criterion. ringwal scales linearly; async-wal-db is flat. |
+| ~~Benchmarks~~ | ✅ | Throughput benchmarks in `crates/ringwal/benches/wal_throughput.rs` at 1/2/4/8 writer counts via criterion. ringwal scales linearly with writers. |
 | ~~CLI demo tool~~ | ✅ | `bin/demo.rs` (minimal CLI) and `examples/demo.rs` (full lifecycle) showing multi-writer transactions, recovery into `InMemoryStore`, and checkpoint scheduling. |
 
 #### Client-Side (lives in `ringwal-store` crate)
@@ -317,7 +317,7 @@ and **client-side** (belongs in consumer crates or user code).
 3. ~~**`WalStore` trait**~~ — ✅ done, `src/store.rs`
 4. ~~**In-memory HashMap store**~~ — ✅ done, `InMemoryStore<K,V>` ships with ringwal
 5. ~~**Apply-to-store on recovery**~~ — ✅ done, `recover_into_store()` + `apply_transactions()`
-6. ~~**Benchmarks**~~ — ✅ done, `benches/wal_throughput.rs` (criterion, ringwal vs async-wal-db)
+6. ~~**Benchmarks**~~ — ✅ done, `benches/wal_throughput.rs` (criterion, ringwal throughput at multiple writer counts)
 7. **LMDB storage backend** (separate crate) — depends on #3, lowest priority
 8. ~~**CLI demo**~~ — ✅ done, `bin/demo.rs` + `examples/demo.rs`
 

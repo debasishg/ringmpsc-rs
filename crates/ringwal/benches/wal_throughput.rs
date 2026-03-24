@@ -46,7 +46,6 @@ use criterion::{
 };
 use ringwal::SyncMode;
 use std::hint::black_box;
-use std::sync::Arc;
 use std::time::Duration;
 
 const DURABLE_TXN: u64 = 2_000; // increased for statistical stability with multi_thread
@@ -192,16 +191,11 @@ async fn ringwal_bench_streaming(
 
 // ── Durable benchmarks (fsync per batch, multi_thread) ───────────────────────
 
-/// Compares **ringwal** vs **async-wal-db** under durable (fsync) workloads.
+/// Benchmarks **ringwal** under durable (fsync) workloads.
 ///
-/// - **ringwal**: sweeps 1 / 2 / 4 / 8 concurrent writers, each running
-///   `DURABLE_TXN` commit-and-wait transactions (64-byte payloads) with
-///   `SyncMode::Full`. Demonstrates group-commit scaling with writer count.
-/// - **async-wal-db**: single-writer reference point doing the same 2,000
-///   durable transactions, serving as a shared-queue baseline.
-///
-/// Both appear in the same Criterion group (`wal_durable`) so results are
-/// reported side-by-side.
+/// Sweeps 1 / 2 / 4 / 8 concurrent writers, each running `DURABLE_TXN`
+/// commit-and-wait transactions (64-byte payloads) with `SyncMode::Full`.
+/// Demonstrates group-commit scaling with writer count.
 fn bench_durable(c: &mut Criterion) {
     let rt = make_mt_rt();
     let mut group = c.benchmark_group("wal_durable");
@@ -230,47 +224,6 @@ fn bench_durable(c: &mut Criterion) {
             },
         );
     }
-
-    // async-wal-db: single-writer reference point
-    group.throughput(Throughput::Elements(DURABLE_TXN));
-    group.bench_function("async-wal-db/1", |b| {
-        b.to_async(&rt).iter_batched(
-            || tempfile::tempdir().unwrap(),
-            |dir| async move {
-                let wal_path = dir.path().join("wal.log");
-                let wal_str = wal_path.to_str().unwrap().to_string();
-
-                let db = async_wal_db::DatabaseConfig::new(&wal_str)
-                    .with_max_queue_size(100_000)
-                    .with_flush_interval_ms(1)
-                    .build()
-                    .await;
-
-                let db_clone = Arc::clone(&db);
-                let handle = tokio::spawn(async move {
-                    for i in 0..DURABLE_TXN {
-                        let mut tx = async_wal_db::Transaction::new();
-                        tx.append_op(
-                            &db_clone,
-                            async_wal_db::WalEntry::Insert {
-                                tx_id: 0,
-                                timestamp: 0,
-                                key: format!("k-0-{i}"),
-                                value: vec![0u8; 64],
-                            },
-                        )
-                        .await
-                        .unwrap();
-                        tx.commit(&db_clone).await.unwrap();
-                    }
-                });
-                handle.await.unwrap();
-                db.wal.stop_flusher().await.unwrap();
-                drop(dir); // keep TempDir alive until after shutdown
-            },
-            BatchSize::SmallInput,
-        );
-    });
 
     group.finish();
 }

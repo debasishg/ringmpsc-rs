@@ -21,7 +21,6 @@ eliminating runtime-construction overhead from measurements.
 | ringwal | Background | 1 | ~161 txn/s | 0.9× |
 | ringwal | Background | 4 | ~653 txn/s | 3.8× |
 | ringwal | Background | 8 | ~1,347 txn/s | 7.9× |
-| async-wal-db | — | 1 | ~170 txn/s | (reference) |
 
 ### No-sync — `current_thread` vs `multi_thread` (64-byte payload)
 
@@ -68,8 +67,7 @@ This is group commit: one fsync covers N writers' work.
 The result is **near-linear scaling**: 8 writers reach **1,338 txn/s**
 (7.8× vs 1 writer) with wall-clock time unchanged (~2.95 s). The fsync
 cost is constant — more writers just mean more transactions per fsync
-batch. async-wal-db at 1 writer matches ringwal's single-writer baseline
-(~170 txn/s), confirming fsync is the common bottleneck.
+batch.
 
 ### 2. Ring decomposition delivers near-linear writer scaling (both modes)
 

@@ -4,8 +4,7 @@ A Write-Ahead Log backed by lock-free SPSC ring buffers via [`ringmpsc-rs`](../r
 
 > **Part of the [ringmpsc-rs](../../README.md) workspace.** Depends on `ringmpsc` and `ringmpsc-stream`.
 
-Instead of using a single shared queue (like [`async-wal-db`](https://github.com/debasishg/async-wal-db)),
-each writer gets a **dedicated SPSC ring buffer** — zero producer-producer contention.
+Each writer gets a **dedicated SPSC ring buffer** — zero producer-producer contention.
 A single background flusher drains all rings, writes to rotatable segment files,
 fsyncs, and notifies commit waiters via **group commit**.
 
@@ -111,13 +110,11 @@ Each entry on disk:
 Segment files: `wal-00000001.log`, `wal-00000002.log`, ...
 Checkpoint file: `checkpoint` (contains LSN as little-endian u64).
 
-## Compliance with async-wal-db
-
-### Completed
+## Feature Checklist
 
 - [x] Core WAL engine with background flusher
 - [x] `WalEntry` enum — Insert / Update / Delete / Commit / Abort
-- [x] CRC32 checksums with 13-byte entry header (identical format)
+- [x] CRC32 checksums with 13-byte entry header
 - [x] Transaction abstraction — local buffering, atomic commit/abort
 - [x] Crash recovery — segment scan, CRC32 validation, tx classification
 - [x] Recovery statistics (`committed`, `aborted`, `incomplete`, `partial_writes`, `checksum_failures`)
@@ -127,30 +124,21 @@ Checkpoint file: `checkpoint` (contains LSN as little-endian u64).
 - [x] Transaction state tracking (`TxState`: Active / Committed / Aborted)
 - [x] Global monotonic tx ID generator with recovery-safe reset
 - [x] Error types covering IO, serialization, checksums, partial writes
-- [x] Integration tests (9 tests) covering all major paths
-
-### Beyond async-wal-db
-
-- [x] Per-writer SPSC ring buffers (vs shared `SegQueue`)
+- [x] Integration tests covering all major paths
+- [x] Per-writer SPSC ring buffers (vs shared queue)
 - [x] Group commit — single fsync unblocks all commits in batch
 - [x] Segment rotation with configurable max size
 - [x] Sealed segment truncation via `truncate_before(lsn)`
-- [x] Generic `K/V` types (async-wal-db is fixed `String/Vec<u8>`)
+- [x] Generic `K/V` types
 - [x] Configurable max writers with enforcement
 - [x] Configurable batch hint for flusher aggregation
 - [x] Optional per-ring metrics via ringmpsc-rs
 - [x] LSN-stamped entries (monotonic log sequence numbers)
-
-### Still TODO (for full parity with async-wal-db)
-
-- [x] **`WalStore` trait + `InMemoryStore`** — `WalStore<K,V>` trait with `apply(&mut self, entry)` method, plus `InMemoryStore<K,V>` backed by `Arc<RwLock<HashMap<K,V>>>`. Shipped in `src/store.rs`.
-- [x] **Apply-to-store on recovery** — `recover_into_store(dir, store)` and `apply_transactions(store, txns)` bridge WAL recovery to any `WalStore` implementation.
-- [ ] **LMDB storage backend** — async-wal-db has `LmdbStorage` (via `heed` crate) with zero-copy reads, batch writes, and 1 GB default map size. ringwal has no persistent storage engine.
-- [x] **Automatic checkpoint scheduler** — `Wal::start_checkpoint_scheduler::<K, V>(interval)` runs a background task that periodically calls `checkpoint()` + `truncate_segments_before()`.
-- [x] **Checkpoint advancement logic** — `recovery::checkpoint::<K, V>(dir)` scans segments, finds the highest committed `tx_id`, writes a new checkpoint, and returns `WalError::NoNewCheckpoints` if nothing new. `Wal::checkpoint::<K, V>()` also truncates old segments.
-- [x] **CLI demo tool** — `bin/demo.rs` (minimal CLI, `cargo run -p ringwal --bin ringwal-demo`) and `examples/demo.rs` (full lifecycle with 4 writers, recovery, checkpointing).
-- [x] **Benchmarks** — `benches/wal_throughput.rs` compares ringwal vs async-wal-db via criterion at 1/2/4/8 writer counts. ringwal scales linearly with writers; async-wal-db stays flat. Run with `cargo bench -p ringwal`.
-- [x] **README/examples parity** — documentation, examples, and compliance tracking.
+- [x] `WalStore` trait + `InMemoryStore`
+- [x] Apply-to-store on recovery
+- [x] Automatic checkpoint scheduler
+- [x] CLI demo tool and examples
+- [ ] LMDB storage backend (persistent storage engine)
 
 ## Building
 
@@ -167,7 +155,7 @@ cargo test -p ringwal --release
 ## Benchmarks
 
 ```bash
-# WAL throughput benchmarks (criterion, compares ringwal vs async-wal-db)
+# WAL throughput benchmarks (criterion)
 cargo bench -p ringwal
 ```
 

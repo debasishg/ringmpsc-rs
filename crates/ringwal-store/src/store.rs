@@ -30,8 +30,7 @@ pub trait WalStore<K, V> {
 
 /// In-memory key-value store backed by `HashMap`.
 ///
-/// Thread-safe via `Arc<RwLock<...>>`. Equivalent to async-wal-db's
-/// `Arc<RwLock<HashMap<String, Vec<u8>>>>` but generic over `K` and `V`.
+/// Thread-safe via `Arc<RwLock<...>>`, generic over `K` and `V`.
 ///
 /// # Example
 ///
