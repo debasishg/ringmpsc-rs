@@ -1,4 +1,4 @@
-Go through all the documents in the docs folder and provide feedback on their content, structure, and clarity. Use the tools at your disposal to analyze the documents and identify areas for improvement. Focus on the following aspects:
+Go through all the documents in the docs folder and all documents within the crates folder recuirsively and provide feedback on their content, structure, and clarity. Use the tools at your disposal to analyze the documents and identify areas for improvement. Focus on the following aspects:
 1. Content: Is the information accurate, relevant, and comprehensive? Are there any gaps or inaccuracies that need to be addressed?
 2. Structure: Is the document well-organized and easy to navigate? Are there clear headings, subheadings, and sections that help the reader understand the flow of the document?
 3. Clarity: Is the language clear and concise? Are there any ambiguous or confusing sentences that need to be rephrased? Are technical terms explained adequately for the intended audience?

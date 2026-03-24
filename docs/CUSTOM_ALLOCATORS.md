@@ -428,7 +428,7 @@ cargo bench -p ringmpsc-rs --bench allocator
 
 ## Formal Verification (Quint Model)
 
-The allocator invariants are formally verified in the Quint specification [crates/ringmpsc/tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt). The model tracks allocator-related state alongside the lock-free protocol:
+The allocator invariants are formally verified in the Quint specification [crates/ringmpsc/tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt). The model tracks allocator-related state alongside the lock-free protocol.
 
 ### Modeled Invariants
 
@@ -437,81 +437,22 @@ The allocator invariants are formally verified in the Quint specification [crate
 | **INV-MEM-04** | `allocatorCapacityCorrect` | `buffer_capacity == CAPACITY` — allocator provides exactly the expected number of slots |
 | **INV-ALLOC-01** | `alignmentGuarantee` | `buffer_aligned == true` — buffer pointer alignment (structural in Rust, modeled as flag) |
 | **INV-ALLOC-02** | `zeroOverheadDefault` | `allocator_zst == true` — HeapAllocator is ZST (structural in Rust, modeled as flag) |
-| **INV-INIT-01** | `initializedRange` | `initialized == { (hd+k) % CAPACITY : k ∈ 0..count-1 }` — buffer slot initialization tracked via set. *Note: this invariant bridges the allocator and ring protocol domains — it verifies that the set of initialized buffer slots (an allocator-level concern) matches the range implied by the head/tail sequence numbers (a protocol-level concern).* |
-| **INV-NUMA-01** | `numaPlacementValid` | `numa_placement_valid == true` — memory placed on requested NUMA node (runtime on Linux, modeled as flag) |
-| **INV-NUMA-02** | `numaFallbackSafe` | `numa_fallback_safe == true` — non-Linux platforms fall back to HeapAllocator (compile-time `#[cfg]`, modeled as flag) |
-| **INV-NUMA-03** | `numaPolicyDeterministic` | `numa_policy_deterministic == true` — RoundRobin counter deterministic per NumaAllocator instance (modeled as flag) |
+| **INV-INIT-01** | `initializedRange` | `initialized == { (hd+k) % CAPACITY : k ∈ 0..count-1 }` — slot initialization tracked via set, bridging allocator and protocol domains |
+| **INV-NUMA-01** | `numaPlacementValid` | Memory placed on requested NUMA node (runtime on Linux, modeled as flag) |
+| **INV-NUMA-02** | `numaFallbackSafe` | Non-Linux platforms fall back to HeapAllocator (compile-time `#[cfg]`, modeled as flag) |
+| **INV-NUMA-03** | `numaPolicyDeterministic` | RoundRobin counter deterministic per NumaAllocator instance (modeled as flag) |
 
-### State Variables
+The model adds seven state variables (`buffer_capacity`, `initialized: Set[int]`, `buffer_aligned`, `allocator_zst`, `numa_placement_valid`, `numa_fallback_safe`, `numa_policy_deterministic`). The `initialized` set is the most interesting: `producerWrite` adds `tl % CAPACITY` to the set, and `consumerAdvance` removes `hd % CAPACITY`.
 
-The Quint model adds seven state variables for allocator and NUMA verification:
-
-```
-buffer_capacity          : int       — allocated buffer size (must equal CAPACITY)
-initialized              : Set[int]  — set of buffer indices holding valid data
-buffer_aligned           : bool      — alignment guarantee flag
-allocator_zst            : bool      — zero-overhead default flag
-numa_placement_valid     : bool      — NUMA memory placement flag
-numa_fallback_safe       : bool      — NUMA fallback safety flag
-numa_policy_deterministic: bool      — NUMA policy determinism flag
-```
-
-The `initialized` set is the most interesting: `producerWrite` adds `tl % CAPACITY` to the set, and `consumerAdvance` removes `hd % CAPACITY`. The `initializedRange` invariant verifies that this set always matches the expected range derived from `[hd, tl)`.
-
-### Quint Tests
-
-The specification includes allocator-specific embedded tests:
-
-| Quint Test | Invariant | What it verifies |
-|---|---|---|
-| `allocatorCapacityAtInit` | INV-MEM-04 | Buffer capacity equals CAPACITY at construction |
-| `allocatorCapacityStableAcrossOps` | INV-MEM-04 | Capacity unchanged after produce/consume |
-| `alignmentAtInit` | INV-ALLOC-01 | Alignment flag set at construction |
-| `zeroOverheadAtInit` | INV-ALLOC-02 | ZST flag set at construction |
-| `producerWriteInitializesSlot` | INV-INIT-01 | Write marks correct slot index as initialized |
-| `consumerAdvanceUninitializesSlot` | INV-INIT-01 | Consume marks correct slot index as uninitialized |
-| `initializedRangeWrapAround` | INV-INIT-01 | Modular arithmetic correct after wrap-around |
-| `emptyRingNoInitializedSlots` | INV-INIT-01 | Empty ring has empty initialized set |
-| `allocatorInvariantsThroughCycle` | All | Full safety invariant at every step of a cycle |
-| `numaPlacementAtInit` | INV-NUMA-01 | NUMA placement flag set at construction |
-| `numaFallbackAtInit` | INV-NUMA-02 | NUMA fallback flag set at construction |
-| `numaPolicyAtInit` | INV-NUMA-03 | NUMA policy determinism flag set at construction |
-| `numaInvariantsStableAcrossOps` | INV-NUMA-01/02/03 | All NUMA flags stable after produce/consume |
-
-Run the Quint tests:
+The Quint spec includes 13 allocator-specific embedded tests (capacity stability, alignment, ZST, slot initialization/uninitialization, wrap-around, NUMA flags). Run them with:
 
 ```bash
 cd crates/ringmpsc/tla
-
-# Embedded tests (fast — Rust backend)
 quint test RingSPSC.qnt --main=RingSPSC
-
-# Simulation with all invariants (including allocator)
-quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
-
-# Exhaustive model checking (TLC backend)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 ```
 
-### Model-Based Testing (quint-connect)
-
-The Rust MBT driver in [crates/ringmpsc/tests/quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) tracks all allocator state and compares it against the Quint specification at every step:
-
-| Quint variable | Rust driver field | Ring correspondence |
-|---|---|---|
-| `buffer_capacity` | `buffer_capacity` | `CAPACITY` (INV-MEM-04) |
-| `initialized` | `initialized_slots: BTreeSet<u64>` | Slot initialization tracking (INV-INIT-01) |
-| `buffer_aligned` | `buffer_aligned: bool` | `true` for HeapAllocator (INV-ALLOC-01) |
-| `allocator_zst` | `allocator_zst: bool` | `true` for HeapAllocator (INV-ALLOC-02) |
-| `numa_placement_valid` | `numa_placement_valid: bool` | `true` (INV-NUMA-01) |
-| `numa_fallback_safe` | `numa_fallback_safe: bool` | `true` (INV-NUMA-02) |
-| `numa_policy_deterministic` | `numa_policy_deterministic: bool` | `true` (INV-NUMA-03) |
-
-Run the MBT tests:
-
-```bash
-cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
-```
+The Rust MBT driver ([quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs)) tracks all allocator state fields and compares them against the Quint spec at every step via `quint-connect`. For the full MBT architecture and commands, see [FORMAL_VERIFICATION_WORKFLOW.md §3](../docs/FORMAL_VERIFICATION_WORKFLOW.md#3-model-based-testing-mbt).
 
 ## Code Map
 

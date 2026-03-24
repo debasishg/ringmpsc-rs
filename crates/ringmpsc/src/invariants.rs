@@ -30,12 +30,15 @@ macro_rules! debug_assert_bounded_count {
 ///
 /// **Invariant**: `head ≤ tail` (after advance)
 ///
+/// This check enforces INV-ORD-03 (HappensBefore: `head ≤ tail`) which is also
+/// implied by INV-SEQ-01 (BoundedCount: `0 ≤ (tail - head) ≤ capacity`).
+///
 /// Used in: `advance()` before updating head
 macro_rules! debug_assert_head_not_past_tail {
     ($new_head:expr, $tail:expr) => {
         debug_assert!(
             $new_head <= $tail,
-            "INV-SEQ-01 violated: advancing head {} beyond tail {}",
+            "INV-ORD-03 violated: advancing head {} beyond tail {}",
             $new_head,
             $tail
         )

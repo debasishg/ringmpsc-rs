@@ -1,6 +1,6 @@
 # Evolution of Model-Based Testing with `quint-connect`
 
-> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
+> **Last updated**: 2026-03-24 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
 
 [Quint](https://quint-lang.org/) is a modern specification language designed as an accessible alternative to TLA+, combining TLA+'s rigorous state-machine semantics with a TypeScript-inspired syntax that feels natural to working programmers. Its toolchain — `quint typecheck`, `quint run` (simulation), `quint test`, and `quint verify` (model checking via Apalache or TLC) — enables formal verification workflows without leaving a familiar development environment.
 
@@ -130,43 +130,19 @@ This is strictly stronger: it catches not only invariant violations but also cas
 
 ### 3.1 The State: Deserialized from Quint ITF Traces
 
-The `RingSPSCState` struct (defined in `crates/ringmpsc/tests/quint_mbt.rs`) mirrors the Quint state variables. It is both deserialized from ITF trace output **and** constructed from the driver's internal tracking:
+The `RingSPSCState` struct mirrors the Quint state variables and is both deserialized from ITF
+traces **and** constructed from the driver's internal tracking. After each step, `quint-connect`
+compares both automatically — no hand-written invariant check is needed.
 
-> **Simplified for clarity.** The code below shows the core protocol fields. Additional
-> allocator-tracking fields (`buffer_capacity`, `initialized`, `buffer_aligned`, `allocator_zst`)
-> were added to support INV-MEM-04, INV-ALLOC-01, INV-ALLOC-02, and INV-INIT-01. See
-> [quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) for the full implementation.
-
-```rust
-// crates/ringmpsc/tests/quint_mbt.rs
-
-#[derive(Eq, PartialEq, Deserialize, Debug)]
-struct RingSPSCState {
-    #[serde(rename = "hd")]
-    head: i64,                // Quint variable: hd
-    #[serde(rename = "tl")]
-    tail: i64,                // Quint variable: tl
-    cached_head: i64,
-    cached_tail: i64,
-    items_produced: i64,
-}
-
-impl State<RingSPSCDriver> for RingSPSCState {
-    fn from_driver(driver: &RingSPSCDriver) -> quint_connect::Result<Self> {
-        Ok(RingSPSCState {
-            head: driver.consumed as i64,
-            tail: driver.produced as i64,
-            cached_head: driver.cached_head as i64,
-            cached_tail: driver.cached_tail as i64,
-            items_produced: driver.items_produced as i64,
-        })
-    }
-}
-```
+> For the full `RingSPSCState` and `State::from_driver()` implementation, see
+> [FORMAL_VERIFICATION_WORKFLOW.md §3 — State Struct](FORMAL_VERIFICATION_WORKFLOW.md#state-struct-deserialized-from-itf-traces).
+> The actual struct includes additional allocator-tracking fields (`buffer_capacity`,
+> `initialized`, `buffer_aligned`, `allocator_zst`) for INV-MEM-04, INV-ALLOC-01/02, and
+> INV-INIT-01. See [quint_mbt.rs](../crates/ringmpsc/tests/quint_mbt.rs) for the full code.
 
 > **Note:** Quint v0.30.0 reserves `head` and `tail` as built-in list operations, so the spec uses `hd`/`tl`. The `#[serde(rename)]` attributes bridge this naming gap transparently.
 
-After each step, `quint-connect` compares the two **automatically**:
+Any state mismatch is immediately flagged:
 
 ```text
 Expected state from Quint spec:
@@ -177,100 +153,15 @@ Actual state from Ring<T> driver:
                   ^^^^^^ divergence detected
 ```
 
-No hand-written invariant check is needed — any state mismatch is immediately flagged.
-
 ### 3.2 The Driver: Connecting Ring\<T\> to Quint Actions
 
-The `RingSPSCDriver` (in `crates/ringmpsc/tests/quint_mbt.rs`) wraps the real `Ring<u64>` and maintains abstract state tracking that mirrors Quint's variables:
+The `RingSPSCDriver` wraps the real `Ring<u64>` and uses `quint-connect`'s `switch!` macro
+to dispatch each Quint action to the corresponding `Ring<T>` operation.
 
-> **Simplified.** The actual driver also tracks allocator state (`initialized_slots: BTreeSet<u64>`,
-> `buffer_capacity`, `buffer_aligned`, `allocator_zst`) alongside these core protocol fields.
-
-```rust
-// crates/ringmpsc/tests/quint_mbt.rs
-
-struct RingSPSCDriver {
-    ring: Ring<u64>,         // The REAL ring buffer
-    consumed: u64,           // mirrors Quint `hd`
-    produced: u64,           // mirrors Quint `tl`
-    cached_head: u64,        // mirrors Quint `cached_head`
-    cached_tail: u64,        // mirrors Quint `cached_tail`
-    items_produced: u64,     // mirrors Quint `items_produced`
-}
-
-impl Default for RingSPSCDriver {
-    fn default() -> Self {
-        // capacity = 2^2 = 4, matching CAPACITY = 4 in RingSPSC.qnt
-        let config = Config::new(2, 1, false);
-        Self {
-            ring: Ring::new(config),
-            consumed: 0,
-            produced: 0,
-            cached_head: 0,
-            cached_tail: 0,
-            items_produced: 0,
-        }
-    }
-}
-```
-
-The `Driver::step` implementation uses `quint-connect`'s `switch!` macro to dispatch each action from the trace to the corresponding `Ring<T>` operation:
-
-```rust
-// crates/ringmpsc/tests/quint_mbt.rs
-
-impl Driver for RingSPSCDriver {
-    type State = RingSPSCState;
-
-    fn step(&mut self, step: &Step) -> quint_connect::Result {
-        let verbose = is_verbose();
-        let action = &step.action_taken;
-
-        switch!(step {
-            init => {
-                *self = Self::default();
-            },
-
-            producerReserveFast => {
-                // Guard-only action — no state mutation in Quint.
-            },
-
-            producerRefreshCache => {
-                // Quint: cached_head' = head
-                self.cached_head = self.consumed;
-            },
-
-            producerWrite => {
-                // Quint: tail' = tail + 1, items_produced' = items_produced + 1
-                // Drive the real Ring to verify conformance:
-                let mut reserved = self.ring.reserve(1)
-                    .expect("reserve(1) should succeed: Quint guard ensures space");
-                reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
-                reserved.commit();
-                self.produced += 1;
-                self.items_produced += 1;
-            },
-
-            consumerReadFast => {
-                // Guard-only action — no state mutation.
-            },
-
-            consumerRefreshCache => {
-                // Quint: cached_tail' = tail
-                self.cached_tail = self.produced;
-            },
-
-            consumerAdvance => {
-                // Quint: head' = head + 1
-                let consumed = self.ring.consume_up_to(1, |_item| {});
-                assert_eq!(consumed, 1,
-                    "consume_up_to(1) should return 1: Quint guard ensures head < tail");
-                self.consumed += 1;
-            },
-        })
-    }
-}
-```
+> For the full `Driver::step` implementation with all six actions, see
+> [FORMAL_VERIFICATION_WORKFLOW.md §3 — Driver](FORMAL_VERIFICATION_WORKFLOW.md#driver-connects-ringt-to-quint-actions).
+> The actual driver also tracks allocator state (`initialized_slots: BTreeSet<u64>`,
+> `buffer_capacity`, etc.) alongside the core protocol fields.
 
 Key observations:
 
@@ -338,27 +229,12 @@ fn runtime_seed() -> String {
 
 #### Deep Exploration with Fixed Seeds
 
-Additional tests use fixed seeds and higher sample counts for broader, reproducible coverage:
-
-```rust
-// crates/ringmpsc/tests/quint_mbt.rs
-
-/// Broader state-space exploration via more samples (max_samples = 20).
-/// Each sample is one independent simulation trace — a random walk through
-/// the spec's state space. Fixed seed (1729) makes all 20 traces reproducible.
-#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "1729", max_samples = 20)]
-fn simulation_deep() -> impl Driver {
-    RingSPSCDriver::default()
-}
-
-/// Another seed for broader coverage across CI runs.
-#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "314159")]
-fn simulation_seed_variation() -> impl Driver {
-    RingSPSCDriver::default()
-}
-```
-
-Each `#[quint_run]` invocation is just **3 lines of Rust** — the framework handles trace generation, deserialization, action dispatch, and state comparison automatically.
+Additional tests use `#[quint_run]` with fixed seeds and higher sample counts for broader,
+reproducible coverage. Each invocation is just **3 lines of Rust** — the framework handles
+trace generation, deserialization, action dispatch, and state comparison automatically. See
+[FORMAL_VERIFICATION_WORKFLOW.md §3 — Automated Trace Generation](FORMAL_VERIFICATION_WORKFLOW.md#automated-trace-generation)
+for the canonical examples (`simulation_deep` with seed `1729`, `simulation_seed_variation`
+with seed `314159`).
 
 #### Verbose Tracing
 
@@ -393,32 +269,10 @@ When enabled, each step prints the action name and resulting state to stderr:
 
 ## 4. Running the Tests
 
-### Prerequisites
+For the full prerequisite setup and complete verification pipeline commands, see
+[FORMAL_VERIFICATION_WORKFLOW.md §5](FORMAL_VERIFICATION_WORKFLOW.md#5-complete-verification-pipeline).
 
-```bash
-# Install Quint CLI
-npm install -g @informalsystems/quint
-
-# Verify installation
-quint --version
-```
-
-### Spec-Level Verification (Quint)
-
-```bash
-cd crates/ringmpsc/tla
-
-# Typecheck the spec
-quint typecheck RingSPSC.qnt
-
-# Run the spec's own embedded tests
-quint test RingSPSC.qnt --main=RingSPSC
-
-# Exhaustive model checking via Apalache backend
-quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
-```
-
-### Implementation-Level MBT (Rust + `quint-connect`)
+The key MBT-specific commands and their nuances:
 
 ```bash
 # Run all quint-connected tests (simulation + fixed-seed variants)
@@ -438,11 +292,6 @@ QUINT_VERBOSE=1 cargo test -p ringmpsc-rs --test quint_mbt \
 # #[quint_run] attributes.
 QUINT_SEED=42 cargo test -p ringmpsc-rs --test quint_mbt \
     --features quint-mbt --release
-
-# Run alongside the full verification stack
-cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
-cargo test -p ringmpsc-rs --features loom --test loom_tests --release
-cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 ```
 
 ---

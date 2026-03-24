@@ -1,6 +1,6 @@
 # Invariant Validation Pipeline: From Spec to Verification
 
-> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
+> **Last updated**: 2026-03-24 | **Quint**: ≥ 0.31.0 | **quint-connect**: 0.1.1
 
 ## A Visual Journey of a Domain Invariant Through the Agentic Code Generation Pipeline
 
@@ -248,10 +248,8 @@ The LLM generates `debug_assert!` macros that embed the invariant directly into 
 │          │                          tail { ($head, $tail) =>    │
 │          └──────────────────►          debug_assert!(           │
 │                                        $head <= $tail,          │
-│                                       "INV-SEQ-01 violated"     │
+│                                       "INV-ORD-03 violated"     │
 │                                       )}                        │
-│  Note: The code uses INV-SEQ-01 for this macro because          │
-│  BoundedCount's definition includes the `tail >= head` clause.  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -283,7 +281,7 @@ macro_rules! debug_assert_head_not_past_tail {
     ($new_head:expr, $tail:expr) => {
         debug_assert!(
             $new_head <= $tail,
-            "INV-SEQ-01 violated: advancing head {} beyond tail {}",
+            "INV-ORD-03 violated: advancing head {} beyond tail {}",
             $new_head,
             $tail
         )
@@ -322,7 +320,7 @@ The macros are invoked at the **exact points** where the invariant could be viol
 │      let new_head = old_head + count as u64;                    │
 │                                                                 │
 │      // ┌────────────────────────────────────────────────────┐  │
-│      // │ INV-SEQ-01 CHECK POINT                             │  │
+│      // │ INV-ORD-03 CHECK POINT                             │  │
 │      // │ Head must never advance past tail                  │  │
 │      // └────────────────────────────────────────────────────┘  │
 │      debug_assert_head_not_past_tail!(                          │
@@ -484,134 +482,29 @@ each trace against the real `Ring<T>`, with **automatic state comparison** at ev
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### The State — Deserialized from Quint ITF Traces
+### How It Works
 
-The `RingSPSCState` struct is automatically deserialized from Quint's ITF trace output.
-After each step, `quint-connect` compares the driver's state (from `State::from_driver`)
-with the expected state from the trace:
+The MBT driver has three components — a **State** struct, a **Driver** impl, and **automated
+trace generation** via `#[quint_run]`. For the full code, see
+[FORMAL_VERIFICATION_WORKFLOW.md §3](FORMAL_VERIFICATION_WORKFLOW.md#3-model-based-testing-mbt).
+Here we summarize the key ideas:
 
-```
-┌──────────────────────────────┬──────────────────────────────────┐
-│  Quint State (ITF trace)     │  RingSPSCState (Rust)            │
-├──────────────────────────────┼──────────────────────────────────┤
-│  hd: 2                       │  head: 2  (#[serde(rename="hd")])│
-│  tl: 4                       │  tail: 4  (#[serde(rename="tl")])│
-│  cached_head: 0              │  cached_head: 0                  │
-│  cached_tail: 2              │  cached_tail: 2                  │
-│  items_produced: 4           │  items_produced: 4               │
-└──────────────────────────────┴──────────────────────────────────┘
-```
+1. **State** (`RingSPSCState`): Mirrors Quint's state variables (`hd`, `tl`, `cached_head`, etc.)
+   with `#[serde(rename)]` attributes bridging the naming gap. Deserialized from ITF traces
+   **and** constructed from the driver — `quint-connect` compares both automatically at every step.
 
-```rust
-// filepath: crates/ringmpsc/tests/quint_mbt.rs
-// NOTE: Simplified — the actual struct includes additional allocator-tracking fields
-// (buffer_capacity, initialized, buffer_aligned, allocator_zst).
-// See quint_mbt.rs for the full implementation.
+2. **Driver** (`RingSPSCDriver`): Wraps the real `Ring<u64>` and uses `quint-connect`'s `switch!`
+   macro to dispatch each Quint action (`producerWrite`, `consumerAdvance`, etc.) to the
+   corresponding `Ring<T>` operation. No invariant re-implementation needed — state comparison
+   is the oracle.
 
-/// State deserialized from Quint ITF traces AND constructed from driver state.
-/// quint-connect compares these automatically at each step.
-#[derive(Eq, PartialEq, Deserialize, Debug)]
-struct RingSPSCState {
-    #[serde(rename = "hd")]
-    head: i64,                // Quint variable: hd
-    #[serde(rename = "tl")]
-    tail: i64,                // Quint variable: tl
-    cached_head: i64,
-    cached_tail: i64,
-    items_produced: i64,
-}
-
-impl State<RingSPSCDriver> for RingSPSCState {
-    fn from_driver(driver: &RingSPSCDriver) -> Result<Self> {
-        Ok(RingSPSCState {
-            head: driver.consumed as i64,
-            tail: driver.produced as i64,
-            cached_head: driver.cached_head as i64,
-            cached_tail: driver.cached_tail as i64,
-            items_produced: driver.items_produced as i64,
-        })
-    }
-}
-```
-
-### The Driver — Connects Ring<T> to Quint Spec Actions
-
-The `RingSPSCDriver` wraps the real `Ring<T>` and uses `quint-connect`'s `switch!` macro
-to dispatch Quint actions from automatically generated traces:
-
-```rust
-// filepath: crates/ringmpsc/tests/quint_mbt.rs
-// NOTE: Simplified — the actual driver also tracks allocator state (initialized_slots,
-// buffer_capacity, buffer_aligned, allocator_zst) alongside these core protocol fields.
-
-struct RingSPSCDriver {
-    ring: Ring<u64>,         // ◄── The REAL ring buffer
-    consumed: u64,           // mirrors Quint `hd`
-    produced: u64,           // mirrors Quint `tl`
-    cached_head: u64,        // mirrors Quint `cached_head`
-    cached_tail: u64,        // mirrors Quint `cached_tail`
-    items_produced: u64,     // mirrors Quint `items_produced`
-}
-
-impl Driver for RingSPSCDriver {
-    type State = RingSPSCState;
-
-    fn step(&mut self, step: &Step) -> Result {
-        switch!(step {
-            init => { *self = Self::default(); },
-
-            producerWrite => {
-                // Quint: tl' = tl + 1, items_produced' = items_produced + 1
-                // Drive the REAL Ring<T>:
-                let mut reserved = self.ring.reserve(1)
-                    .expect("Quint guard ensures capacity available");
-                reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
-                reserved.commit();
-                self.produced += 1;
-                self.items_produced += 1;
-            },
-
-            consumerAdvance => {
-                // Quint: hd' = hd + 1
-                let consumed = self.ring.consume_up_to(1, |_| {});
-                assert_eq!(consumed, 1, "Quint guard ensures items exist");
-                self.consumed += 1;
-            },
-
-            // ... producer/consumer cache refresh actions ...
-        })
-    }
-}
-```
-
-### Automated Trace Generation: `#[quint_run]`
-
-Unlike the previous hand-crafted approach, traces are now **automatically generated** by
-the Quint simulator. The `#[quint_run]` macro:
-
-1. Invokes `quint run --mbt` to simulate the spec and produce ITF traces
-2. Each ITF trace contains state snapshots + `mbt::actionTaken` metadata
-3. Deserializes each step and calls `Driver::step()` with the action name
-4. After each step, compares `State::from_driver()` with the expected ITF state
-
-```rust
-// Automatically generates and replays simulation traces from the Quint spec.
-// Multiple tests with different seeds give diverse coverage.
-
-// The primary `simulation` test uses a manual `quint_connect::runner::run_test()`
-// call (rather than the `#[quint_run]` macro) to support runtime seed control
-// via the QUINT_SEED environment variable. See quint_mbt.rs for details.
-
-#[quint_run(spec = "tla/RingSPSC.qnt", main = "RingSPSC", seed = "1729", max_samples = 20)]
-fn simulation_deep() -> impl Driver {
-    RingSPSCDriver::default()
-}
-```
+3. **Trace generation** (`#[quint_run]`): The macro invokes `quint run --mbt` to simulate the
+   spec, produce ITF traces with `mbt::actionTaken` metadata, and replay them against the driver.
+   Multiple seeds (`1729`, `314159`, random via `QUINT_SEED`) give diverse coverage.
 
 > **Note:** We use `#[quint_run]` exclusively (not `#[quint_test]`) because only
 > `quint run` supports the `--mbt` flag that embeds `mbt::actionTaken` metadata in
-> ITF traces. The Quint spec's `run` declarations remain useful for standalone
-> `quint test` verification of the spec itself.
+> ITF traces.
 
 ### Key Advantage: Self-Verifying State Comparison
 

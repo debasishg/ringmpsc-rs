@@ -1,6 +1,6 @@
 # Documentation Index
 
-> **Last updated**: 2026-03-01
+> **Last updated**: 2026-03-24
 
 This folder contains design documents, guides, and technical references for the `ringmpsc-rs` workspace.
 
@@ -39,6 +39,38 @@ This folder contains design documents, guides, and technical references for the 
 - AI agent setup: `PERSISTENT_CONTEXT_GUIDE.md`
 - Async scheduling: `tokio-fairness.md`
 - UB postmortem: `UB_FIX_MAKE_RESERVATION.md`
+
+## Crate-Level Documentation
+
+Several crates maintain their own docs alongside their source. These are **not** duplicated here — see the crate directories directly.
+
+### ringwal
+
+| Document | Purpose |
+|----------|---------|
+| [architecture.md](../crates/ringwal/docs/architecture.md) | WAL architecture: ring decomposition, group commit, segment rotation |
+| [benchmarks.md](../crates/ringwal/docs/benchmarks.md) | Criterion benchmark results (durable, pipelined, scaling) |
+| [PIPELINED_FSYNC.md](../crates/ringwal/docs/PIPELINED_FSYNC.md) | Pipelined fsync design and implementation |
+| [PIPELINED_IMPROVEMENTS.md](../crates/ringwal/docs/PIPELINED_IMPROVEMENTS.md) | Pipelined mode performance improvements |
+| [DIRECT_IO.md](../crates/ringwal/docs/DIRECT_IO.md) | Direct I/O support for WAL writes |
+| [dst.md](../crates/ringwal/docs/dst.md) | Deterministic simulation testing overview |
+| [dst_arch.md](../crates/ringwal/docs/dst_arch.md) | DST architecture and ringwal-sim design |
+
+### span_collector
+
+| Document | Purpose |
+|----------|---------|
+| [backpressure-notify-pattern.md](../crates/span_collector/docs/backpressure-notify-pattern.md) | Backpressure and notify pattern for async batching |
+
+### ringmpsc
+
+| Document | Purpose |
+|----------|---------|
+| [spec.md](../crates/ringmpsc/spec.md) | Ring buffer invariant specifications (INV-*) |
+| [PERFORMANCE.md](../crates/ringmpsc/PERFORMANCE.md) | Performance characteristics and tuning |
+| [STACK_RING_IMPL.md](../crates/ringmpsc/STACK_RING_IMPL.md) | StackRing\<T, N\> implementation notes |
+| [FAQ.md](../crates/ringmpsc/FAQ.md) | Frequently asked questions |
+| [tla/README.md](../crates/ringmpsc/tla/README.md) | TLA+ / Quint specification guide |
 
 ## Naming Note
 

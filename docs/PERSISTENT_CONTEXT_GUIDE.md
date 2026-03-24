@@ -214,6 +214,12 @@ Link back to parent specs:
 
 When a project uses `unsafe` for performance (as ringmpsc-rs does for lock-free ring buffers), the persistent context **must** explicitly list safety invariants that agents must never violate—even when "optimizing."
 
+> **Naming convention**: `SAFETY-*` invariants are a separate namespace from `INV-*` invariants.
+> `INV-*` prefixes (e.g., `INV-SEQ-01`, `INV-MEM-04`) describe *logical/protocol* properties that
+> are formally verified in Quint and checked via `debug_assert!` macros. `SAFETY-*` prefixes
+> describe *memory safety* properties that justify `unsafe` blocks — these are documented in
+> `// SAFETY:` comments in the code. See §12 for the complete prefix table.
+
 ### Safety Invariants Template
 
 Add a dedicated section to your specs:

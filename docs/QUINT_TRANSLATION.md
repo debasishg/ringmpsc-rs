@@ -1,6 +1,6 @@
 # TLA+ → Quint Translation Guide
 
-> **Last updated**: 2026-03-01 | **Quint**: ≥ 0.31.0
+> **Last updated**: 2026-03-24 | **Quint**: ≥ 0.31.0
 
 This document explains how to manually translate TLA+ specifications to Quint. There's **no automated translator** - it's a manual process, but the mapping is straightforward since both languages express the same TLA+ logic.
 
@@ -206,6 +206,81 @@ S.filter(x => P(x))                       // Filter
 S.map(x => f(x))                          // Map
 S.powerset()                              // Power set
 S.size()                                  // Size
+```
+
+## Common Pitfalls
+
+Mistakes encountered during the RingSPSC translation that apply broadly:
+
+### 1. Reserved Names (`head`, `tail`)
+
+Quint ≥ 0.30.0 reserves `head` and `tail` as built-in list operations. Using them as
+state variable names produces confusing type errors, not a clear "reserved" message.
+
+**Fix**: Rename to `hd`/`tl` (or any non-reserved name) and use `#[serde(rename)]`
+in the Rust MBT state struct to bridge the gap.
+
+### 2. `int` Includes Negatives
+
+TLA+'s `Nat` is non-negative; Quint's `int` includes negatives. If your invariant relies
+on non-negativity (e.g., `0 ≤ (tail - head)`), you must add an explicit guard:
+
+```quint
+// Wrong — silently allows negative values
+val bounded: bool = (tl - hd) <= CAPACITY
+
+// Correct — explicit non-negativity guard
+val bounded: bool = tl >= hd and (tl - hd) <= CAPACITY
+```
+
+### 3. `val` vs `const` for Module-Level Constants
+
+Quint uses `val` (not `const`) for module-level constants. `const` exists in Quint but
+has different semantics (it declares a parameter that model-checking tools can instantiate).
+
+```quint
+// Wrong — declares a model-checking parameter, not a fixed value
+const CAPACITY = 4
+
+// Correct — defines a fixed value
+val CAPACITY = 4
+```
+
+### 4. `UNCHANGED` Requires Explicit Assignments
+
+TLA+'s `UNCHANGED <<x, y>>` has no Quint equivalent. Every unchanged variable must be
+explicitly assigned. Forgetting one causes a "variable not assigned" error.
+
+```quint
+// Every variable must appear on the left-hand side of an assignment in every action
+action producerWrite = all {
+    tl' = tl + 1,
+    items_produced' = items_produced + 1,
+    hd' = hd,               // ← easy to forget
+    cached_head' = cached_head,
+    cached_tail' = cached_tail,
+}
+```
+
+### 5. `\in` Maps to Two Different Constructs
+
+TLA+'s `\in` serves double duty — membership test and existential binding. In Quint these
+are separate:
+
+```tla
+\* TLA+ membership test
+x \in S
+
+\* TLA+ existential
+\E x \in S : P(x)
+```
+
+```quint
+// Quint membership test — method call
+S.contains(x)
+
+// Quint existential — lambda
+S.exists(x => P(x))
 ```
 
 **Example from `RingSPSC.qnt`** — the `initialized` set uses set comprehension to compute expected slot indices:
