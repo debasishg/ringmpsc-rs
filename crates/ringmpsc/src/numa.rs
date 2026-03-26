@@ -400,7 +400,9 @@ mod platform {
                      Falling back to heap allocation."
                 );
             });
-            HeapAllocator.allocate(capacity)
+            let buffer = HeapAllocator.allocate(capacity);
+            crate::invariants::debug_assert_numa_fallback!(buffer, capacity);
+            buffer
         }
     }
 }

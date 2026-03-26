@@ -554,10 +554,12 @@ impl<T, const N: usize> Drop for StackRing<T, N> {
         let head = *self.head.get_mut();
         let tail = *self.tail.get_mut();
 
+        let count = tail.wrapping_sub(head) as usize;
         let mut pos = head;
         while pos != tail {
             let idx = (pos as usize) & Self::MASK;
-            // SAFETY: Items in [head, tail) are initialized and owned by us
+            // Safety: idx bounded by MASK; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01)
+            crate::invariants::debug_assert_drop_bounds!(count, N, idx);
             unsafe {
                 let slot = self.buffer[idx].get_mut();
                 slot.assume_init_drop();

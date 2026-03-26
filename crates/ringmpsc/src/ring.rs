@@ -745,11 +745,14 @@ impl<T, A: BufferAllocator> Drop for Ring<T, A> {
         let count = tail.wrapping_sub(head) as usize;
 
         if count > 0 {
+            let capacity = self.capacity();
             let mask = self.mask();
             let buffer = self.buffer.get_mut();
 
             for i in 0..count {
                 let idx = ((head as usize).wrapping_add(i)) & mask;
+                // Safety: idx bounded by mask; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01)
+                crate::invariants::debug_assert_drop_bounds!(count, capacity, idx);
                 unsafe {
                     ptr::drop_in_place(buffer[idx].as_mut_ptr());
                 }

@@ -265,3 +265,55 @@ macro_rules! debug_assert_numa_placement {
 
 #[allow(unused_imports)]
 pub(crate) use debug_assert_numa_placement;
+
+// =============================================================================
+// INV-DROP-01: Ring Cleanup
+// =============================================================================
+
+/// Assert that the drop loop stays within `[head, tail)` and capacity.
+///
+/// **Invariant**: `Ring::drop()` and `StackRing::drop()` iterate exactly
+/// `count = tail - head` slots, each index bounded by the capacity mask.
+///
+/// Used in: `ring.rs` and `stack_ring.rs` `Drop` impls
+macro_rules! debug_assert_drop_bounds {
+    ($count:expr, $capacity:expr, $idx:expr) => {
+        debug_assert!(
+            $count <= $capacity,
+            "INV-DROP-01 violated: drop count {} exceeds capacity {}",
+            $count,
+            $capacity
+        );
+        debug_assert!(
+            $idx < $capacity,
+            "INV-DROP-01 violated: drop index {} out of bounds (capacity {})",
+            $idx,
+            $capacity
+        );
+    };
+}
+pub(crate) use debug_assert_drop_bounds;
+
+// =============================================================================
+// INV-NUMA-02: Fallback Safety
+// =============================================================================
+
+/// Assert that the non-Linux `NumaAllocator` fallback returns a valid buffer.
+///
+/// **Invariant**: On non-NUMA platforms, `NumaAllocator::allocate()` delegates
+/// to `HeapAllocator` and must return a buffer of exactly `capacity` slots.
+///
+/// Used in: `numa.rs` non-Linux `allocate()` path
+#[allow(unused_macros)]
+macro_rules! debug_assert_numa_fallback {
+    ($buf:expr, $capacity:expr) => {
+        debug_assert!(
+            $buf.len() == $capacity,
+            "INV-NUMA-02 violated: fallback buffer length {} != capacity {}",
+            $buf.len(),
+            $capacity
+        );
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use debug_assert_numa_fallback;
