@@ -359,6 +359,8 @@ let consumer_task = tokio::spawn(async move {
 - Only notifies when `consumed > 0` (optimization — no spurious wake-ups)
 - Uses `notify_waiters()` to wake **all** waiting producers simultaneously
 
+> **Tokio fairness note**: The `interval.tick()` arm uses the default `MissedTickBehavior::Burst`. For a consumer task that must remain responsive, consider `MissedTickBehavior::Skip` to avoid a burst of ticks after a slow export. If the consumer loop ever becomes CPU-bound (e.g., in a tight batch-drain path), avoid wrapping it in `tokio::task::unconstrained()` on a single-threaded runtime — this would starve other tasks. See [tokio-fairness.md](../../../../docs/tokio-fairness.md) for the full trade-off analysis.
+
 #### Producer Structure
 
 Each producer receives its own handle with a reference to the shared `Notify`:

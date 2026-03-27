@@ -7,8 +7,8 @@ A general-purpose guide to structuring project knowledge so AI coding agents can
 ## File Hierarchy
 
 > **Note**: The structure below is a recommended template. The actual `ringmpsc-rs` project
-> uses `.github/copilot-instructions.md` as its agent entry point, `crates/*/spec.md` for
-> per-crate invariants, and `docs/` for design documents. Adapt the template to your project.
+> uses `.claude/CLAUDE.md` as its agent entry point, `crates/*/spec.md` for per-crate
+> invariants, and `docs/` for design documents. Adapt the template to your project.
 
 ```
 project-root/

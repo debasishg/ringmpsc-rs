@@ -249,6 +249,9 @@ Offset  Size  Field
 
 ### Not Yet Implemented — Ownership & Dependencies
 
+> **As of 2026-03-27**: All WAL-internal items below are complete. The only remaining open
+> work is the LMDB storage backend, which lives outside `ringwal` proper.
+
 The remaining TODO items split into two categories: **WAL-internal** (belongs in ringwal)
 and **client-side** (belongs in consumer crates or user code).
 

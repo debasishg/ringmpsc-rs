@@ -1,5 +1,7 @@
 # ringwal Benchmark Results
 
+> **Measured**: 2026-03-01 | **Platform**: macOS (Apple Silicon) | **ringwal**: workspace HEAD
+
 Benchmarks run on macOS (Apple Silicon), criterion 0.5 with 20 samples
 and 10 s measurement time per benchmark.
 

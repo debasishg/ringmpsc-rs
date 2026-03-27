@@ -136,12 +136,9 @@ ExportMetrics { spans_exported: AtomicU64, ... }  // Atomics for concurrent task
 `BatchProcessor` is a pure batching abstraction with no concurrency overhead.
 `ExportMetrics` in async_bridge handles concurrent export tracking with atomics.
 
-**Implementation**: 
+**Implementation**:
 - [src/batch_processor.rs](src/batch_processor.rs) - `BatchMetrics` (plain u64)
 - [src/async_bridge.rs](src/async_bridge.rs) - `ExportMetrics` (AtomicU64)
-`BatchMetrics` uses `AtomicU64` for all counters because concurrent export tasks update metrics simultaneously.
-
-**Implementation**: [src/batch_processor.rs](src/batch_processor.rs) - `BatchMetrics`
 
 ## 5. Backpressure Invariants
 

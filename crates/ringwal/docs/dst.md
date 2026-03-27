@@ -1,6 +1,8 @@
 # Deterministic Simulation Testing (DST) for ringwal
 
-**Now that `ringwal` is stable, adding Deterministic Simulation Testing (DST) is the next step.** It will give *reproducible* confidence in the hardest parts: concurrent writers + background flusher + fsync ordering + recovery after crashes / partial writes / timing races.
+> **Overview document**: This file provides a high-level introduction to the DST approach and implementation status. For the full architecture rationale, `IoEngine` trait design, `FaultConfig` parameters, `CommitOracle`, and the INV-WAL-05 bug discovery narrative, see [dst_arch.md](dst_arch.md).
+
+**DST is now implemented in the `ringwal-sim` crate.** It gives *reproducible* confidence in the hardest parts: concurrent writers + background flusher + fsync ordering + recovery after crashes / partial writes / timing races.
 
 The core idea: **run the entire system on a single thread, replace real I/O / time with controllable simulators, inject faults, and replay any failure with the exact same seed**. This turns flaky integration tests into deterministic property tests that can explore thousands of edge cases in seconds.
 

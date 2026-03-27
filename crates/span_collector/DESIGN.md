@@ -331,64 +331,58 @@ pub struct ResilientExporterBuilder<E> { ... }
 ### 7. Rate Limiter (`rate_limiter.rs`)
 
 ```rust
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create collector with stdout exporter
-    let exporter = Arc::new(StdoutExporter::new());
-    let config = CollectorConfig::default();
-    let collector = AsyncSpanCollector::new(config, exporter).await;
-
-    // Spawn 8 producer tasks (simulating microservice threads)
-    let mut producers = vec![];
-    for i in 0..8 {
-        let producer = collector.register_producer().await?;
-        let task = tokio::spawn(async move {
-            generate_spans(i, producer).await;
-        });
-        producers.push(task);
-    }
-
-    // Wait for producers to finish
-    for task in producers {
-        task.await?;
-    }
-
-    // Graceful shutdown
-    collector.shutdown().await?;
-
-    // Print metrics
-    println!("Spans submitted: {}", collector.metrics().spans_submitted);
-    println!("Spans exported: {}", collector.metrics().spans_exported);
-    Ok(())
+// Native async trait (Rust 2024 edition - no #[async_trait] macro)
+pub trait RateLimiter: Send {
+    fn wait(&mut self) -> impl Future<Output = ()> + Send;
 }
 
-async fn generate_spans(producer_id: usize, producer: AsyncSpanProducer) {
-    let mut rng = rand::thread_rng();
-    for i in 0..50_000 {
-        let span = Span {
-            trace_id: rng.gen(),
-            span_id: (producer_id as u64) << 48 | i,
-            name: format!("operation-{}", i % 10),
-            start_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
-            // ... fill other fields ...
-        };
+// Object-safe wrapper for dynamic dispatch (mirrors SpanExporterBoxed pattern)
+pub trait RateLimiterBoxed: Send {
+    fn wait_boxed(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
 
-        producer.submit_span(span).await.unwrap();
+// Blanket impl: any RateLimiter can be used as RateLimiterBoxed
+impl<T: RateLimiter> RateLimiterBoxed for T { ... }
 
-        // Simulate varying rates
-        if i % 100 == 0 {
-            tokio::time::sleep(Duration::from_micros(100)).await;
+// Interval-based rate limiter: paces calls to at most 1 per interval
+pub struct IntervalRateLimiter {
+    interval: Duration,
+    last_call: Option<Instant>,
+}
+
+impl RateLimiter for IntervalRateLimiter {
+    async fn wait(&mut self) {
+        if let Some(last) = self.last_call {
+            let elapsed = last.elapsed();
+            if elapsed < self.interval {
+                tokio::time::sleep(self.interval - elapsed).await;
+            }
         }
+        self.last_call = Some(Instant::now());
     }
 }
 ```
 
-**Workload simulation**:
-- 8 async tasks (producers) × 50K spans = 400K total
-- Varying submission rates (burst + steady)
-- Demonstrates backpressure handling under load
+**Key design decisions**:
 
-### 7. Integration Tests (`tests.rs`)
+- **`tokio::sync::Mutex` (not `std::sync::Mutex`)**: The rate limiter must be held across the async `wait()` call inside `RateLimitedExporter`. `std::sync::Mutex` cannot be held across an `await` point — see INV-RES-06.
+- **`RateLimiterBoxed` pattern**: Mirrors `SpanExporterBoxed` for consistency. Native `impl Future` traits are not object-safe; `RateLimiterBoxed` provides `Pin<Box<dyn Future>>` for dynamic dispatch.
+- **Interval-based pacing**: `IntervalRateLimiter` enforces `time(call_n+1) - time(call_n) ≥ interval` (INV-RES-05). The interval is measured between the *end* of `wait()` calls to avoid drift.
+
+**Usage with `RateLimitedExporter`**:
+
+```rust
+use span_collector::{IntervalRateLimiter, RateLimitedExporter, StdoutExporter};
+
+// Limit exports to at most 10 per second
+let limiter = IntervalRateLimiter::new(Duration::from_millis(100));
+let rate_limited = RateLimitedExporter::new(
+    StdoutExporter::new(true),
+    limiter,
+);
+```
+
+### 8. Integration Tests (`tests.rs`)
 
 ```rust
 #[tokio::test]

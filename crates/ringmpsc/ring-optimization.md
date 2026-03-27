@@ -1,5 +1,7 @@
 # Ring Buffer Optimization Analysis
 
+> **Last updated**: 2026-03-27
+
 This document provides a detailed analysis of how `ringmpsc` is optimized for CPU cache friendliness, zero-copy data structures, and low-level performance. It covers every optimization technique used in the implementation and identifies areas for further improvement.
 
 **Scope:** `Ring<T, A>`, `StackRing<T, N>`, `Channel<T, A>`, `StackChannel<T, N, P>`, and supporting infrastructure (`Reservation`, `Backoff`, `Metrics`, allocators).

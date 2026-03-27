@@ -50,3 +50,5 @@ Run all three at once with `/verify`.
 | `tla/RingSPSC.qnt` | Quint model (ITF trace source) |
 | `FAQ.md` | Design rationale |
 | `PERFORMANCE.md` | Benchmark analysis |
+| `ring-optimization.md` | Low-level optimization analysis (cache, NUMA, atomics, allocator) |
+| `numa-aware-allocation.md` | NUMA allocator design and caveats |

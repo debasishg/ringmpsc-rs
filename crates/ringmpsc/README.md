@@ -6,9 +6,6 @@ This is a Rust port of the [RingMPSC](https://github.com/boonzy00/ringmpsc) Zig 
 
 > **Part of the [ringmpsc-rs](../../README.md) workspace.** This is the foundational crate — all other crates in the workspace depend on it.
 
-This is a work in progress (not safe at all to use for any serious application).
-
-
 ## Usage
 
 Add this to your `Cargo.toml`:
@@ -152,7 +149,7 @@ While maintaining the same algorithm and design principles, this Rust implementa
 3. **Lifetime Management**: Explicit lifetime annotations for `Reservation` references
 4. **Trait System**: Implements `Send + Sync` traits with proper safety bounds
 5. **Arc-based Sharing**: Uses `Arc` for cloning channels and producers instead of raw pointers
-6. **No Comptime**: Runtime-based configuration instead of Zig's comptime generics
+6. **Compile-Time Capacity**: `StackRing<T, N>` provides compile-time capacity (analogous to Zig's comptime generics); heap `Ring<T>` uses runtime configuration
 
 ## Building
 

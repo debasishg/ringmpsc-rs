@@ -44,6 +44,15 @@ This folder contains design documents, guides, and technical references for the 
 
 Several crates maintain their own docs alongside their source. These are **not** duplicated here — see the crate directories directly.
 
+### ringmpsc-stream
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](../crates/ringmpsc-stream/README.md) | Quick start, configuration, multi-producer patterns |
+| [DESIGN.md](../crates/ringmpsc-stream/DESIGN.md) | Architecture and key design decisions |
+| [spec.md](../crates/ringmpsc-stream/spec.md) | Stream/Sink invariants (INV-STREAM-*, INV-SINK-*, etc.) |
+| [SKILLS.md](../crates/ringmpsc-stream/SKILLS.md) | Slash commands for testing and verification |
+
 ### ringwal
 
 | Document | Purpose |

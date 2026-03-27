@@ -132,6 +132,8 @@ pub const fn new(ring_bits: u8, max_producers: usize, enable_metrics: bool) -> S
 
 **Peak Performance:** 9.21 billion messages per second (6P6C configuration)
 
+> **On advertised throughput**: The README and workspace documentation advertise "6+ billion messages/second." This is a conservative figure based on typical production configurations (4P4C = 8.44 B/s) and is intended as a lower bound that holds across common hardware. The absolute peak (9.21 B/s) is achieved at exactly 6P6C on Apple Silicon; other configurations and platforms will vary.
+
 ## Performance Analysis
 
 ### Key Findings
@@ -268,11 +270,11 @@ Config::default(): {
 
 ## Future Optimization Opportunities
 
-1. **Optional StackRing variant** (behind feature flag for experts)
+1. ~~**Optional StackRing variant** (behind feature flag for experts)~~ — ✅ Implemented (feature `stack-ring`). See [STACK_RING_IMPL.md](STACK_RING_IMPL.md)
 2. **SIMD batch operations** for bulk data transfer
 3. **Adaptive batch sizing** based on load patterns
 4. ~~**NUMA-aware ring allocation** for multi-socket systems~~ — ✅ Implemented (feature `numa`). See [numa-aware-allocation.md](numa-aware-allocation.md)
-5. **Custom allocator integration** for specialized use cases
+5. ~~**Custom allocator integration** for specialized use cases~~ — ✅ Implemented (`BufferAllocator` trait). See [CUSTOM_ALLOCATORS.md](../../docs/CUSTOM_ALLOCATORS.md)
 
 ## Benchmark Methodology
 

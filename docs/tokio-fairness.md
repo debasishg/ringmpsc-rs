@@ -91,6 +91,8 @@ The `max_consume_per_poll` config (set to 1000 in the [`span_collector` demo](..
 
 5. **Escape hatch for budget-sensitive paths**: If Tokio's cooperative budget interferes with batch draining performance (e.g., `poll_next` returning `Pending` mid-batch because the budget is exhausted), `tokio::task::unconstrained()` can wrap the critical section to opt out of budget tracking. Use sparingly — it trades fairness for throughput and should be documented when applied.
 
+   > **Warning**: On a `current_thread` (single-threaded) runtime, an unconstrained task can starve all other tasks indefinitely since there is no work-stealing to run them on a different thread. Only use `unconstrained()` on `multi_thread` runtimes, where work-stealing ensures other tasks continue to make progress.
+
 > **Tokio version note**: The cooperative budget behavior described above applies to Tokio 1.x. The budget threshold (currently ~128 ops) is an internal implementation detail and may change in future Tokio versions.
 
 ## Summary

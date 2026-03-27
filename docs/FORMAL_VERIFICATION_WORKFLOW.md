@@ -87,6 +87,8 @@ tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 
 Quint is a modern specification language with TLA+ semantics but TypeScript-like syntax. It provides better tooling and IDE support.
 
+> **Quint 0.31.0 changes**: The Rust evaluator is now the default backend for `quint run` and `quint test`. `quint verify` continues to use TLC (or optionally Apalache via `--backend=apalache`). See [QUINT_0_31_UPGRADE.md](QUINT_0_31_UPGRADE.md) for the full impact on the two-backend verification strategy and any migration steps.
+
 ### Translation Mapping
 
 | TLA+ | Quint | Notes |

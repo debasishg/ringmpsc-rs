@@ -1,4 +1,4 @@
-# StackRing Implementation Plan
+# StackRing Design and Architecture
 
 This document describes the design and implementation of the optional stack-allocated ring buffer variants for RingMPSC-RS, enabled via the `stack-ring` feature flag.
 

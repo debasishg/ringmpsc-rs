@@ -214,6 +214,8 @@ The driver:
 
 ### Quint ↔ TLA+ Mapping
 
+> For a comprehensive translation reference including common pitfalls (reserved names, `int` semantics, `UNCHANGED` handling), see [docs/QUINT_TRANSLATION.md](../../../../docs/QUINT_TRANSLATION.md). The table below is a summary of the most common constructs.
+
 | TLA+ | Quint | Notes |
 |------|-------|-------|
 | `VARIABLE x` | `var x: int` | Quint requires types |

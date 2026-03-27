@@ -181,7 +181,7 @@ The `quint-connect` integration (`quint_mbt.rs`) benefits directly:
 
 ## Remaining Work
 
-> **Last reviewed**: 2026-03-06
+> **Last reviewed**: 2026-03-06 — For the full and authoritative future-work checklist (including liveness, MBT driver integration, and MPSC spec), see [crates/ringmpsc/tla/README.md](../crates/ringmpsc/tla/README.md#future-work). The table below is a snapshot of upgrade-specific items.
 
 | Item | Status | Notes |
 |------|--------|-------|

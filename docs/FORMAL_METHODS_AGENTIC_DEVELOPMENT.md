@@ -12,7 +12,7 @@ Modern agentic development operates within a layered context hierarchy:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              RULES LAYER                                    │
 │                                                                             │
-│  copilot-instructions.md, AGENTS.md, workspace conventions                  │
+│  .claude/CLAUDE.md, AGENTS.md, workspace conventions                        │
 │                                                                             │
 │  "How to write code in this project"                                        │
 │  - Memory ordering patterns                                                 │
@@ -450,6 +450,8 @@ Agent: "Running quint verify on amended spec..."
 ```
 
 ### Quint Ecosystem Roadmap
+
+> **As of Quint 0.31.0 (2026-02-27)**. See [QUINT_0_31_UPGRADE.md](QUINT_0_31_UPGRADE.md) for upgrade notes. Items marked "Planned" may have shipped in later Quint releases.
 
 | Feature | Status | Impact on Agentic Dev |
 |---------|--------|----------------------|

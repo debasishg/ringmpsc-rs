@@ -6,6 +6,8 @@ This document defines the invariants for the `ringmpsc-stream` crate, which prov
 
 ## 1. Stream Invariants
 
+> **Note on numbering**: Invariants within each section are grouped by logical relationship, not strictly by number. For example, INV-STREAM-02 (Hybrid Polling) and INV-STREAM-05 (Register-Then-Recheck) are presented together because they describe the two complementary halves of the wakeup mechanism. INV-STREAM-03 and INV-STREAM-04 cover backpressure and shutdown and appear later.
+
 ### INV-STREAM-01: Per-Producer FIFO Ordering
 ```
 ∀ producer P: items from P are yielded in send order

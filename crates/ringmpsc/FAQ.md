@@ -91,6 +91,8 @@ while remaining > 0 {
 
 This keeps the API simple and zero-copy — no internal buffering, no double writes, no scatter-gather complexity.
 
+If you need all-or-nothing semantics, `available_count()` provides a hint. However, in a concurrent (SPSC) setting, `available_count()` is **advisory**: the consumer may advance `head` between the call to `available_count()` and the call to `reserve()`, meaning the count can only grow, never shrink, from the producer's perspective. Conversely, no other producer can steal slots (there is only one producer per ring), so an available-count check is safe as a lower bound. A check guarantees "at least this many slots are free right now" but not "exactly this many remain free by the time `reserve()` runs" in general multi-producer contexts.
+
 > **Spec reference:** INV-RES-01 in [spec.md](spec.md)
 
 ---
@@ -151,6 +153,8 @@ Three policies are available:
 | `Fixed(node)` | All rings on one specified node | Consumer-local placement |
 | `RoundRobin` | Cycle across all detected nodes | Spreading memory pressure evenly |
 | `ProducerLocal` | Allocate on the calling thread's node | Per-producer placement when constructing rings from producer threads |
+
+> **Platform note**: NUMA binding via `libc::mbind` is Linux-only. On macOS and Windows, `NumaAllocator` transparently falls back to heap allocation. See FAQ #10 and CUSTOM_ALLOCATORS.md for details.
 
 > **Spec reference:** INV-NUMA-01, INV-NUMA-02, INV-NUMA-03 in [spec.md](spec.md)
 

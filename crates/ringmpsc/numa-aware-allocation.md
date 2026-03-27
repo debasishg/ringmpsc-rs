@@ -1,7 +1,7 @@
 # NUMA-Aware Ring Allocation
 
-> **Status**: Implementation in progress  
-> **Last updated**: 2026-03-23
+> **Status**: Complete
+> **Last updated**: 2026-03-27
 
 ## Summary
 
@@ -27,7 +27,7 @@ In ringmpsc's architecture, each producer owns a dedicated SPSC ring. On a 2-soc
 
 The existing `BufferAllocator` trait (`Ring<T, A>`, `Channel<T, A>`) is the perfect extension point — `NumaAllocator` implements `BufferAllocator`, and the core ring code is unchanged.
 
-## Implementation Plan
+## Implementation Notes
 
 ### Phase 1: Core NumaAllocator (Linux FFI + fallback)
 
@@ -253,7 +253,7 @@ On a Linux NUMA machine: verify `/proc/self/numa_maps` shows correct node bindin
 
 ### `ProducerLocal` with `Channel`
 
-Since `Channel::new_in()` pre-allocates all rings eagerly, `ProducerLocal` resolves to the *channel creator's* node, not each producer's node. For true per-producer NUMA placement:
+Since `Channel::new_in()` pre-allocates all rings eagerly on the calling thread, `ProducerLocal` resolves to the *channel creator's* NUMA node — not the node of the thread that later calls `register()`. The policy is therefore not correct when rings are registered from a thread different from the channel creator. For true per-producer NUMA placement:
 
 1. Use individual `Ring::new_in(config, NumaAllocator::new(NumaPolicy::ProducerLocal))` from each producer thread, or
 2. Use `NumaPolicy::Fixed(node)` / `RoundRobin` with `Channel`, or

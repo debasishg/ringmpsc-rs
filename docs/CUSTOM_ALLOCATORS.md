@@ -204,7 +204,7 @@ let channel = Channel::<u64, NumaAllocator>::new_in(
 | INV-NUMA-02 | Non-Linux platforms fall back to `HeapAllocator` — no panic, no data loss |
 | INV-NUMA-03 | `RoundRobin` counter is deterministic per `NumaAllocator` instance (clones share the counter via `Arc<AtomicU16>`) |
 
-**Caveat with `Channel` + `ProducerLocal`:** `Channel::new_in()` pre-allocates all rings on a single thread, so `ProducerLocal` resolves to the *channel creator's* node. For true per-producer placement, construct individual `Ring::new_in()` instances from each producer thread.
+**Caveat with `Channel` + `ProducerLocal`:** `Channel::new_in()` pre-allocates all rings on a single thread, so `ProducerLocal` resolves to the *channel creator's* node. For true per-producer placement, construct individual `Ring::new_in()` instances from each producer thread. See also [FAQ.md Q11](../crates/ringmpsc/FAQ.md) for a detailed explanation and code example.
 
 ## Using Custom Allocators
 

@@ -1,5 +1,12 @@
 # Pipelined Fsync — Improvement Plan
 
+> **Status as of 2026-03-27**:
+> - Phase 1 (`PipelinedDataOnly`) — ✅ complete
+> - Phase 2 (tuning sweep benchmark) — ✅ complete
+> - Phase 3 (`PipelinedDedicated`) — ✅ complete
+> - Phase 4 (fsync histogram) — DEFERRED
+> - Phase 5 (larger payload benchmarks) — ✅ complete
+
 Five incremental improvements to ringwal's pipelined fsync, implemented as
 independent phases. Phase 4 (fsync latency histogram) is deferred.
 

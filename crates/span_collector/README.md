@@ -55,6 +55,28 @@ This crate uses **Rust 2024 edition** features:
 
 ## Quick Start
 
+```rust
+use span_collector::{
+    AsyncCollectorConfig, AsyncSpanCollector, Span, SpanKind, StdoutExporter,
+};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let exporter = Arc::new(StdoutExporter::new(true));
+    let collector = AsyncSpanCollector::new(AsyncCollectorConfig::default(), exporter).await;
+    let producer = collector.register_producer().await?;
+
+    let span = Span::new(12345, 1, 0, "my-operation".to_string(), SpanKind::Server);
+    producer.submit_span(span).await?;
+
+    collector.shutdown().await?;
+    Ok(())
+}
+```
+
+See the [Usage](#usage) section for configuration examples and multi-producer patterns.
+
 ## Building
 
 ```bash
@@ -251,7 +273,6 @@ let exporter = ResilientExporterBuilder::new(StdoutExporter::new(true))
 3. Multiple consumers (fan-out to backends)
 4. Adaptive batching based on latency
 5. Resource attributes (service metadata)
-6. Token bucket rate limiting
 
 ## References
 

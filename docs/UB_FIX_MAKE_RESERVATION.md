@@ -167,9 +167,12 @@ handler(item);
 
 ### Safety Contract
 
-The **invariant** maintained by the ring buffer:
-- Slots between `head` and `tail` are **initialized** (producer wrote + committed)
-- Slots outside that range are **uninitialized** (not yet written or already consumed)
+The **invariants** maintained by the ring buffer (see `crates/ringmpsc/spec.md`):
+- **INV-INIT-01** (Initialization Order): Slots between `head` and `tail` are **initialized** (producer wrote + committed). The slot at index `i` is initialized iff `head ≤ i < tail`.
+- **INV-INIT-02** (No Double-Free): A slot is consumed at most once — once `head` advances past it, no second `assume_init_read()` is issued.
+- **SAFETY-02** (UnsafeCell aliasing): The `buffer` `UnsafeCell` is accessed exclusively by producer (write path) or consumer (read path) at any given time, never both simultaneously.
+
+Slots outside the `[head, tail)` range are **uninitialized** (not yet written or already consumed).
 
 The `Release`/`Acquire` ordering ensures the consumer sees the producer's writes **before** reading via `assume_init_ref()`. This is what makes the `unsafe` call sound — by the time the consumer can see a slot (tail has advanced), the data is guaranteed to be initialized.
 
