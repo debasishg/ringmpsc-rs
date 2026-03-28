@@ -18,6 +18,11 @@ This document provides a detailed analysis of how `ringmpsc` is optimized for CP
 6. [Batch Amortization](#6-batch-amortization)
 7. [Allocator-Level Optimization](#7-allocator-level-optimization)
 8. [Compile-Time Optimization (StackRing)](#8-compile-time-optimization-stackring)
+   - 8.1 Inline Buffer (Zero Indirection)
+   - 8.2 Compile-Time Capacity Validation
+   - 8.3 Const Mask
+   - 8.4 `const fn new()` — Static Initialization
+   - 8.5 Type-Aliased Preset Sizes
 9. [Backoff and Contention Management](#9-backoff-and-contention-management)
 10. [Branch Elimination and Inlining](#10-branch-elimination-and-inlining)
 11. [Debug-Only Invariant Checking](#11-debug-only-invariant-checking)
@@ -90,8 +95,8 @@ Fields are grouped by access frequency and access pattern:
 | Zone | Fields | Accessed by | Frequency |
 |------|--------|-------------|-----------|
 | Producer hot | `tail`, `cached_head` | Producer only | Every `reserve()`/`commit()` |
-| Consumer hot | `head`, `cached_tail` | Consumer only | Every `consume_batch()`/`advance()` |
-| Cold | `active`, `closed`, `metrics`, `config` | Rare | Lifecycle events, optional metrics |
+| Consumer hot | `head`, `cached_tail` | Consumer only | `head`: every `consume_batch()`/`advance()`; `cached_tail`: every `readable()` (fast path) |
+| Cold | `active`, `closed`, `metrics`, `config` | Rare | Lifecycle events; metrics every batch if enabled |
 
 The `#[repr(C)]` attribute ensures the compiler lays out fields in declaration order, making the zone layout deterministic. A producer in its tight loop never touches the consumer's cache lines, and vice versa.
 
@@ -201,32 +206,49 @@ while remaining > 0 {
 
 ### 4.1 Cached Sequence Numbers
 
-The most critical optimization in the per-operation hot path is **cached sequence numbers**. Each side caches the other side's sequence number in a thread-local `UnsafeCell<u64>`:
+A key optimization in the per-operation hot path is **cached sequence numbers** that reduce cross-core atomic traffic. However, the two APIs use caching asymmetrically:
 
 ```
-Producer:  cached_head  (caches consumer's head)
-Consumer:  cached_tail  (caches producer's tail)
+Producer (reserve/commit):  cached_head  — avoids Acquire load of head on every call
+Consumer (readable/advance): cached_tail — avoids Acquire load of tail on every call
+Consumer (consume_batch):    NO CACHE    — always does a direct Acquire load of tail
 ```
 
-**Fast path (no cross-core traffic):**
+**Producer fast path — `reserve()` (uses `cached_head`):**
 ```rust
-// Producer reserve() fast path
-let tail = self.tail.load(Ordering::Relaxed);        // Local read (1 cycle)
+let tail = self.tail.load(Ordering::Relaxed);         // Local read (1 cycle)
 let cached_head = unsafe { *self.cached_head.get() }; // UnsafeCell read (1 cycle)
 let space = capacity - (tail - cached_head);
-if space >= n { /* grant reservation */ }
+if space >= n { /* grant reservation — zero cross-core traffic */ }
 ```
 
-**Slow path (only on cache miss):**
+**Producer slow path — only when cached value says ring is full:**
 ```rust
-// Only when cached value says "full" — might be stale
-let head = self.head.load(Ordering::Acquire);         // Cross-core read (~20 ns)
-unsafe { *self.cached_head.get() = head; }             // Update cache
+let head = self.head.load(Ordering::Acquire);  // Cross-core read (~20 ns)
+unsafe { *self.cached_head.get() = head; }     // Update cache
 ```
 
-The fast path involves **zero cross-core atomic operations**: `tail.load(Relaxed)` is a local read (the producer is the sole writer of `tail`), and `cached_head` is an `UnsafeCell` with no ordering at all. The slow path fires only when the cached value indicates the ring is full — which is the rare case in a well-sized ring.
+**Consumer `readable()` fast path — uses `cached_tail`:**
+```rust
+let head = self.head.load(Ordering::Relaxed);           // Self-read (1 cycle)
+let cached_tail = unsafe { *self.cached_tail.get() };   // UnsafeCell read (1 cycle)
+if cached_tail - head > 0 { /* items available — zero cross-core traffic */ }
+// Slow path only when cache says empty:
+let fresh_tail = self.tail.load(Ordering::Acquire);     // Cross-core read (~20 ns)
+unsafe { *self.cached_tail.get() = fresh_tail; }
+```
 
-**Why `UnsafeCell` instead of `AtomicU64`?** `cached_head` is read and written by exactly one thread (the producer). Using an atomic would force unnecessary memory ordering constraints on every access. `UnsafeCell` gives raw read/write with zero overhead.
+**Consumer `consume_batch()` — no cache, direct Acquire every call:**
+```rust
+let head = self.head.load(Ordering::Relaxed);  // Self-read
+let tail = self.tail.load(Ordering::Acquire);  // Always cross-core — no cached_tail used
+```
+
+`consume_batch()` intentionally skips `cached_tail` because it already **amortizes the Acquire cost across all items in the batch**: one cross-core load to determine how many items are available, then process all of them before the next call. The Acquire cost is O(1) per batch regardless of batch size, so avoiding it via caching would save at most ~20 ns while complicating the implementation.
+
+`readable()` uses the cache because it is typically polled in a tight loop checking for availability (e.g., in an async wake-up path). If the ring is empty on repeated polls, `cached_tail` avoids a cross-core Acquire on every iteration — the slow path fires only once when the cache is stale.
+
+**Why `UnsafeCell` instead of `AtomicU64`?** Both `cached_head` and `cached_tail` are accessed by exactly one thread each. Using an atomic would force unnecessary memory ordering constraints on every access. `UnsafeCell` gives raw read/write with zero overhead.
 
 ### 4.2 Single-Writer Atomics (No CAS)
 
@@ -320,6 +342,8 @@ pub fn consume_batch<F>(&self, mut handler: F) -> usize {
 
 If 1,000 items are available, this performs **2 atomic loads + 1 atomic store** total, not 3,000. The per-item amortized atomic cost approaches zero as batch size grows.
 
+> **Empty-ring case:** When `avail == 0`, `consume_batch()` returns immediately after the two loads — no store is issued. This means an idle consumer polling an empty ring costs exactly 2 atomic loads (~40 ns): one Relaxed self-read of `head` and one Acquire cross-core load of `tail`.
+
 **Measured impact:** ~2 ns/item amortized for batch consumption (compared to ~6 ns per item for single-item `push()`/`pop()`).
 
 ### 6.2 Batch Reserve via Reservation
@@ -403,9 +427,11 @@ pub struct StackRing<T, const N: usize> {
 }
 ```
 
-**Why this matters:** In `Ring<T>`, every buffer access follows a pointer: `self.buffer -> Box -> heap`. Even though the pointer is cached in L1, the indirection costs 1 data-dependent load per access and prevents the compiler from proving the buffer's address at compile time.
+**Why this matters:** In `Ring<T>`, accessing a slot requires **two pointer dereferences**: `self.buffer (UnsafeCell)` → `Box<[MaybeUninit<T>]>` → heap allocation. Even with both pointers cached in L1, each dereference is a data-dependent load (the second cannot start until the first resolves), costing 4–8 ns per access.
 
 In `StackRing`, `buffer[idx]` compiles to `base + idx * sizeof(T)` — a single LEA instruction where `base` is a known offset from the struct pointer. The compiler can constant-fold this when the struct address is known.
+
+**`UnsafeCell` granularity difference:** `Ring<T>` wraps the entire buffer in a single `UnsafeCell<A::Buffer<T>>`, which tells the compiler "this whole object may be aliased". `StackRing<T, N>` uses per-element `UnsafeCell<MaybeUninit<T>>`, which gives the compiler finer-grained aliasing information — it knows each element is independently aliased rather than the entire buffer as a unit. In principle this enables better alias analysis; in practice both produce equivalent code because the `unsafe` accesses are already at element granularity.
 
 **Measured impact:** 2–3× faster than heap `Ring<T>` in benchmarks (50+ billion msg/s vs. 9 billion msg/s).
 
@@ -434,7 +460,33 @@ impl<T, const N: usize> StackRing<T, N> {
 
 `idx & Self::MASK` compiles to `AND reg, immediate` — the mask value is embedded directly in the instruction as a constant, requiring no register load.
 
-### 8.4 Type-Aliased Preset Sizes
+### 8.4 `const fn new()` — Static Initialization
+
+`StackRing::new()` is a `const fn`:
+
+```rust
+impl<T, const N: usize> StackRing<T, N> {
+    pub const fn new() -> Self {
+        Self::assert_power_of_two::<N>();
+        // ... zero-cost initialization
+    }
+}
+```
+
+This enables **static allocation** with no runtime overhead:
+
+```rust
+// Placed in .data/.bss — no heap allocation, no runtime init cost
+static RING: StackRing<u64, 4096> = StackRing::new();
+```
+
+For heap `Ring<T>`, construction allocates memory at runtime and cannot be `const`. For `StackRing`, the compiler lays out the entire buffer in the binary's static data section. This is valuable for:
+
+- **Embedded / no-std environments** — where the heap may be unavailable.
+- **Zero-cost program startup** — ring is ready at the first instruction with no allocation pause.
+- **Cache warming** — static data at a fixed known address is easier for the OS to pre-fault.
+
+### 8.5 Type-Aliased Preset Sizes
 
 Common configurations are pre-defined as type aliases:
 
@@ -628,6 +680,8 @@ let sum: u64 = ring.drain().map(|x| x.value).sum();
 ```
 
 This requires careful design to ensure the single head update is still deferred to the iterator's `Drop` (similar to `Vec::drain()`). The challenge is maintaining the batch amortization guarantee while providing ergonomic iteration.
+
+> **Note:** `Reservation::try_commit_n(k)` (partial commit) already exists for the producer side — it commits only `k` slots out of the reserved batch, allowing the producer to publish a subset of a reservation. This is analogous to what a drain iterator would do on the consumer side.
 
 ### 12.8 Compile-Time Dispatch for StackRing Reserve
 
