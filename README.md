@@ -65,6 +65,54 @@ Benchmarked on Apple M2 (release build, `ringmpsc` crate):
 
 Stack-allocated rings (`StackRing<T, N>`) achieve **2-3× better throughput** due to improved cache locality.
 
+### Apple M5 Pro (48 GB RAM)
+
+**Criterion benchmarks** (100 samples, release build):
+
+#### Core Throughput
+
+| Benchmark | Throughput |
+|-----------|-----------|
+| SPSC (heap) | 3.77 Gelem/s |
+| MPSC 2P (heap) | 3.91 Gelem/s |
+| MPSC 4P (heap) | 3.78 Gelem/s |
+| MPSC 8P (heap) | 3.39 Gelem/s |
+| Batch 256 | 1.91 Gelem/s |
+| Batch 1024 | 3.06 Gelem/s |
+| Batch 4096 | 3.77 Gelem/s |
+| Batch 16384 | 4.00 Gelem/s |
+| Zero-copy reserve/commit | 937 Melem/s |
+
+#### Stack vs Heap
+
+| Benchmark | Heap | Stack | Speedup |
+|-----------|------|-------|---------|
+| Single-thread | 1.77 Gelem/s | 1.92 Gelem/s | 1.08× |
+| SPSC | 4.18 Gelem/s | **6.46 Gelem/s** | 1.54× |
+| MPSC 2P | 3.99 Gelem/s | 6.33 Gelem/s | 1.59× |
+| MPSC 4P | 3.83 Gelem/s | **9.39 Gelem/s** | **2.45×** |
+| MPSC 8P | 3.62 Gelem/s | 7.72 Gelem/s | 2.13× |
+
+#### Allocator (Heap vs 128-byte Aligned)
+
+| Benchmark | Heap | Aligned 128 |
+|-----------|------|-------------|
+| Single-thread | 1.68 Gelem/s | 1.70 Gelem/s |
+| SPSC threaded | 3.93 Gelem/s | 3.42 Gelem/s |
+| MPSC 4P | 3.25 Gelem/s | 3.39 Gelem/s |
+
+#### End-to-End Scaling (bench_final, 500M msgs/producer, batch 32768)
+
+| Config | Aggregate Throughput |
+|--------|---------------------|
+| 1P × 1C | 2.00 B msg/s |
+| 2P × 2C | 4.26 B msg/s |
+| 4P × 4C | 8.40 B msg/s |
+| 6P × 6C | 12.53 B msg/s |
+| 8P × 8C | **16.85 B msg/s** |
+
+Near-linear scaling: ~2× throughput per doubling of producers. Stack channel peaks at **9.39 Gelem/s** (4P), a **2.45× speedup** over heap.
+
 ## Quick Start
 
 ```bash
