@@ -352,8 +352,10 @@ impl Driver for RingSPSCDriver {
 //
 // NOTE: We use `#[quint_run]` exclusively because `quint test` does not support
 // the `--mbt` flag needed to embed `mbt::actionTaken` metadata in traces.
-// The Quint spec's `run` declarations (testInitSatisfiesInvariant, etc.) remain
-// useful for standalone `quint test` verification of the spec itself.
+// The Quint spec's `run` declarations (initSatisfiesInvariantTest, etc.) remain
+// useful for standalone `quint test` verification of the spec itself. (They
+// carry a `Test` suffix because `quint test`'s default `--match` only selects
+// names containing "Test".)
 //
 // This is the key capability enabled by quint-connect: traces are generated
 // automatically from the formal spec rather than hand-crafted.

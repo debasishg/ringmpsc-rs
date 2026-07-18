@@ -299,7 +299,7 @@ Agents can be instructed to understand the spec hierarchy:
 
 Before modifying lock-free code:
 1. Read spec.md for relevant INV-* invariants
-2. Check tla/RingSPSC.tla for formal definitions
+2. Check tla/RingSPSC.qnt for formal definitions
 3. Ensure changes preserve invariants
 4. Run: cargo test --test property_tests --test quint_mbt --release
 
@@ -516,7 +516,7 @@ fn commit_internal(&self, count: usize) {
 When modifying ringmpsc core:
 
 1. **Identify affected invariants** in spec.md
-2. **Check formal spec** in tla/RingSPSC.tla or tla/RingSPSC.qnt
+2. **Check formal spec** in tla/RingSPSC.qnt (safety) or tla/RingSPSCLiveness.qnt (liveness)
 3. **Run verification**:
        ```bash
        quint test tla/RingSPSC.qnt --main=RingSPSC

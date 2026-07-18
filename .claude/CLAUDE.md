@@ -43,8 +43,9 @@ cargo bench -p ringmpsc-rs
 cargo bench -p ringmpsc-rs --features stack-ring --bench stack_vs_heap
 cargo bench -p ringwal
 
-# TLA+ model checking
-cd crates/ringmpsc/tla && tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+# Formal model checking (Quint >= 0.32.0, JDK 21+)
+cd crates/ringmpsc/tla && quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+cd crates/ringmpsc/tla && quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
 ```
 
 ## Critical Rules

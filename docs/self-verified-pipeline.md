@@ -676,8 +676,8 @@ This table provides complete traceability from the English spec through every ge
 | Artifact | File | Expression | Checked By |
 |---|---|---|---|
 | **Spec** | `crates/ringmpsc/spec.md` | `0 ≤ (tail - head) ≤ capacity` | Human review |
-| **TLA+** | `crates/ringmpsc/tla/RingSPSC.tla` | `BoundedCount == (tail - head) <= Capacity` | TLC model checker |
-| **Quint** | `crates/ringmpsc/tla/RingSPSC.qnt` | `val boundedCount = (tl - hd) <= CAPACITY` | `quint verify` |
+| **Quint** | `crates/ringmpsc/tla/RingSPSC.qnt` | `val boundedCount = (tl - hd) <= CAPACITY` | `quint verify --backend=tlc` |
+| **Quint (liveness)** | `crates/ringmpsc/tla/RingSPSCLiveness.qnt` | `temporal eventuallyConsumed = ...leadsTo(hd == tl)` | `quint verify --temporal` |
 | **Macro** | `crates/ringmpsc/src/invariants.rs` | `debug_assert!($count <= $capacity)` | Debug build runtime |
 | **Ring** | `crates/ringmpsc/src/ring.rs` | `debug_assert_bounded_count!(count, cap)` | Every commit/advance call |
 | **StackRing** | `crates/ringmpsc/src/stack_ring.rs` | `debug_assert_bounded_count!(count, cap)` | Every commit/advance call |

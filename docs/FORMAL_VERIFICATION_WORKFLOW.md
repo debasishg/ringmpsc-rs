@@ -24,13 +24,15 @@ The verification strategy uses multiple complementary layers:
 
 ## 1. TLA+ Specification (Historical Reference)
 
-**File**: [tla/RingSPSC.tla](../crates/ringmpsc/tla/RingSPSC.tla)
+**Files**: [tla/RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt) (safety), [tla/RingSPSCLiveness.qnt](../crates/ringmpsc/tla/RingSPSCLiveness.qnt) (liveness)
 
-> **Note on source of truth**: TLA+ was the original formal specification. The **Quint spec
-> ([RingSPSC.qnt](../crates/ringmpsc/tla/RingSPSC.qnt)) is now the primary working artifact**
-> for safety properties — all new invariants, actions, and tests are added in Quint first.
-> The TLA+ file is retained only for **liveness properties** (`~>` leads-to) not yet
-> supported by Quint.
+> **Note on source of truth**: TLA+ was the original formal specification. The **Quint specs
+> are now the only formal artifacts** - all invariants, actions, and tests live in Quint.
+> The `.tla`/`.cfg` pair was retired when Quint 0.32.0 added the `leadsTo` (`~>`) temporal
+> operator; liveness now lives in `RingSPSCLiveness.qnt` with fairness stated explicitly
+> (see [QUINT_0_32_UPGRADE.md](QUINT_0_32_UPGRADE.md)). The original TLA+ sources remain
+> in git history, and the TLA+ snippets below are kept as a readable reference for the
+> protocol model.
 
 TLA+ is a formal specification language for concurrent and distributed systems. Our spec models the SPSC ring buffer protocol.
 
@@ -72,11 +74,11 @@ HappensBefore == head <= tail
 ```bash
 cd crates/ringmpsc/tla
 
-# Via Quint CLI (preferred — no .tla/.cfg files needed, requires Quint ≥ 0.31.0 + JDK 21+)
+# Safety (requires Quint ≥ 0.31.0 + JDK 21+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 
-# Via standalone TLC (alternative — works with any JDK, uses .tla + .cfg)
-tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+# Liveness (requires Quint ≥ 0.32.0 + JDK 21+)
+quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
 ```
 
 **Output**: Explores all reachable states, reports any invariant violations with counterexample traces.
@@ -343,10 +345,10 @@ cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
 6. Run all tests
 ```
 
-> **Note**: The TLA+ spec (`RingSPSC.tla`) is retained as a reference but the
-> Quint spec is the primary artifact. Since Quint 0.31.0, `quint verify --backend=tlc`
-> enables exhaustive model checking directly from `.qnt` files. The `.tla` file is
-> additionally used for liveness properties (`~>` leads-to) not yet supported by Quint.
+> **Note**: The Quint specs are the only formal artifacts. Since Quint 0.31.0,
+> `quint verify --backend=tlc` enables exhaustive model checking directly from `.qnt`
+> files, and since 0.32.0 that includes temporal (liveness) properties via `leadsTo` —
+> the former `RingSPSC.tla`/`RingSPSC.cfg` pair is retired (available in git history).
 
 ### CI/CD Commands
 
@@ -357,13 +359,13 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
 cargo +nightly miri test -p ringmpsc-rs --test miri_tests
 
-# TLA+ model checking via Quint CLI (preferred, requires Quint ≥ 0.31.0 + JDK 21+)
+# Exhaustive safety checking (requires Quint ≥ 0.31.0 + JDK 21+)
 cd crates/ringmpsc/tla
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
 
-# TLA+ model checking via standalone TLC (alternative, any JDK)
+# Exhaustive liveness checking (requires Quint ≥ 0.32.0 + JDK 21+)
 cd crates/ringmpsc/tla
-tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
 
 # Quint simulation with invariant checking (Rust backend, fast)
 quint run RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
@@ -421,11 +423,11 @@ debug_assert_head_not_past_tail!(head, tail);
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  HIGHEST TRUST: TLA+ / Quint Spec                               │
+│  HIGHEST TRUST: Quint Spec                                      │
 │  - Mathematical model, machine-checkable                        │
 │  - quint verify --backend=tlc: exhaustive (955 states verified) │
 │  - quint verify (Apalache): symbolic model checking via SMT     │
-│  - .tla retained for EventuallyConsumed liveness (~>)           │
+│  - eventuallyConsumed liveness via leadsTo (Quint ≥ 0.32.0)     │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼

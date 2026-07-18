@@ -98,10 +98,11 @@ cargo bench -p ringwal
 - **Run miri tests** when modifying `unsafe` code or `MaybeUninit` handling
 - Both loom and miri tests are **mandatory in CI/CD** before merge
 
-### TLA+ Model Checking (ringmpsc only)
-Formal specs in `crates/ringmpsc/tla/` verify lock-free invariants:
+### Formal Model Checking (ringmpsc only)
+Quint specs in `crates/ringmpsc/tla/` verify lock-free invariants (requires Quint >= 0.32.0, JDK 21+):
 ```bash
-cd crates/ringmpsc/tla && tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+cd crates/ringmpsc/tla && quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+cd crates/ringmpsc/tla && quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
 ```
 
 ## Error Handling Rules
