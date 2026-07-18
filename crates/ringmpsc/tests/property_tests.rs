@@ -1,4 +1,4 @@
-//! Property-based tests derived from TLA+ invariants in tla/RingSPSC.tla
+//! Property-based tests derived from the formal invariants in tla/RingSPSC.qnt
 //!
 //! These tests use proptest to verify that the same invariants hold in the
 //! Rust implementation as in the formal specification.

@@ -261,73 +261,74 @@ Messages from a single producer are received in send order. No global ordering a
 
 ---
 
-## 9. Formal Specification (TLA+)
+## 9. Formal Specification (Quint)
 
-The lock-free protocol is formally specified in TLA+ for model checking. This complements the runtime `debug_assert!` checks and Loom tests.
+The lock-free protocol is formally specified in [Quint](https://quint-lang.org/) for model checking. This complements the runtime `debug_assert!` checks and Loom tests. (The spec originated in TLA+; the `.tla`/`.cfg` pair was retired when Quint 0.32.0 gained the `leadsTo` temporal operator — see [docs/QUINT_0_32_UPGRADE.md](../../docs/QUINT_0_32_UPGRADE.md).)
 
-**Location**: [tla/RingSPSC.tla](tla/RingSPSC.tla)
+**Location**: [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (safety), [tla/RingSPSCLiveness.qnt](tla/RingSPSCLiveness.qnt) (liveness)
 
 ### Invariant Mapping
 
-| Spec Invariant | TLA+ Element | Description |
-|----------------|--------------|-------------|
-| INV-SEQ-01 | `BoundedCount` | `(tail - head) <= Capacity` |
+| Spec Invariant | Quint Element | Description |
+|----------------|---------------|-------------|
+| INV-SEQ-01 | `boundedCount` | `(tl - hd) <= CAPACITY` |
 | INV-SEQ-02 | Action constraints | Tail/head only increase (monotonic) |
-| INV-ORD-01 | `ProducerWrite` | Release store publishes writes |
-| INV-ORD-02 | `ConsumerRefreshCache`, `ConsumerAdvance` | Acquire load synchronizes reads |
-| INV-ORD-03 | `HappensBefore` | `head <= tail` (consumer never reads ahead) |
-| INV-SW-01 | Structural | Producer actions only modify `tail`, `cached_head` |
-| INV-SW-02 | Structural | Consumer actions only modify `head`, `cached_tail` |
+| INV-ORD-01 | `producerWrite` | Release store publishes writes |
+| INV-ORD-02 | `consumerRefreshCache`, `consumerAdvance` | Acquire load synchronizes reads |
+| INV-ORD-03 | `happensBefore` | `hd <= tl` (consumer never reads ahead) |
+| INV-SW-01 | Structural | Producer actions only modify `tl`, `cached_head` |
+| INV-SW-02 | Structural | Consumer actions only modify `hd`, `cached_tail` |
 | INV-MEM-04 | `allocatorCapacityCorrect` | `buffer_capacity == CAPACITY` (allocator contract) |
 | INV-ALLOC-01 | `alignmentGuarantee` | `buffer_aligned` flag (structural in Rust) |
 | INV-ALLOC-02 | `zeroOverheadDefault` | `allocator_zst` flag (structural in Rust) |
 | INV-INIT-01 | `initializedRange` | `initialized` set tracks slot init state |
+| Liveness | `eventuallyConsumed` | All produced items are eventually consumed (under weak fairness) |
 
-### Refinement Mapping (TLA+ → Rust)
+### Refinement Mapping (Quint → Rust)
 
-| TLA+ Action | Rust Function |
-|-------------|---------------|
-| `ProducerReserveFast` | `ring.rs: reserve()` fast path |
-| `ProducerRefreshCache` | `ring.rs: reserve()` slow path (Acquire load) |
-| `ProducerWrite` | `ring.rs: commit_internal()` |
-| `ConsumerRefreshCache` | `ring.rs: consume_batch()` slow path |
-| `ConsumerAdvance` | `ring.rs: advance()` |
+| Quint Action | Rust Function |
+|--------------|---------------|
+| `producerReserveFast` | `ring.rs: reserve()` fast path |
+| `producerRefreshCache` | `ring.rs: reserve()` slow path (Acquire load) |
+| `producerWrite` | `ring.rs: commit_internal()` |
+| `consumerRefreshCache` | `ring.rs: consume_batch()` slow path |
+| `consumerAdvance` | `ring.rs: advance()` |
 
 ### Running the Model Checker
 
 ```bash
 cd crates/ringmpsc/tla
 
-# Exhaustive model checking via TLC (955 states, requires Quint ≥ 0.31.0, JDK 21+)
+# Exhaustive safety checking via TLC (955 states, requires Quint ≥ 0.31.0, JDK 21+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+
+# Exhaustive liveness checking via TLC (requires Quint ≥ 0.32.0, JDK 21+)
+quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
 
 # Symbolic model checking via Apalache (complementary, requires JDK 21+)
 quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant
-
-# Standalone TLC for liveness checking (EventuallyConsumed temporal property)
-tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
 ```
 
 See [tla/README.md](tla/README.md) for prerequisites and detailed instructions.
 
-### Design Decision: Unbounded Naturals
+### Design Decision: Unbounded Integers
 
-The TLA+ spec uses unbounded `Nat` instead of `u64` wrap-around because:
+The Quint spec uses unbounded `int` instead of `u64` wrap-around because:
 1. Invariants (bounded count, monotonicity) don't depend on overflow behavior
-2. TLC state space is bounded by `MaxItems` configuration anyway
+2. The model checker's state space is bounded by `MAX_ITEMS` anyway
 3. Wrap-around correctness is a separate concern tested via Loom
 
 At 10 billion msg/sec, `u64` wrap-around takes ~58 years—practically infinite.
 
 ### Property-Based Testing (Proptest)
 
-The TLA+ invariants are also encoded as proptest properties in [tests/property_tests.rs](tests/property_tests.rs):
+The formal invariants are also encoded as proptest properties in [tests/property_tests.rs](tests/property_tests.rs):
 
-| TLA+ Invariant | Proptest Function | Coverage |
-|----------------|-------------------|----------|
-| `BoundedCount` | `prop_bounded_count_ring`, `prop_bounded_count_stack_ring` | Ring, StackRing |
+| Quint Invariant | Proptest Function | Coverage |
+|-----------------|-------------------|----------|
+| `boundedCount` | `prop_bounded_count_ring`, `prop_bounded_count_stack_ring` | Ring, StackRing |
 | Monotonic (action constraints) | `prop_monotonic_progress`, `prop_monotonic_progress_stack_ring` | Ring, StackRing |
-| `HappensBefore` | `prop_happens_before`, `prop_happens_before_stack_ring` | Ring, StackRing |
+| `happensBefore` | `prop_happens_before`, `prop_happens_before_stack_ring` | Ring, StackRing |
 | INV-RES-01 | `prop_partial_reservation` | Ring |
 
 Run with:
@@ -338,25 +339,28 @@ cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
 
 ### Quint Model-Based Testing
 
-The TLA+ spec is also translated to [Quint](https://quint-lang.org/) in [tla/RingSPSC.qnt](tla/RingSPSC.qnt). The [tests/quint_mbt.rs](tests/quint_mbt.rs) driver executes action traces against the real `Ring<T>`:
+The [tests/quint_mbt.rs](tests/quint_mbt.rs) driver replays traces generated from [tla/RingSPSC.qnt](tla/RingSPSC.qnt) against the real `Ring<T>`. Independently, the spec embeds 18 `run` scenarios executed by `quint test` (their names carry a `Test` suffix because `quint test`'s default `--match` only selects names containing "Test"):
 
-| Quint Test | Description |
-|------------|-------------|
-| `test_init_satisfies_invariant` | Initial state valid |
-| `test_produce_consume_cycle` | Basic produce-consume |
-| `test_fill_to_capacity` | Fill ring to max |
-| `test_cache_refresh_scenario` | Stale cache recovery |
-| `test_alternating_produce_consume` | Interleaved operations |
-| `test_producer_starvation_recovery` | Full→empty→refill |
-| `allocatorCapacityAtInit` | INV-MEM-04: buffer_capacity == CAPACITY at init |
-| `allocatorCapacityStableAcrossOps` | INV-MEM-04: capacity stable across ops |
-| `alignmentAtInit` | INV-ALLOC-01: alignment flag set |
-| `zeroOverheadAtInit` | INV-ALLOC-02: ZST flag set |
-| `producerWriteInitializesSlot` | INV-INIT-01: write marks slot initialized |
-| `consumerAdvanceUninitializesSlot` | INV-INIT-01: consume marks slot uninitialized |
-| `initializedRangeWrapAround` | INV-INIT-01: modular arithmetic after wrap |
-| `emptyRingNoInitializedSlots` | INV-INIT-01: empty ring has empty set |
-| `allocatorInvariantsThroughCycle` | All invariants at every step of a cycle |
+| Embedded Quint Test | Description |
+|---------------------|-------------|
+| `initSatisfiesInvariantTest` | Initial state satisfies all invariants |
+| `producerWriteMaintainsBoundedCountTest` | INV-SEQ-01 after a write |
+| `consumerAdvanceMaintainsHappensBeforeTest` | INV-ORD-03 after an advance |
+| `fillToCapacityTest` | Fill ring to max |
+| `cacheRefreshScenarioTest` | Stale cache recovery |
+| `allocatorCapacityAtInitTest` | INV-MEM-04: buffer_capacity == CAPACITY at init |
+| `allocatorCapacityStableAcrossOpsTest` | INV-MEM-04: capacity stable across ops |
+| `alignmentAtInitTest` | INV-ALLOC-01: alignment flag set |
+| `zeroOverheadAtInitTest` | INV-ALLOC-02: ZST flag set |
+| `producerWriteInitializesSlotTest` | INV-INIT-01: write marks slot initialized |
+| `consumerAdvanceUninitializesSlotTest` | INV-INIT-01: consume marks slot uninitialized |
+| `initializedRangeWrapAroundTest` | INV-INIT-01: modular arithmetic after wrap |
+| `emptyRingNoInitializedSlotsTest` | INV-INIT-01: empty ring has empty set |
+| `allocatorInvariantsThroughCycleTest` | All invariants at every step of a cycle |
+| `numaPlacementAtInitTest` | INV-NUMA-01: placement flag set |
+| `numaFallbackAtInitTest` | INV-NUMA-02: fallback flag set |
+| `numaPolicyAtInitTest` | INV-NUMA-03: determinism flag set |
+| `numaInvariantsStableAcrossOpsTest` | NUMA invariants stable across ops |
 
 Run with:
 ```bash

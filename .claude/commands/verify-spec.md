@@ -1,10 +1,12 @@
 Run formal specification verification for the `ringmpsc-rs` crate. Two complementary checks:
 
-**Step 1 — TLA+ model checking**
+**Step 1 — Exhaustive model checking (safety + liveness)**
 ```
-cd crates/ringmpsc/tla && tlc RingSPSC.tla -config RingSPSC.cfg -workers auto
+cd crates/ringmpsc/tla && quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc
+cd crates/ringmpsc/tla && quint verify RingSPSC.qnt --main=RingSPSC --invariant=noDeadlock --backend=tlc
+cd crates/ringmpsc/tla && quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
 ```
-TLC checks all reachable states of the ring buffer model. Requires `tlc` on PATH (Java-based TLA+ Tools). Report any invariant violations found or confirm all states checked.
+TLC checks all reachable states of the ring buffer model (955 states at default parameters). Requires Quint >= 0.32.0 and JDK 21+ (Quint manages the Apalache/TLC distribution itself). Report any invariant violations found or confirm all states checked.
 
 **Step 2 — Quint model-based tests (ITF trace replay)**
 ```

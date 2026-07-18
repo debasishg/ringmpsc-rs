@@ -23,12 +23,20 @@
 //   quint test RingSPSC.qnt --main=RingSPSC                             (run embedded tests)
 //   quint verify RingSPSC.qnt --main=RingSPSC --invariant=safetyInvariant --backend=tlc  (exhaustive model checking)
 //
+// Liveness (temporal) properties live in RingSPSCLiveness.qnt, which imports
+// this module. Check them with (requires Quint >= 0.32.0):
+//   quint verify RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc
+//
 // Since Quint 0.31.0 the Rust backend is the default for `quint run` and `quint test`,
 // giving ~10× faster simulation than the TypeScript backend. TLC is now available as an
 // alternative backend for `quint verify` via `--backend=tlc`, enabling exhaustive model
-// checking directly from this .qnt file without maintaining a separate .tla file.
+// checking directly from this .qnt file. Since Quint 0.32.0 the `leadsTo` temporal
+// operator (TLA+ `~>`) is supported, so the former RingSPSC.tla/.cfg pair is retired:
+// this file and RingSPSCLiveness.qnt are the single source of truth for the protocol.
 //
 // Note: `head`/`tail` are Quint built-in names (list ops), so we use `hd`/`tl`.
+// Note: embedded test runs carry a `Test` suffix because `quint test`'s default
+// `--match` only selects names containing "Test".
 
 module RingSPSC {
     // =========================================================================
@@ -365,7 +373,7 @@ module RingSPSC {
     }
     
     /// Test: Initial state satisfies invariants
-    run initSatisfiesInvariant = {
+    run initSatisfiesInvariantTest = {
         init.then(all {
             assert(safetyInvariant),
             assert(boundedCount),
@@ -383,7 +391,7 @@ module RingSPSC {
     }
     
     /// Test: Producer write maintains bounded count
-    run producerWriteMaintainsBoundedCount = {
+    run producerWriteMaintainsBoundedCountTest = {
         init
         .then(producerWrite)
         .then(all {
@@ -395,7 +403,7 @@ module RingSPSC {
     }
     
     /// Test: Consumer advance maintains happens-before
-    run consumerAdvanceMaintainsHappensBefore = {
+    run consumerAdvanceMaintainsHappensBeforeTest = {
         init
         .then(producerWrite)
         .then(consumerAdvance)
@@ -408,7 +416,7 @@ module RingSPSC {
     }
     
     /// Test: Fill ring to capacity
-    run fillToCapacity = {
+    run fillToCapacityTest = {
         init
         .then(producerWrite)
         .then(producerWrite)
@@ -422,7 +430,7 @@ module RingSPSC {
     }
 
     /// Test: Cache refresh scenario
-    run cacheRefreshScenario = {
+    run cacheRefreshScenarioTest = {
         init
         // Fill ring
         .then(producerWrite)
@@ -447,7 +455,7 @@ module RingSPSC {
     // =====================================================================
     
     /// Test: INV-MEM-04 — allocator capacity matches ring capacity at init
-    run allocatorCapacityAtInit = {
+    run allocatorCapacityAtInitTest = {
         init.then(all {
             assert(allocatorCapacityCorrect),
             assert(buffer_capacity == CAPACITY),
@@ -456,7 +464,7 @@ module RingSPSC {
     }
     
     /// Test: INV-MEM-04 — allocator capacity is stable across operations
-    run allocatorCapacityStableAcrossOps = {
+    run allocatorCapacityStableAcrossOpsTest = {
         init
         .then(producerWrite)
         .then(producerWrite)
@@ -469,7 +477,7 @@ module RingSPSC {
     }
     
     /// Test: INV-ALLOC-01 — alignment guarantee holds at init
-    run alignmentAtInit = {
+    run alignmentAtInitTest = {
         init.then(all {
             assert(alignmentGuarantee),
             assert(buffer_aligned == true),
@@ -478,7 +486,7 @@ module RingSPSC {
     }
     
     /// Test: INV-ALLOC-02 — zero overhead default at init
-    run zeroOverheadAtInit = {
+    run zeroOverheadAtInitTest = {
         init.then(all {
             assert(zeroOverheadDefault),
             assert(allocator_zst == true),
@@ -487,7 +495,7 @@ module RingSPSC {
     }
     
     /// Test: INV-INIT-01 — producer write initializes the correct slot
-    run producerWriteInitializesSlot = {
+    run producerWriteInitializesSlotTest = {
         init
         .then(producerWrite)
         .then(all {
@@ -504,7 +512,7 @@ module RingSPSC {
     }
     
     /// Test: INV-INIT-01 — consumer advance uninitializes the correct slot
-    run consumerAdvanceUninitializesSlot = {
+    run consumerAdvanceUninitializesSlotTest = {
         init
         .then(producerWrite)
         .then(producerWrite)
@@ -530,7 +538,7 @@ module RingSPSC {
     /// Test: INV-INIT-01 — initialized range after wrap-around
     /// Exercises the modular arithmetic: after filling and partially
     /// draining, new writes wrap around to index 0.
-    run initializedRangeWrapAround = {
+    run initializedRangeWrapAroundTest = {
         init
         // Fill all 4 slots (indices 0,1,2,3)
         .then(producerWrite)
@@ -561,7 +569,7 @@ module RingSPSC {
     }
     
     /// Test: INV-INIT-01 — empty ring has no initialized slots
-    run emptyRingNoInitializedSlots = {
+    run emptyRingNoInitializedSlotsTest = {
         init
         .then(producerWrite)
         .then(consumerAdvance)
@@ -574,7 +582,7 @@ module RingSPSC {
     }
     
     /// Test: All allocator invariants hold through a full produce-consume cycle
-    run allocatorInvariantsThroughCycle = {
+    run allocatorInvariantsThroughCycleTest = {
         init
         .then(all { assert(safetyInvariant), stutter, })
         .then(producerWrite)
@@ -596,7 +604,7 @@ module RingSPSC {
     // =====================================================================
 
     /// Test: INV-NUMA-01 — NUMA placement valid at init
-    run numaPlacementAtInit = {
+    run numaPlacementAtInitTest = {
         init.then(all {
             assert(numaPlacementValid),
             assert(numa_placement_valid == true),
@@ -605,7 +613,7 @@ module RingSPSC {
     }
 
     /// Test: INV-NUMA-02 — NUMA fallback safe at init
-    run numaFallbackAtInit = {
+    run numaFallbackAtInitTest = {
         init.then(all {
             assert(numaFallbackSafe),
             assert(numa_fallback_safe == true),
@@ -614,7 +622,7 @@ module RingSPSC {
     }
 
     /// Test: INV-NUMA-03 — NUMA policy deterministic at init
-    run numaPolicyAtInit = {
+    run numaPolicyAtInitTest = {
         init.then(all {
             assert(numaPolicyDeterministic),
             assert(numa_policy_deterministic == true),
@@ -623,7 +631,7 @@ module RingSPSC {
     }
 
     /// Test: NUMA invariants stable across produce-consume operations
-    run numaInvariantsStableAcrossOps = {
+    run numaInvariantsStableAcrossOpsTest = {
         init
         .then(producerWrite)
         .then(producerWrite)

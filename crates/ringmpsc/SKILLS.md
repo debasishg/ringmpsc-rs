@@ -8,7 +8,7 @@ See the workspace-level [`SKILLS.md`](../../SKILLS.md) for the full hierarchy.
 | Skill | Command | What it checks |
 |-------|---------|---------------|
 | Concurrency verification | `/verify-concurrency` | Loom exhaustive state-space exploration of all atomic interleavings + Miri undefined behaviour detection for `unsafe`/`MaybeUninit` code |
-| Formal spec verification | `/verify-spec` | TLA+ model checker (`RingSPSC.tla`) + Quint model-based tests replaying ITF traces against the Rust implementation |
+| Formal spec verification | `/verify-spec` | Quint model checking (`RingSPSC.qnt` safety + `RingSPSCLiveness.qnt` liveness via TLC backend) + Quint model-based tests replaying ITF traces against the Rust implementation |
 | Invariant sync | `/verify-invariants` | Cross-checks every `INV-*` ID in `spec.md` against `debug_assert!` macros in `src/invariants.rs` |
 
 Run all three at once with `/verify`.
@@ -46,8 +46,8 @@ Run all three at once with `/verify`.
 |------|---------|
 | `spec.md` | Canonical invariant spec — source of all `INV-*` IDs |
 | `src/invariants.rs` | `debug_assert!` macros enforcing spec invariants at runtime |
-| `tla/RingSPSC.tla` | TLA+ formal model |
-| `tla/RingSPSC.qnt` | Quint model (ITF trace source) |
+| `tla/RingSPSC.qnt` | Quint formal model: safety invariants + ITF trace source |
+| `tla/RingSPSCLiveness.qnt` | Quint liveness properties (requires Quint >= 0.32.0) |
 | `FAQ.md` | Design rationale |
 | `PERFORMANCE.md` | Benchmark analysis |
 | `ring-optimization.md` | Low-level optimization analysis (cache, NUMA, atomics, allocator) |
