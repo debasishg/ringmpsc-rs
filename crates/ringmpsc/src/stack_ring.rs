@@ -58,17 +58,6 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 // =============================================================================
-// COMPILE-TIME ASSERTIONS
-// =============================================================================
-
-/// Compile-time assertion that N is a power of 2.
-/// This is required for efficient masking (index & (N-1)) instead of modulo.
-const fn assert_power_of_two<const N: usize>() {
-    assert!(N > 0, "StackRing capacity must be > 0");
-    assert!(N.is_power_of_two(), "StackRing capacity must be a power of 2");
-}
-
-// =============================================================================
 // CACHE LINE ALIGNMENT
 // =============================================================================
 
@@ -171,11 +160,26 @@ impl<T, const N: usize> StackRing<T, N> {
     /// The mask for wrapping indices: `N - 1` (works because N is power of 2)
     const MASK: usize = N - 1;
 
+    /// Compile-time assertion that `N` is a usable capacity.
+    ///
+    /// This is an associated const rather than a `const fn` call because an
+    /// associated const is evaluated when `StackRing<T, N>` is monomorphized,
+    /// not when `new()` executes. A bad `N` therefore fails the build at every
+    /// call site; a `const fn` assert only fires at compile time when the call
+    /// happens to sit in a const context, and panics at runtime otherwise.
+    const ASSERT_CAPACITY: () = {
+        assert!(N > 0, "StackRing capacity must be > 0");
+        assert!(
+            N.is_power_of_two(),
+            "StackRing capacity must be a power of 2"
+        );
+    };
+
     /// Creates a new stack-allocated ring buffer.
     ///
-    /// # Panics
+    /// # Compile-time requirements
     ///
-    /// Panics at compile time if `N` is not a power of 2.
+    /// `N` must be a non-zero power of 2, otherwise the build fails.
     ///
     /// # Example
     ///
@@ -186,8 +190,8 @@ impl<T, const N: usize> StackRing<T, N> {
     /// let ring: StackRing<u64, 4096> = StackRing::new();
     /// ```
     pub const fn new() -> Self {
-        // Compile-time assertion
-        assert_power_of_two::<N>();
+        // Force evaluation of the compile-time capacity assertion.
+        let () = Self::ASSERT_CAPACITY;
 
         Self {
             tail: CacheAligned::new(AtomicU64::new(0)),

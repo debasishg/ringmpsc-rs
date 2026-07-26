@@ -65,25 +65,6 @@ use std::sync::atomic::AtomicU64;
 use thiserror::Error;
 
 // =============================================================================
-// COMPILE-TIME ASSERTIONS
-// =============================================================================
-
-/// Compile-time assertion that N is a power of 2.
-const fn assert_power_of_two<const N: usize>() {
-    assert!(N > 0, "StackChannel ring capacity must be > 0");
-    assert!(
-        N.is_power_of_two(),
-        "StackChannel ring capacity must be a power of 2"
-    );
-}
-
-/// Compile-time assertion that P is reasonable.
-const fn assert_valid_producer_count<const P: usize>() {
-    assert!(P > 0, "StackChannel must allow at least 1 producer");
-    assert!(P <= 128, "StackChannel max producers should not exceed 128");
-}
-
-// =============================================================================
 // ERROR TYPES
 // =============================================================================
 
@@ -151,12 +132,28 @@ unsafe impl<T: Send, const N: usize, const P: usize> Send for StackChannel<T, N,
 unsafe impl<T: Send, const N: usize, const P: usize> Sync for StackChannel<T, N, P> {}
 
 impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
+    /// Compile-time assertion that `N` and `P` are usable.
+    ///
+    /// An associated const is evaluated when `StackChannel<T, N, P>` is
+    /// monomorphized, so an invalid parameter fails the build at every call
+    /// site - including `let channel = StackChannel::<_, 3, 4>::new()`, which a
+    /// `const fn` assert would only catch at runtime.
+    const ASSERT_PARAMS: () = {
+        assert!(N > 0, "StackChannel ring capacity must be > 0");
+        assert!(
+            N.is_power_of_two(),
+            "StackChannel ring capacity must be a power of 2"
+        );
+        assert!(P > 0, "StackChannel must allow at least 1 producer");
+        assert!(P <= 128, "StackChannel max producers should not exceed 128");
+    };
+
     /// Creates a new stack-allocated channel.
     ///
-    /// # Panics
+    /// # Compile-time requirements
     ///
-    /// Panics at compile time if:
-    /// - `N` is not a power of 2
+    /// The build fails if:
+    /// - `N` is 0 or not a power of 2
     /// - `P` is 0 or greater than 128
     ///
     /// # Example
@@ -168,8 +165,8 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// let channel: StackChannel<u64, 4096, 4> = StackChannel::new();
     /// ```
     pub const fn new() -> Self {
-        assert_power_of_two::<N>();
-        assert_valid_producer_count::<P>();
+        // Force evaluation of the compile-time parameter assertions.
+        let () = Self::ASSERT_PARAMS;
 
         Self {
             producer_count: AtomicUsize::new(0),
