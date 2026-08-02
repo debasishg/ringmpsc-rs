@@ -23,7 +23,10 @@ impl Backoff {
     /// Light spin with PAUSE hints.
     #[inline]
     pub fn spin(&mut self) {
-        let spins = 1 << self.step.min(Self::SPIN_LIMIT);
+        // `usize`, not the inferred `i32`: at SPIN_LIMIT >= 31 a signed shift
+        // produces i32::MIN, making `0..spins` an empty range that silently
+        // performs zero spins. See INV-BACKOFF-01 below.
+        let spins: usize = 1 << self.step.min(Self::SPIN_LIMIT);
         for _ in 0..spins {
             hint::spin_loop();
         }
@@ -58,6 +61,15 @@ impl Backoff {
         self.step = 0;
     }
 }
+
+// INV-BACKOFF-01: Compile-time proof that the spin count cannot overflow.
+// `spin()` computes `1usize << step.min(SPIN_LIMIT)`, so tuning SPIN_LIMIT to
+// usize::BITS or beyond would overflow the shift (panic in debug, masked shift
+// amount in release) rather than simply spinning longer.
+const _: () = assert!(
+    Backoff::SPIN_LIMIT < usize::BITS,
+    "INV-BACKOFF-01 violated: SPIN_LIMIT must be < usize::BITS"
+);
 
 impl Default for Backoff {
     fn default() -> Self {
