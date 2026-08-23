@@ -386,17 +386,60 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     /// **Important:** The returned `Reservation` may contain **fewer than n items**
     /// if the reservation wraps around the ring buffer. Always check the slice length.
     /// See [`Ring::reserve`] for details and examples.
+    ///
+    /// Takes `&mut self`, which is what makes "one outstanding reservation per
+    /// producer" a compile-time property: a second `reserve` cannot borrow-check
+    /// while the first `Reservation` is alive. Without it, both calls would see
+    /// the same un-advanced cursor and alias `&mut` over the same slots.
+    ///
+    /// Two overlapping reservations are rejected by the compiler:
+    ///
+    /// ```compile_fail
+    /// use ringmpsc_rs::{Channel, Config};
+    ///
+    /// let channel = Channel::<u64>::new(Config::new(3, 1, false));
+    /// let mut producer = channel.register().unwrap();
+    ///
+    /// let r1 = producer.reserve(2).unwrap();
+    /// let r2 = producer.reserve(2).unwrap(); // ERROR: second mutable borrow
+    /// drop((r1, r2));
+    /// ```
+    ///
+    /// Sequential reserve/commit is fine:
+    ///
+    /// ```
+    /// use ringmpsc_rs::{Channel, Config};
+    /// use std::mem::MaybeUninit;
+    ///
+    /// let channel = Channel::<u64>::new(Config::new(3, 1, false));
+    /// let mut producer = channel.register().unwrap();
+    ///
+    /// let mut r = producer.reserve(2).unwrap();
+    /// r.as_mut_slice()[0] = MaybeUninit::new(7);
+    /// r.as_mut_slice()[1] = MaybeUninit::new(8);
+    /// r.commit();
+    ///
+    /// let mut seen = Vec::new();
+    /// channel.consume_all(|v| seen.push(*v));
+    /// assert_eq!(seen, vec![7, 8]);
+    /// ```
     #[inline]
-    #[must_use] 
-    pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T, A>> {
-        self.channel.rings[self.id].reserve(n)
+    #[must_use]
+    pub fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
+        // SAFETY: `&mut self` is exclusive and a `Producer` is the only route
+        // to its ring (ids are unique per `register()` and `Producer` is not
+        // `Clone`), so no other reservation on that ring can be outstanding.
+        unsafe { self.channel.rings[self.id].reserve_shared(n) }
     }
 
     /// Reserve with adaptive backoff. Spins, yields, then gives up.
+    ///
+    /// Takes `&mut self` for the same reason as [`Producer::reserve`].
     #[inline]
-    #[must_use] 
-    pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T, A>> {
-        self.channel.rings[self.id].reserve_with_backoff(n)
+    #[must_use]
+    pub fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
+        // SAFETY: as in `reserve`.
+        unsafe { self.channel.rings[self.id].reserve_with_backoff_shared(n) }
     }
 
     /// Send a single item (convenience).
@@ -413,7 +456,13 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     /// ```
     #[inline]
     pub fn push(&self, item: T) -> bool {
-        self.channel.rings[self.id].push(item)
+        // SAFETY: `&self` suffices here because a `Reservation` can only be
+        // obtained through `reserve(&mut self)`, and while one is alive it
+        // holds that `&mut` borrow - so this method cannot be called. No
+        // other route reaches this ring: ids are unique per `register()`,
+        // `Producer` is not `Clone`, and `Channel::get_ring` hands out `&Ring`,
+        // which cannot reserve.
+        unsafe { self.channel.rings[self.id].push_shared(item) }
     }
 
     /// Batch send (convenience).
@@ -422,7 +471,8 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     where
         T: Copy,
     {
-        self.channel.rings[self.id].send(items)
+        // SAFETY: as in `push`.
+        unsafe { self.channel.rings[self.id].send_shared(items) }
     }
 
     /// Close the producer's ring.

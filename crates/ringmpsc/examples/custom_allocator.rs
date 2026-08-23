@@ -59,7 +59,7 @@ unsafe impl BufferAllocator for VecAllocator {
 const ITEMS: usize = 2_000_000;
 const BATCH: usize = 1024;
 
-fn bench_ring<A: BufferAllocator>(name: &str, ring: &Ring<u64, A>) {
+fn bench_ring<A: BufferAllocator>(name: &str, ring: &mut Ring<u64, A>) {
     let start = Instant::now();
 
     let mut sent = 0usize;
@@ -102,7 +102,7 @@ fn bench_channel_mpsc<A: BufferAllocator + Clone + 'static>(name: &str, config: 
     for _ in 0..num_producers {
         let ch = Arc::clone(&channel);
         handles.push(thread::spawn(move || {
-            let producer = ch.register().expect("register producer");
+            let mut producer = ch.register().expect("register producer");
             let mut sent = 0;
             while sent < per_producer {
                 let want = BATCH.min(per_producer - sent);
@@ -146,14 +146,14 @@ fn main() {
     // ---- Single-threaded SPSC (no contention) ----
     println!("Single-threaded SPSC ({ITEMS} msgs):");
 
-    let heap_ring = Ring::<u64>::new(config);
-    bench_ring("HeapAllocator", &heap_ring);
+    let mut heap_ring = Ring::<u64>::new(config);
+    bench_ring("HeapAllocator", &mut heap_ring);
 
-    let aligned_ring = Ring::<u64, AlignedAllocator<128>>::new_in(config, AlignedAllocator::<128>);
-    bench_ring("AlignedAllocator<128>", &aligned_ring);
+    let mut aligned_ring = Ring::<u64, AlignedAllocator<128>>::new_in(config, AlignedAllocator::<128>);
+    bench_ring("AlignedAllocator<128>", &mut aligned_ring);
 
-    let vec_ring = Ring::<u64, VecAllocator>::new_in(config, VecAllocator);
-    bench_ring("VecAllocator", &vec_ring);
+    let mut vec_ring = Ring::<u64, VecAllocator>::new_in(config, VecAllocator);
+    bench_ring("VecAllocator", &mut vec_ring);
 
     // ---- Multi-threaded MPSC (4 producers) ----
     println!("\nMulti-threaded MPSC (4P × {} msgs):", ITEMS / 4);

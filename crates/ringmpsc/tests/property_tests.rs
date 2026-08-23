@@ -30,7 +30,7 @@ proptest! {
         reads in 0usize..100,
     ) {
         let config = Config::default(); // 64K capacity
-        let ring = Ring::<u64>::new(config);
+        let mut ring = Ring::<u64>::new(config);
         let capacity = ring.capacity();
 
         // Write some items (bounded by capacity)
@@ -71,7 +71,7 @@ proptest! {
         writes in 0usize..100,
     ) {
         const CAP: usize = 64;
-        let ring = StackRing::<u64, CAP>::new();
+        let mut ring = StackRing::<u64, CAP>::new();
 
         // Write some items using unsafe API
         let actual_writes = writes.min(CAP);
@@ -110,7 +110,7 @@ proptest! {
     fn prop_monotonic_progress(
         ops in prop::collection::vec(prop::bool::ANY, 1..50),
     ) {
-        let ring = Ring::<u64>::new(Config::default());
+        let mut ring = Ring::<u64>::new(Config::default());
 
         for write_op in ops {
             let len_before = ring.len();
@@ -148,7 +148,7 @@ proptest! {
         ops in prop::collection::vec(prop::bool::ANY, 1..30),
     ) {
         const CAP: usize = 32;
-        let ring = StackRing::<u64, CAP>::new();
+        let mut ring = StackRing::<u64, CAP>::new();
 
         for write_op in ops {
             let len_before = ring.len();
@@ -189,7 +189,7 @@ proptest! {
     fn prop_happens_before(
         writes in 0usize..50,
     ) {
-        let ring = Ring::<u64>::new(Config::default());
+        let mut ring = Ring::<u64>::new(Config::default());
 
         // Write items
         let mut produced = 0;
@@ -227,7 +227,7 @@ proptest! {
         writes in 0usize..30,
     ) {
         const CAP: usize = 32;
-        let ring = StackRing::<u64, CAP>::new();
+        let mut ring = StackRing::<u64, CAP>::new();
 
         let mut produced = 0;
         for i in 0..writes.min(CAP) {
@@ -265,7 +265,7 @@ proptest! {
         pre_fill in 0usize..50,
     ) {
         let config = Config::new(6, 1, false); // 64 capacity, 1 producer
-        let ring = Ring::<u64>::new(config);
+        let mut ring = Ring::<u64>::new(config);
         let capacity = ring.capacity();
 
         // Pre-fill some slots

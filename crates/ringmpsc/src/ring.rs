@@ -267,8 +267,28 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// # TLA+ Actions
     /// - Fast path: `ProducerReserveFast` (check `cached_head`)
     /// - Slow path: `ProducerRefreshCache` (Acquire load on head)
+    ///
+    /// Takes `&mut self`: a second `reserve` cannot borrow-check while the
+    /// first `Reservation` is alive. That is load-bearing, not stylistic. The
+    /// cursor does not advance until `commit()`, so two overlapping
+    /// reservations would be handed `&mut` slices over the *same* slots.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn reserve(&self, n: usize) -> Option<Reservation<'_, T, A>> {
+    pub fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
+        // SAFETY: `&mut self` is exclusive, so no other reservation on this
+        // ring can be outstanding.
+        unsafe { self.reserve_shared(n) }
+    }
+
+    /// Reserve without proving exclusivity through the type system.
+    ///
+    /// # Safety
+    ///
+    /// No other `Reservation` for this ring may be outstanding when this is
+    /// called, and none may be created until the returned one is committed or
+    /// dropped. Callers holding a unique handle to the ring - `&mut Ring`, or
+    /// `&mut Producer`, which is the only route to its ring - discharge this.
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) unsafe fn reserve_shared(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         if n == 0 || n > self.capacity() {
             return None;
         }
@@ -300,10 +320,27 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     }
 
     /// Reserve with adaptive backoff. Spins, yields, then gives up.
-    pub fn reserve_with_backoff(&self, n: usize) -> Option<Reservation<'_, T, A>> {
+    ///
+    /// Takes `&mut self` for the same reason as [`Ring::reserve`].
+    pub fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
+        // SAFETY: `&mut self` is exclusive, so no other reservation on this
+        // ring can be outstanding.
+        unsafe { self.reserve_with_backoff_shared(n) }
+    }
+
+    /// Backoff reserve without proving exclusivity through the type system.
+    ///
+    /// # Safety
+    ///
+    /// Same obligation as [`Ring::reserve_shared`].
+    pub(crate) unsafe fn reserve_with_backoff_shared(
+        &self,
+        n: usize,
+    ) -> Option<Reservation<'_, T, A>> {
         let mut backoff = Backoff::new();
         while !backoff.is_completed() {
-            if let Some(r) = self.reserve(n) {
+            // SAFETY: forwarded from this function's own precondition.
+            if let Some(r) = unsafe { self.reserve_shared(n) } {
                 return Some(r);
             }
             if self.is_closed() {
@@ -731,8 +768,20 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// }
     /// ```
     #[inline]
-    pub fn push(&self, item: T) -> bool {
-        self.reserve(1).is_some_and(|mut r| {
+    pub fn push(&mut self, item: T) -> bool {
+        // SAFETY: `&mut self` is exclusive, so no reservation is outstanding.
+        unsafe { self.push_shared(item) }
+    }
+
+    /// Push without proving exclusivity through the type system.
+    ///
+    /// # Safety
+    ///
+    /// Same obligation as [`Ring::reserve_shared`].
+    #[inline]
+    pub(crate) unsafe fn push_shared(&self, item: T) -> bool {
+        // SAFETY: forwarded from this function's own precondition.
+        unsafe { self.reserve_shared(1) }.is_some_and(|mut r| {
             r.as_mut_slice()[0] = std::mem::MaybeUninit::new(item);
             r.commit();
             true
@@ -740,11 +789,25 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     }
 
     /// Batch send (convenience).
-    pub fn send(&self, items: &[T]) -> usize
+    pub fn send(&mut self, items: &[T]) -> usize
     where
         T: Copy,
     {
-        self.reserve(items.len()).map_or(0, |mut reservation| {
+        // SAFETY: `&mut self` is exclusive, so no reservation is outstanding.
+        unsafe { self.send_shared(items) }
+    }
+
+    /// Batch send without proving exclusivity through the type system.
+    ///
+    /// # Safety
+    ///
+    /// Same obligation as [`Ring::reserve_shared`].
+    pub(crate) unsafe fn send_shared(&self, items: &[T]) -> usize
+    where
+        T: Copy,
+    {
+        // SAFETY: forwarded from this function's own precondition.
+        unsafe { self.reserve_shared(items.len()) }.map_or(0, |mut reservation| {
             let slice = reservation.as_mut_slice();
             let n = slice.len();
             for i in 0..n {
@@ -844,7 +907,7 @@ mod tests {
 
     #[test]
     fn test_ring_basic_reserve_commit() {
-        let ring = Ring::<u64>::new(Config::default());
+        let mut ring = Ring::<u64>::new(Config::default());
 
         // Write
         if let Some(mut r) = ring.reserve(4) {
@@ -870,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_ring_batch_consumption() {
-        let ring = Ring::<u64>::new(Config::default());
+        let mut ring = Ring::<u64>::new(Config::default());
 
         // Write 10 items
         for i in 0..10 {
@@ -891,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_ring_consume_up_to() {
-        let ring = Ring::<u64>::new(Config::default());
+        let mut ring = Ring::<u64>::new(Config::default());
 
         // Write 10 items
         for i in 0..10 {
@@ -920,7 +983,7 @@ mod tests {
     #[test]
     fn test_ring_full() {
         let config = Config::new(4, 16, false); // 16 slots
-        let ring = Ring::<u64>::new(config);
+        let mut ring = Ring::<u64>::new(config);
 
         // Fill it
         for i in 0..16 {
@@ -954,7 +1017,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let ring = Ring::<DropTracker>::new(Config::default());
+        let mut ring = Ring::<DropTracker>::new(Config::default());
 
         // Write 5 items
         for i in 0..5 {
@@ -994,7 +1057,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let ring = Ring::<DropTracker>::new(Config::default());
+        let mut ring = Ring::<DropTracker>::new(Config::default());
 
         // Write 10 items
         for i in 0..10 {

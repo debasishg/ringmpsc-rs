@@ -34,7 +34,7 @@ fn main() {
     for _id in 0..N_PRODUCERS {
         let ch = Arc::clone(&channel);
         let handle = thread::spawn(move || {
-            let producer = ch.register().unwrap();
+            let mut producer = ch.register().unwrap();
             
             let mut sent = 0;
             for _batch in 0..BATCHES {

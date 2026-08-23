@@ -25,7 +25,7 @@ fn bench_single_thread(c: &mut Criterion) {
 
     // HeapAllocator (default)
     group.bench_function("heap", |b| {
-        let ring = Ring::<u32>::new(Config::default());
+        let mut ring = Ring::<u32>::new(Config::default());
 
         b.iter(|| {
             let mut sent = 0u64;
@@ -55,7 +55,7 @@ fn bench_single_thread(c: &mut Criterion) {
 
     // AlignedAllocator<128> (cache-line aligned)
     group.bench_function("aligned_128", |b| {
-        let ring =
+        let mut ring =
             Ring::<u32, AlignedAllocator<128>>::new_in(Config::default(), AlignedAllocator::<128>);
 
         b.iter(|| {
@@ -99,7 +99,7 @@ fn bench_spsc_threaded(c: &mut Criterion) {
     group.bench_function("heap", |b| {
         b.iter(|| {
             let channel = Arc::new(Channel::<u32>::new(Config::default()));
-            let producer = channel.register().unwrap();
+            let mut producer = channel.register().unwrap();
 
             let ch = Arc::clone(&channel);
             let producer_handle = thread::spawn(move || {
@@ -140,7 +140,7 @@ fn bench_spsc_threaded(c: &mut Criterion) {
                 Config::default(),
                 AlignedAllocator::<128>,
             ));
-            let producer = channel.register().unwrap();
+            let mut producer = channel.register().unwrap();
 
             let ch = Arc::clone(&channel);
             let producer_handle = thread::spawn(move || {
@@ -198,7 +198,7 @@ fn bench_mpsc(c: &mut Criterion) {
             for _ in 0..num_producers {
                 let ch = Arc::clone(&channel);
                 handles.push(thread::spawn(move || {
-                    let producer = ch.register().unwrap();
+                    let mut producer = ch.register().unwrap();
                     let mut sent = 0u64;
                     while sent < per_producer {
                         let want = BATCH_SIZE.min((per_producer - sent) as usize);
@@ -245,7 +245,7 @@ fn bench_mpsc(c: &mut Criterion) {
             for _ in 0..num_producers {
                 let ch = Arc::clone(&channel);
                 handles.push(thread::spawn(move || {
-                    let producer = ch.register().unwrap();
+                    let mut producer = ch.register().unwrap();
                     let mut sent = 0u64;
                     while sent < per_producer {
                         let want = BATCH_SIZE.min((per_producer - sent) as usize);
