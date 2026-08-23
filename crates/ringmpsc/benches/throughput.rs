@@ -15,7 +15,7 @@ fn bench_spsc(c: &mut Criterion) {
         b.iter(|| {
             let config = Config::default();
             let channel = Arc::new(Channel::<u32>::new(config));
-            let producer = channel.register().unwrap();
+            let mut producer = channel.register().unwrap();
 
             // Producer thread
             let ch = Arc::clone(&channel);
@@ -78,7 +78,7 @@ fn bench_mpsc(c: &mut Criterion) {
                     for _ in 0..n {
                         let ch = Arc::clone(&channel);
                         let handle = thread::spawn(move || {
-                            let producer = ch.register().unwrap();
+                            let mut producer = ch.register().unwrap();
                             let mut sent = 0u64;
                             
                             while sent < MSG_PER_PRODUCER {
@@ -146,7 +146,7 @@ fn bench_batch_sizes(c: &mut Criterion) {
                 b.iter(|| {
                     let config = Config::default();
                     let channel = Arc::new(Channel::<u32>::new(config));
-                    let producer = channel.register().unwrap();
+                    let mut producer = channel.register().unwrap();
 
                     let ch = Arc::clone(&channel);
                     let producer_handle = thread::spawn(move || {
@@ -199,7 +199,7 @@ fn bench_zero_copy(c: &mut Criterion) {
         b.iter(|| {
             let config = Config::default();
             let channel = Arc::new(Channel::<[u64; 8]>::new(config));
-            let producer = channel.register().unwrap();
+            let mut producer = channel.register().unwrap();
 
             let ch = Arc::clone(&channel);
             let producer_handle = thread::spawn(move || {
@@ -264,7 +264,7 @@ fn bench_contention(c: &mut Criterion) {
                     for _ in 0..n {
                         let ch = Arc::clone(&channel);
                         let handle = thread::spawn(move || {
-                            let producer = ch.register().unwrap();
+                            let mut producer = ch.register().unwrap();
                             let mut sent = 0u64;
                             
                             while sent < msgs {

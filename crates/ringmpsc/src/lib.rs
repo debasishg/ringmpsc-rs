@@ -23,7 +23,7 @@
 //! use std::mem::MaybeUninit;
 //!
 //! let channel = Channel::<u64>::new(Config::default());
-//! let producer = channel.register().unwrap();
+//! let mut producer = channel.register().unwrap();
 //!
 //! // Simple API: push() for single items
 //! producer.push(42);

@@ -18,7 +18,7 @@ use std::mem::MaybeUninit;
 #[test]
 fn miri_ring_basic_operations() {
     let config = Config::new(4, 1, false); // Small ring for faster miri execution
-    let ring = Ring::<u64>::new(config);
+    let mut ring = Ring::<u64>::new(config);
 
     // Reserve and commit
     if let Some(mut reservation) = ring.reserve(2) {
@@ -40,7 +40,7 @@ fn miri_ring_basic_operations() {
 #[test]
 fn miri_ring_wrap_around() {
     let config = Config::new(2, 1, false); // capacity = 4
-    let ring = Ring::<u32>::new(config);
+    let mut ring = Ring::<u32>::new(config);
 
     // Fill and drain multiple times to exercise wrap-around
     for round in 0..3 {
@@ -62,7 +62,7 @@ fn miri_ring_wrap_around() {
 #[test]
 fn miri_ring_partial_reservation() {
     let config = Config::new(2, 1, false); // capacity = 4
-    let ring = Ring::<u64>::new(config);
+    let mut ring = Ring::<u64>::new(config);
 
     // Fill 3 slots
     for i in 0..3 {
@@ -114,7 +114,7 @@ fn miri_ring_drop_with_items() {
     let config = Config::new(4, 1, false);
     
     {
-        let ring = Ring::<String>::new(config);
+        let mut ring = Ring::<String>::new(config);
         
         // Push some Strings (have Drop impl)
         if let Some(mut res) = ring.reserve(2) {
@@ -140,7 +140,7 @@ fn miri_ring_drop_with_items() {
 #[test]
 fn miri_reservation_drop_without_commit() {
     let config = Config::new(4, 1, false);
-    let ring = Ring::<u64>::new(config);
+    let mut ring = Ring::<u64>::new(config);
 
     // Reserve but don't commit
     {
@@ -157,7 +157,7 @@ fn miri_reservation_drop_without_commit() {
 #[test]
 fn miri_consume_up_to_limits() {
     let config = Config::new(4, 1, false);
-    let ring = Ring::<u64>::new(config);
+    let mut ring = Ring::<u64>::new(config);
 
     // Push 3 items
     for i in 0..3 {
@@ -179,7 +179,7 @@ fn miri_consume_up_to_limits() {
 #[test]
 fn miri_push_convenience() {
     let config = Config::new(2, 1, false); // capacity = 4
-    let ring = Ring::<u64>::new(config);
+    let mut ring = Ring::<u64>::new(config);
 
     // Push until full
     assert!(ring.push(1));

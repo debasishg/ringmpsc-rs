@@ -56,7 +56,7 @@ fn run_benchmark(num_producers: usize) {
         let ch = Arc::clone(&channel);
         
         let handle = thread::spawn(move || {
-            let producer = ch.register().unwrap();
+            let mut producer = ch.register().unwrap();
             let mut sent = 0u64;
             
             while sent < MSG_PER_PRODUCER {

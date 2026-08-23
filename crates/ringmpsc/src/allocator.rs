@@ -142,7 +142,7 @@ pub use nightly::StdAllocator;
 /// use ringmpsc_rs::{AlignedAllocator, Config, Ring};
 ///
 /// // 128-byte aligned (two cache lines — eliminates false sharing)
-/// let ring = Ring::<u64, AlignedAllocator<128>>::new_in(
+/// let mut ring = Ring::<u64, AlignedAllocator<128>>::new_in(
 ///     Config::default(),
 ///     AlignedAllocator::<128>,
 /// );

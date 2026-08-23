@@ -124,7 +124,7 @@ fn test_concurrent_stress() {
 #[test]
 fn test_batch_operations() {
     let channel = Channel::<u64>::new(Config::default());
-    let producer = channel.register().unwrap();
+    let mut producer = channel.register().unwrap();
 
     // Send in batches
     const BATCH_SIZE: usize = 100;
@@ -160,7 +160,7 @@ fn test_wrap_around() {
     // Small ring to force wrap-around
     let config = Config::new(8, 16, false); // 256 slots
     let channel = Channel::<u64>::new(config);
-    let producer = channel.register().unwrap();
+    let mut producer = channel.register().unwrap();
 
     const N: usize = 10_000; // Much larger than capacity
 
@@ -186,7 +186,7 @@ fn test_wrap_around() {
 #[test]
 fn test_consume_up_to_limit() {
     let channel = Channel::<u64>::new(Config::default());
-    let producer = channel.register().unwrap();
+    let mut producer = channel.register().unwrap();
 
     // Send 1000 items
     for i in 0..1000 {

@@ -12,7 +12,7 @@ use std::ops::{Deref, DerefMut};
 
 #[test]
 fn test_heap_allocator_ring() {
-    let ring = Ring::<u64>::new(Config::default());
+    let mut ring = Ring::<u64>::new(Config::default());
     assert!(ring.push(42));
     let mut val = 0u64;
     ring.consume_batch(|item| val = *item);
@@ -21,7 +21,7 @@ fn test_heap_allocator_ring() {
 
 #[test]
 fn test_heap_allocator_ring_explicit() {
-    let ring = Ring::<u64, HeapAllocator>::new_in(Config::default(), HeapAllocator);
+    let mut ring = Ring::<u64, HeapAllocator>::new_in(Config::default(), HeapAllocator);
     assert!(ring.push(42));
     let mut val = 0u64;
     ring.consume_batch(|item| val = *item);
@@ -89,7 +89,7 @@ unsafe impl BufferAllocator for VecAllocator {
 
 #[test]
 fn test_custom_allocator_ring_basic() {
-    let ring = Ring::new_in(Config::default(), VecAllocator);
+    let mut ring = Ring::new_in(Config::default(), VecAllocator);
     assert!(ring.push(100u64));
     assert!(ring.push(200u64));
     let mut sum = 0u64;
@@ -99,7 +99,7 @@ fn test_custom_allocator_ring_basic() {
 
 #[test]
 fn test_custom_allocator_ring_reserve_commit() {
-    let ring = Ring::new_in(Config::default(), VecAllocator);
+    let mut ring = Ring::new_in(Config::default(), VecAllocator);
 
     if let Some(mut r) = ring.reserve(4) {
         let slice = r.as_mut_slice();
@@ -136,7 +136,7 @@ fn test_custom_allocator_channel_multi_producer() {
 #[test]
 fn test_custom_allocator_wrap_around() {
     let config = Config::new(2, 4, false); // ring_bits=2 → capacity = 4
-    let ring = Ring::new_in(config, VecAllocator);
+    let mut ring = Ring::new_in(config, VecAllocator);
 
     for round in 0..5u64 {
         for i in 0..4u64 {
@@ -164,7 +164,7 @@ fn test_custom_allocator_drop_behavior() {
 
     DROP_COUNT.store(0, Ordering::SeqCst);
 
-    let ring = Ring::new_in(Config::new(2, 4, false), VecAllocator);
+    let mut ring = Ring::new_in(Config::new(2, 4, false), VecAllocator);
     if let Some(mut r) = ring.reserve(3) {
         for (i, slot) in r.as_mut_slice().iter_mut().enumerate() {
             slot.write(DropTracker(i as u64));
@@ -233,7 +233,7 @@ mod nightly_tests {
         use std::alloc::Global;
 
         let alloc = StdAllocator(Global);
-        let ring = Ring::new_in(Config::default(), alloc.clone());
+        let mut ring = Ring::new_in(Config::default(), alloc.clone());
         assert!(ring.push(42u64));
         let mut val = 0u64;
         ring.consume_batch(|item| val = *item);
@@ -245,7 +245,7 @@ mod nightly_tests {
         use std::alloc::Global;
 
         let ch = Channel::new_in(Config::default(), StdAllocator(Global));
-        let p = ch.register().unwrap();
+        let mut p = ch.register().unwrap();
         p.push(99u64);
         let mut val = 0u64;
         ch.consume_all(|item| val = *item);
@@ -259,7 +259,7 @@ mod nightly_tests {
 
 #[test]
 fn test_aligned_allocator_128_ring_basic() {
-    let ring = Ring::<u64, AlignedAllocator<128>>::new_in(Config::default(), AlignedAllocator::<128>);
+    let mut ring = Ring::<u64, AlignedAllocator<128>>::new_in(Config::default(), AlignedAllocator::<128>);
     assert!(ring.push(42));
     assert!(ring.push(43));
     let mut sum = 0u64;
@@ -269,7 +269,7 @@ fn test_aligned_allocator_128_ring_basic() {
 
 #[test]
 fn test_aligned_allocator_64_ring_basic() {
-    let ring = Ring::<u64, AlignedAllocator<64>>::new_in(Config::default(), AlignedAllocator::<64>);
+    let mut ring = Ring::<u64, AlignedAllocator<64>>::new_in(Config::default(), AlignedAllocator::<64>);
     assert!(ring.push(100));
     let mut val = 0u64;
     ring.consume_batch(|item| val = *item);
@@ -292,7 +292,7 @@ fn test_aligned_allocator_buffer_is_actually_aligned() {
 
 #[test]
 fn test_aligned_allocator_reserve_commit() {
-    let ring = Ring::<u64, AlignedAllocator<128>>::new_in(Config::default(), AlignedAllocator::<128>);
+    let mut ring = Ring::<u64, AlignedAllocator<128>>::new_in(Config::default(), AlignedAllocator::<128>);
 
     if let Some(mut r) = ring.reserve(4) {
         let slice = r.as_mut_slice();
@@ -328,7 +328,7 @@ fn test_aligned_allocator_channel_multi_producer() {
 #[test]
 fn test_aligned_allocator_wrap_around() {
     let config = Config::new(2, 4, false); // capacity = 4
-    let ring = Ring::new_in(config, AlignedAllocator::<128>);
+    let mut ring = Ring::new_in(config, AlignedAllocator::<128>);
 
     for round in 0..5u64 {
         for i in 0..4u64 {
@@ -356,7 +356,7 @@ fn test_aligned_allocator_drop_behavior() {
 
     DROP_COUNT.store(0, Ordering::SeqCst);
 
-    let ring = Ring::new_in(Config::new(2, 4, false), AlignedAllocator::<128>);
+    let mut ring = Ring::new_in(Config::new(2, 4, false), AlignedAllocator::<128>);
     if let Some(mut r) = ring.reserve(3) {
         for slot in r.as_mut_slice().iter_mut() {
             slot.write(DropTracker);
@@ -494,7 +494,7 @@ mod bumpalo_tests {
     #[test]
     fn test_bumpalo_ring_basic() {
         let alloc = make_bump_allocator();
-        let ring = Ring::<u64, BumpAllocator>::new_in(Config::default(), alloc);
+        let mut ring = Ring::<u64, BumpAllocator>::new_in(Config::default(), alloc);
         assert!(ring.push(42));
         assert!(ring.push(43));
         let mut sum = 0u64;
@@ -505,7 +505,7 @@ mod bumpalo_tests {
     #[test]
     fn test_bumpalo_ring_reserve_commit() {
         let alloc = make_bump_allocator();
-        let ring = Ring::<u64, BumpAllocator>::new_in(Config::default(), alloc);
+        let mut ring = Ring::<u64, BumpAllocator>::new_in(Config::default(), alloc);
 
         if let Some(mut r) = ring.reserve(4) {
             let s = r.as_mut_slice();

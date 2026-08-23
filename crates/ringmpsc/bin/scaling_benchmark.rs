@@ -20,7 +20,7 @@ fn benchmark_config(num_producers: usize) {
     for _ in 0..num_producers {
         let ch = Arc::clone(&channel);
         let handle = thread::spawn(move || {
-            let producer = ch.register().unwrap();
+             let mut producer = ch.register().unwrap();
             let mut sent = 0u64;
             
             while sent < MSG_PER_PRODUCER {
