@@ -1,7 +1,8 @@
 use crate::allocator::{BufferAllocator, HeapAllocator};
-use crate::invariants::debug_assert_valid_ring_ptr;
 use crate::Ring;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::ptr::NonNull;
 use thiserror::Error;
 
 /// Error returned when trying to commit more items than reserved.
@@ -63,20 +64,53 @@ pub struct Reservation<'a, T, A: BufferAllocator = HeapAllocator> {
     ///
     /// We use a raw pointer instead of `&'a Ring<T, A>` to avoid borrow checker
     /// complications when the slice already borrows from the Ring's buffer.
-    ring_ptr: *const Ring<T, A>,
+    ///
+    /// `NonNull` rather than `*const`: the pointer is always derived from a
+    /// reference in `make_reservation`, so non-null is an invariant the type
+    /// should state rather than leave to a comment. Making it structural
+    /// deleted the `debug_assert_valid_ring_ptr!` null check that used to run
+    /// in `commit_n_unchecked` on every commit in debug builds.
+    ///
+    /// Note this buys no size win: `Option<Reservation<..>>` was already
+    /// niche-optimized on the `slice` reference, and stays 32 bytes either way
+    /// (see `size_tests` below).
+    ring: NonNull<Ring<T, A>>,
 
     /// Number of slots reserved (cached from `slice.len()`).
     len: usize,
+
+    /// Records the logical `&'a mut` borrow of the ring.
+    ///
+    /// Redundant-looking next to `slice`, which already carries `'a`, but it
+    /// does two things `slice` does not:
+    ///
+    /// 1. **Survives refactors.** If `slice` were ever replaced by a raw
+    ///    pointer plus a length, `'a` would become unused and this struct
+    ///    would stop compiling. This keeps the lifetime load-bearing
+    ///    regardless of how the payload is stored.
+    /// 2. **Fixes variance in `A`.** `slice` forces invariance in `T`, but
+    ///    nothing else here constrains `A` - `NonNull<Ring<T, A>>` is
+    ///    covariant in it. A reservation belongs to one specific ring with one
+    ///    specific allocator, and this says so.
+    _borrow: PhantomData<&'a mut Ring<T, A>>,
 }
 
 impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
     /// Creates a new reservation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ring_ptr` is null. Callers derive it from `&self`, so this
+    /// is unreachable in practice; the check exists so the `NonNull` invariant
+    /// is established in one place rather than assumed at each call site.
     pub(crate) fn new(slice: &'a mut [MaybeUninit<T>], ring_ptr: *const Ring<T, A>) -> Self {
         let len = slice.len();
+        let ring = NonNull::new(ring_ptr.cast_mut()).expect("ring pointer is never null");
         Self {
             slice,
-            ring_ptr,
+            ring,
             len,
+            _borrow: PhantomData,
         }
     }
 
@@ -140,10 +174,10 @@ impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
     /// Caller must ensure `n <= self.len()`.
     #[inline]
     unsafe fn commit_n_unchecked(self, n: usize) {
-        // INV-RES-03: Pointer Validity - ring_ptr valid for lifetime 'a
-        debug_assert_valid_ring_ptr!(self.ring_ptr);
-
-        let ring = &*self.ring_ptr;
+        // INV-RES-03: pointer validity is enforced by the `NonNull` field type.
+        // SAFETY: `ring` is non-null by construction and valid for `'a`, which
+        // outlives `self`.
+        let ring = unsafe { self.ring.as_ref() };
         ring.commit_internal(n);
     }
 
@@ -159,5 +193,26 @@ impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
         // SAFETY: to_commit <= self.len by construction
         unsafe { self.commit_n_unchecked(to_commit) };
         to_commit
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    /// `reserve` returns `Option<Reservation<..>>` on the hot path, so the
+    /// option must not cost a discriminant word.
+    ///
+    /// This is a regression guard, not a claim about `NonNull`: the niche comes
+    /// from the `slice` reference and was already present before `ring` became
+    /// `NonNull`. It would only break if the payload stopped being a reference.
+    #[test]
+    fn option_reservation_is_niche_optimized() {
+        type R<'a> = Reservation<'a, u64, HeapAllocator>;
+        assert_eq!(
+            std::mem::size_of::<Option<R<'static>>>(),
+            std::mem::size_of::<R<'static>>(),
+            "Option<Reservation> should use a pointer niche, not a discriminant"
+        );
     }
 }
