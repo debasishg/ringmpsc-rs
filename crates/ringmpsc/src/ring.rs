@@ -5,6 +5,7 @@ use crate::invariants::{
 };
 use crate::{Backoff, Config, Metrics, Reservation};
 use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -90,11 +91,38 @@ pub struct Ring<T, A: BufferAllocator = HeapAllocator> {
     config: Config,
 
     // === DATA BUFFER === (64-byte aligned)
+    /// Raw pointer to slot 0 of the backing buffer.
+    ///
+    /// Derived exactly once in [`Ring::new_in`], before the ring is shared with
+    /// any other thread, and never re-derived afterwards. Every concurrent
+    /// access goes through this pointer instead of through `buffer`'s
+    /// `Deref`/`DerefMut`.
+    ///
+    /// This matters for soundness, not just speed. `A::Buffer<T>` derefs to
+    /// `[MaybeUninit<T>]` spanning the *whole* allocation, so `&*self.buffer.get()`
+    /// retags every slot in the ring - including the slots the other side of the
+    /// SPSC protocol is concurrently writing. A retag counts as an access for the
+    /// purposes of the aliasing model, so that races with the producer's write
+    /// even though the slots each side actually touches are disjoint. Miri
+    /// reports it as a data race under both Stacked and Tree Borrows.
+    base: *mut MaybeUninit<T>,
+
     /// The actual ring buffer storage, allocated via [`BufferAllocator`].
     ///
     /// For the default `HeapAllocator`, this is `Box<[MaybeUninit<T>]>` —
     /// identical layout and behavior to the pre-allocator version.
-    buffer: UnsafeCell<A::Buffer<T>>,
+    ///
+    /// Owns the allocation and frees it on drop. Not read on any concurrent
+    /// path - use [`Ring::slot`] instead.
+    ///
+    /// The extra `Box` is load-bearing. Retagging a `Box` asserts uniqueness
+    /// over its pointee, so every move of the `Ring` - returning it from
+    /// `new_in`, pushing it into `ChannelInner::rings` - would retag a bare
+    /// `A::Buffer<T>` held inline and invalidate `base`. Behind this `Box` the
+    /// buffer handle has a fixed address and is never moved again, so `base`
+    /// stays valid for the ring's whole life. Costs one allocation at
+    /// construction and is never touched on a hot path.
+    buffer: Box<UnsafeCell<A::Buffer<T>>>,
 }
 
 // Safety: Ring is Send + Sync as long as T is Send.
@@ -122,9 +150,16 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// deallocation on drop.
     pub fn new_in(config: Config, alloc: A) -> Self {
         let capacity = config.capacity();
-        let buffer = alloc.allocate::<T>(capacity);
+        let buffer = Box::new(UnsafeCell::new(alloc.allocate::<T>(capacity)));
+
+        // The one and only wide `&mut` over the buffer, taken while the ring is
+        // still exclusively ours, so it races with nothing. `buffer` is already
+        // in its final heap home, and the outer `Box` keeps it there, so this
+        // pointer survives every later move of the `Ring`. See the field docs.
+        let base = unsafe { (*buffer.get()).as_mut_ptr() };
 
         Self {
+            base,
             tail: CacheAligned::new(AtomicU64::new(0)),
             cached_head: CacheAligned::new(UnsafeCell::new(0)),
             head: CacheAligned::new(AtomicU64::new(0)),
@@ -133,7 +168,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             closed: AtomicBool::new(false),
             metrics: Metrics::new(),
             config,
-            buffer: UnsafeCell::new(buffer),
+            buffer,
         }
     }
 
@@ -145,6 +180,25 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     #[inline]
     pub fn capacity(&self) -> usize {
         self.config.capacity()
+    }
+
+    /// Raw pointer to slot `idx`.
+    ///
+    /// Forms no reference, so nothing is retagged beyond the single slot the
+    /// caller goes on to touch. This is what keeps producer and consumer from
+    /// racing on the buffer as a whole - see the docs on [`Ring::base`].
+    ///
+    /// # Safety
+    ///
+    /// `idx` must be less than `capacity()`. The caller must additionally hold
+    /// the SPSC protocol's claim to slot `idx` (producer: `[tail, head+capacity)`,
+    /// consumer: `[head, tail)`) before reading or writing through the result.
+    #[inline]
+    unsafe fn slot(&self, idx: usize) -> *mut MaybeUninit<T> {
+        debug_assert!(idx < self.capacity(), "slot index {idx} out of bounds");
+        // SAFETY: `base` points at `capacity()` contiguous slots and `idx` is
+        // in bounds per the precondition.
+        unsafe { self.base.add(idx) }
     }
 
     /// Returns the index mask for wrapping.
@@ -271,10 +325,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         // 2. These slots are not being read by consumer (they're beyond current tail)
         // 3. Only the producer writes to slots between tail and tail+n
         // 4. The Reservation's commit() will publish via Release store to tail
-        let slice = unsafe {
-            let buffer = &mut *self.buffer.get();
-            &mut buffer[idx..idx + contiguous]
-        };
+        // 5. The slice spans exactly [idx, idx+contiguous), the producer's own
+        //    region, so its retag cannot overlap slots the consumer holds.
+        let slice = unsafe { std::slice::from_raw_parts_mut(self.slot(idx), contiguous) };
 
         // Create reservation with commit callback
         let ring_ptr = self as *const Self;
@@ -344,10 +397,11 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         // 2. Items in [head, tail) were written by producer and published via Release
         // 3. The Acquire load on tail synchronizes with that Release
         // 4. Only consumer reads these slots; producer won't overwrite until head advances
+        // 5. The slice spans exactly [idx, idx+contiguous), the consumer's own
+        //    region, so its retag cannot overlap slots the producer is writing.
         unsafe {
-            let buffer = &*self.buffer.get();
             Some(std::slice::from_raw_parts(
-                buffer[idx..].as_ptr().cast::<T>(),
+                self.slot(idx).cast::<T>(),
                 contiguous,
             ))
         }
@@ -453,10 +507,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // 4. assume_init_read moves ownership out - item will be dropped after handler
             // 5. Only consumer reads these slots; after head advances, slots are "empty"
             //    and producer can reuse them
-            let item = unsafe {
-                let buffer = &*self.buffer.get();
-                buffer[idx].assume_init_read()
-            };
+            // 6. Reading through `slot()` copies the one slot out without
+            //    forming a reference that spans slots the producer owns.
+            let item = unsafe { self.slot(idx).read().assume_init() };
             handler(&item);
             // `item` is dropped here, ensuring proper cleanup for T: Drop
             pos = pos.wrapping_add(1);
@@ -527,10 +580,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - handler takes ownership
             // 5. Only consumer reads these slots; after head advances, slots are "empty"
-            let item = unsafe {
-                let buffer = &*self.buffer.get();
-                buffer[idx].assume_init_read()
-            };
+            // 6. Reading through `slot()` copies the one slot out without
+            //    forming a reference that spans slots the producer owns.
+            let item = unsafe { self.slot(idx).read().assume_init() };
             handler(item); // Transfer ownership to handler
             pos = pos.wrapping_add(1);
             count += 1;
@@ -585,10 +637,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // 4. assume_init_read moves ownership out - item will be dropped after handler
             // 5. Only consumer reads these slots; after head advances, slots are "empty"
             //    and producer can reuse them
-            let item = unsafe {
-                let buffer = &*self.buffer.get();
-                buffer[idx].assume_init_read()
-            };
+            // 6. Reading through `slot()` copies the one slot out without
+            //    forming a reference that spans slots the producer owns.
+            let item = unsafe { self.slot(idx).read().assume_init() };
             handler(&item);
             // `item` is dropped here, ensuring proper cleanup for T: Drop
             pos = pos.wrapping_add(1);
@@ -645,10 +696,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - handler takes ownership
             // 5. Only consumer reads these slots; after head advances, slots are "empty"
-            let item = unsafe {
-                let buffer = &*self.buffer.get();
-                buffer[idx].assume_init_read()
-            };
+            // 6. Reading through `slot()` copies the one slot out without
+            //    forming a reference that spans slots the producer owns.
+            let item = unsafe { self.slot(idx).read().assume_init() };
             handler(item); // Transfer ownership to handler
             pos = pos.wrapping_add(1);
             count += 1;
@@ -747,14 +797,16 @@ impl<T, A: BufferAllocator> Drop for Ring<T, A> {
         if count > 0 {
             let capacity = self.capacity();
             let mask = self.mask();
-            let buffer = self.buffer.get_mut();
 
             for i in 0..count {
                 let idx = ((head as usize).wrapping_add(i)) & mask;
-                // Safety: idx bounded by mask; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01)
+                // Safety: idx bounded by mask; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01).
+                // We hold `&mut self`, so there is no concurrent access, but we still
+                // go through `slot()` rather than deref the buffer: a wide retag here
+                // would be pointless and `base` is exactly the right pointer.
                 crate::invariants::debug_assert_drop_bounds!(count, capacity, idx);
                 unsafe {
-                    ptr::drop_in_place(buffer[idx].as_mut_ptr());
+                    ptr::drop_in_place((*self.slot(idx)).as_mut_ptr());
                 }
             }
         }
