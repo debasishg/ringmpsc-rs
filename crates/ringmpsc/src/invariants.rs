@@ -119,19 +119,17 @@ macro_rules! debug_assert_initialized_read {
 // INV-RES-03: Pointer Validity
 // =============================================================================
 
-/// Assert that a ring pointer is not null.
-///
-/// **Invariant**: The raw `ring_ptr` in `Reservation` is valid for lifetime `'a`
-///
-/// Used in: `Reservation::commit_n_unchecked()`
-macro_rules! debug_assert_valid_ring_ptr {
-    ($ptr:expr) => {
-        debug_assert!(
-            !$ptr.is_null(),
-            "INV-RES-03 violated: null ring pointer"
-        )
-    };
-}
+// INV-RES-03 (ring pointer validity) no longer has a runtime assertion.
+//
+// It used to be a `debug_assert_valid_ring_ptr!` null check in
+// `Reservation::commit_n_unchecked()`. `Reservation` now stores its ring as
+// `NonNull<Ring<T, A>>`, so a null pointer is unrepresentable and the check
+// was provably dead - rustc said as much: "returned pointer of `as_ptr` call
+// is never null, so checking it for null will always return false".
+//
+// The invariant is unchanged; only its enforcement moved, from a check that
+// ran in debug builds to one the type system makes at compile time. Listed
+// here so an audit against the spec still finds INV-RES-03.
 
 // =============================================================================
 // INV-CH-03: Per-Producer FIFO (consumption count tracking)
@@ -209,7 +207,6 @@ pub(crate) use debug_assert_head_not_past_tail;
 pub(crate) use debug_assert_initialized_read;
 pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;
-pub(crate) use debug_assert_valid_ring_ptr;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_aligned;
 #[allow(unused_imports)]
