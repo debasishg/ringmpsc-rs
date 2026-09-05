@@ -88,7 +88,7 @@ where
     ///
     /// Awaits until the flusher has fsynced the batch containing the commit
     /// marker (group commit). Returns `Ok(())` once durability is guaranteed.
-    pub async fn commit(mut self, writer: &WalWriter<K, V>) -> Result<(), WalError> {
+    pub async fn commit(mut self, writer: &mut WalWriter<K, V>) -> Result<(), WalError> {
         if self.state != TxState::Active {
             return Err(WalError::AlreadyFinalized { tx_id: self.id });
         }
@@ -105,7 +105,7 @@ where
     }
 
     /// Sends an abort marker. Buffered entries are discarded.
-    pub async fn abort(mut self, writer: &WalWriter<K, V>) -> Result<(), WalError> {
+    pub async fn abort(mut self, writer: &mut WalWriter<K, V>) -> Result<(), WalError> {
         if self.state != TxState::Active {
             return Err(WalError::AlreadyFinalized { tx_id: self.id });
         }

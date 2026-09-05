@@ -56,7 +56,7 @@ impl<T: Send + 'static> RingSender<T> {
     ///
     /// Returns `Ok(())` if the item was sent, or `Err(item)` if the
     /// ring is full or closed. The item is returned on failure.
-    pub fn try_send(&self, item: T) -> Result<(), T> {
+    pub fn try_send(&mut self, item: T) -> Result<(), T> {
         use std::mem::MaybeUninit;
 
         if self.shutdown_state.is_closed() || self.producer.is_closed() {
@@ -87,7 +87,7 @@ impl<T: Send + 'static> RingSender<T> {
     ///
     /// This is a convenience method for simple async sending.
     /// Uses reserve/commit internally to ensure no item loss.
-    pub async fn send(&self, item: T) -> Result<(), StreamError> {
+    pub async fn send(&mut self, item: T) -> Result<(), StreamError> {
         use std::mem::MaybeUninit;
 
         let mut item = Some(item);
@@ -371,7 +371,7 @@ impl<T: Send + Clone + 'static> RingSender<T> {
     ///
     /// This version uses clone for compatibility with the simpler push API.
     /// For zero-copy sending, use `send()` which uses reserve/commit internally.
-    pub async fn send_cloned(&self, item: T) -> Result<(), StreamError> {
+    pub async fn send_cloned(&mut self, item: T) -> Result<(), StreamError> {
         use std::mem::MaybeUninit;
 
         loop {

@@ -183,7 +183,7 @@ async fn producer_task(
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<ProducerStats, String> {
     // Register this producer with the collector (gets dedicated SPSC ring)
-    let producer = collector
+    let mut producer = collector
         .register_producer()
         .await
         .map_err(|e| format!("Producer {producer_id} registration failed: {e}"))?;

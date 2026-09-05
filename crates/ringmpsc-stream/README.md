@@ -25,7 +25,7 @@ async fn main() {
     let (factory, mut rx) = channel::<u64>(Config::default());
 
     // Register senders explicitly (each gets its own ring)
-    let tx = factory.register().expect("registration failed");
+    let mut tx = factory.register().expect("registration failed");
 
     // Spawn sender task
     tokio::spawn(async move {

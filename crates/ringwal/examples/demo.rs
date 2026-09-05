@@ -39,14 +39,14 @@ async fn main() -> Result<(), ringwal::WalError> {
     let mut handles = Vec::new();
 
     for writer_id in 0..NUM_WRITERS {
-        let writer = factory.register()?;
+        let mut writer = factory.register()?;
         handles.push(tokio::spawn(async move {
             for i in 0..TXN_PER_WRITER {
                 let mut tx = Transaction::new();
                 let key = format!("w{writer_id}-k{i}");
                 let value = format!("writer-{writer_id}-value-{i}").into_bytes();
                 tx.insert(key, value);
-                tx.commit(&writer).await.expect("commit failed");
+                tx.commit(&mut writer).await.expect("commit failed");
             }
         }));
     }

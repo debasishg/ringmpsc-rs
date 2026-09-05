@@ -129,13 +129,13 @@ async fn ringwal_bench(
 
     let mut handles = Vec::new();
     for w in 0..num_writers {
-        let writer = factory.register().unwrap();
+        let mut writer = factory.register().unwrap();
         let payload = payload.clone();
         handles.push(tokio::spawn(async move {
             for i in 0..txn_per_writer {
                 let mut tx = ringwal::Transaction::new();
                 tx.insert(format!("k-{w}-{i}"), payload.clone());
-                tx.commit(&writer).await.unwrap();
+                tx.commit(&mut writer).await.unwrap();
             }
         }));
     }
@@ -161,7 +161,7 @@ async fn ringwal_bench_streaming(
 
     let mut handles = Vec::new();
     for w in 0..num_writers {
-        let writer = factory.register().unwrap();
+        let mut writer = factory.register().unwrap();
         let payload = payload.clone();
         handles.push(tokio::spawn(async move {
             for c in 0..commits_per_writer {

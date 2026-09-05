@@ -208,7 +208,7 @@ pub struct SpanProducer {
 
 impl SpanProducer {
     /// Submits a span with retry and backoff
-    pub fn submit_span(&self, span: Span) -> Result<(), SubmitError> {
+    pub fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         // Try to reserve with backoff
         if let Some(mut reservation) = self.producer.reserve_with_backoff(1) {
             // Write span to reservation
@@ -228,7 +228,7 @@ impl SpanProducer {
     }
 
     /// Tries to submit a span without blocking
-    pub fn try_submit_span(&self, span: Span) -> Result<(), SubmitError> {
+    pub fn try_submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         if let Some(mut reservation) = self.producer.reserve(1) {
             let slice = reservation.as_mut_slice();
             slice[0].write(span);
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_submit_and_consume_span() {
         let collector = SpanCollector::new(CollectorConfig::default());
-        let producer = collector.register().unwrap();
+        let mut producer = collector.register().unwrap();
 
         let span = Span::new(12345, 1, 0, "test-op".to_string(), SpanKind::Internal);
         producer.submit_span(span).unwrap();
@@ -273,8 +273,8 @@ mod tests {
     fn test_multiple_producers() {
         let collector = SpanCollector::new(CollectorConfig::default());
         
-        let producer1 = collector.register().unwrap();
-        let producer2 = collector.register().unwrap();
+        let mut producer1 = collector.register().unwrap();
+        let mut producer2 = collector.register().unwrap();
 
         let span1 = Span::new(1, 1, 0, "op1".to_string(), SpanKind::Server);
         let span2 = Span::new(2, 2, 0, "op2".to_string(), SpanKind::Client);
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn test_metrics() {
         let collector = SpanCollector::new(CollectorConfig::default());
-        let producer = collector.register().unwrap();
+        let mut producer = collector.register().unwrap();
 
         for i in 0..10 {
             let span = Span::new(u128::from(i), i, 0, format!("op-{i}"), SpanKind::Internal);

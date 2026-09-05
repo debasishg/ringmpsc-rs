@@ -36,7 +36,7 @@ async fn demo_basic_usage() -> Result<(), Box<dyn std::error::Error>> {
     let (factory, mut rx) = channel::<u64>(config);
 
     // Explicitly register a sender (no Clone - each sender is unique)
-    let tx = factory.register()?;
+    let mut tx = factory.register()?;
 
     // Spawn producer task
     let producer = tokio::spawn(async move {
@@ -70,9 +70,9 @@ async fn demo_multiple_producers() -> Result<(), Box<dyn std::error::Error>> {
     let (factory, mut rx) = channel::<String>(config);
 
     // Register multiple senders - each gets its own ring buffer
-    let tx1 = factory.register()?;
-    let tx2 = factory.register()?;
-    let tx3 = factory.register()?;
+    let mut tx1 = factory.register()?;
+    let mut tx2 = factory.register()?;
+    let mut tx3 = factory.register()?;
 
     println!("  Registered 3 producers");
 
@@ -125,7 +125,7 @@ async fn demo_backpressure() -> Result<(), Box<dyn std::error::Error>> {
     // Small ring to demonstrate backpressure
     let config = Config::new(4, 2, false); // 16-slot ring
     let (factory, mut rx) = channel::<u64>(config);
-    let tx = factory.register()?;
+    let mut tx = factory.register()?;
 
     // Fill the ring without consuming
     let mut sent = 0;
@@ -155,7 +155,7 @@ async fn demo_backpressure() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Drained {drained} items");
 
     // Now async send() handles backpressure automatically
-    let tx2 = factory.register()?;
+    let mut tx2 = factory.register()?;
     println!("  Using async send() with automatic backpressure...");
 
     let producer = tokio::spawn(async move {
@@ -243,7 +243,7 @@ async fn demo_configuration_presets() -> Result<(), Box<dyn std::error::Error>> 
     );
 
     let (factory, mut rx) = channel_with_stream_config::<u64>(ring_config, low_latency);
-    let tx = factory.register()?;
+    let mut tx = factory.register()?;
     tx.send(1).await?;
 
     if let Ok(Some(v)) = timeout(Duration::from_millis(50), rx.next()).await {
@@ -259,7 +259,7 @@ async fn demo_configuration_presets() -> Result<(), Box<dyn std::error::Error>> 
     );
 
     let (factory, mut rx) = channel_with_stream_config::<u64>(ring_config, high_throughput);
-    let tx = factory.register()?;
+    let mut tx = factory.register()?;
 
     // Send a batch
     for i in 0..10 {
@@ -292,7 +292,7 @@ async fn demo_graceful_shutdown() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::new(8, 2, false);
     let (factory, rx) = channel::<u64>(config);
-    let tx = factory.register()?;
+    let mut tx = factory.register()?;
 
     // Get a cloneable shutdown signal
     let shutdown_signal: ShutdownSignal = rx.shutdown_signal();

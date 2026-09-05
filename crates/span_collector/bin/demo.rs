@@ -433,7 +433,7 @@ async fn run_producer(
     verbose: bool,
 ) -> Result<ProducerStats, String> {
     // Register this producer with the collector
-    let producer = collector
+    let mut producer = collector
         .register_producer()
         .await
         .map_err(|e| format!("Registration failed: {e}"))?;

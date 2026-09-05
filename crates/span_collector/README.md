@@ -65,7 +65,7 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exporter = Arc::new(StdoutExporter::new(true));
     let collector = AsyncSpanCollector::new(AsyncCollectorConfig::default(), exporter).await;
-    let producer = collector.register_producer().await?;
+    let mut producer = collector.register_producer().await?;
 
     let span = Span::new(12345, 1, 0, "my-operation".to_string(), SpanKind::Server);
     producer.submit_span(span).await?;
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let collector = AsyncSpanCollector::new(config, exporter).await;
 
     // Register producer
-    let producer = collector.register_producer().await?;
+    let mut producer = collector.register_producer().await?;
 
     // Create and submit span
     let span = Span::new(
