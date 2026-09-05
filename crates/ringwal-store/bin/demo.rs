@@ -40,19 +40,19 @@ async fn main() -> Result<(), ringwal::WalError> {
     // ── Concurrent transactions ──
     let f1 = Arc::clone(&factory);
     let handle1 = tokio::spawn(async move {
-        let writer = f1.register().expect("register writer 1");
+        let mut writer = f1.register().expect("register writer 1");
         let mut tx = Transaction::new();
         tx.insert("key1".to_string(), b"value1".to_vec());
-        tx.commit(&writer).await.expect("commit tx1");
+        tx.commit(&mut writer).await.expect("commit tx1");
         println!("  writer-1: committed key1=value1");
     });
 
     let f2 = Arc::clone(&factory);
     let handle2 = tokio::spawn(async move {
-        let writer = f2.register().expect("register writer 2");
+        let mut writer = f2.register().expect("register writer 2");
         let mut tx = Transaction::new();
         tx.insert("key2".to_string(), b"value2".to_vec());
-        tx.commit(&writer).await.expect("commit tx2");
+        tx.commit(&mut writer).await.expect("commit tx2");
         println!("  writer-2: committed key2=value2");
     });
 

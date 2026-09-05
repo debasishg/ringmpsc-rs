@@ -114,7 +114,7 @@ where
     ///
     /// Applies backpressure (async wait) if the ring buffer is full.
     /// The entry is _not_ durable until a subsequent `commit()` completes.
-    pub async fn append(&self, entry: WalEntry<K, V>) -> Result<(), WalError> {
+    pub async fn append(&mut self, entry: WalEntry<K, V>) -> Result<(), WalError> {
         self.sender
             .send(Envelope::Entry(entry))
             .await
@@ -125,7 +125,7 @@ where
     /// containing it has been fsynced to disk (group commit).
     ///
     /// Returns `Ok(())` once durability is guaranteed.
-    pub async fn commit(&self, tx_id: u64) -> Result<(), WalError> {
+    pub async fn commit(&mut self, tx_id: u64) -> Result<(), WalError> {
         let (tx, rx) = oneshot::channel();
         let entry = WalEntry::Commit {
             tx_id,
@@ -141,7 +141,7 @@ where
     }
 
     /// Sends an abort marker for `tx_id`. Does not wait for durability.
-    pub async fn abort(&self, tx_id: u64) -> Result<(), WalError> {
+    pub async fn abort(&mut self, tx_id: u64) -> Result<(), WalError> {
         let entry = WalEntry::Abort {
             tx_id,
             timestamp: WalEntry::<K, V>::new_timestamp(),

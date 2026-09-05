@@ -247,7 +247,7 @@ impl RingwalSimulator {
 
                     let writer_idx = self.rng.gen_range(0..writers.len());
                     let num_entries = self.rng.gen_range(1..=5usize);
-                    let writer = &writers[writer_idx];
+                    let writer = &mut writers[writer_idx];
 
                     let mut tx = Transaction::<String, Vec<u8>>::new();
                     let tx_id = tx.id;
@@ -291,7 +291,7 @@ impl RingwalSimulator {
                     }
 
                     let writer_idx = self.rng.gen_range(0..writers.len());
-                    let writer = &writers[writer_idx];
+                    let writer = &mut writers[writer_idx];
 
                     let mut tx = Transaction::<String, Vec<u8>>::new();
                     let tx_id = tx.id;

@@ -3,13 +3,12 @@
 use futures::SinkExt;
 use ringmpsc_rs::Config;
 use ringmpsc_stream::{channel, channel_with_stream_config, StreamConfig, StreamExt};
-use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test]
 async fn test_basic_send_receive() {
     let (factory, mut rx) = channel::<u64>(Config::default());
-    let tx = factory.register().expect("registration failed");
+    let mut tx = factory.register().expect("registration failed");
 
     // Send items
     tx.send(1).await.expect("send failed");
@@ -34,7 +33,7 @@ async fn test_try_send_preserves_item_on_full() {
     // Create a small ring buffer
     let config = Config::new(2, 1, false); // 4 slots, 1 producer, no metrics
     let (factory, _rx) = channel::<u64>(config);
-    let tx = factory.register().expect("registration failed");
+    let mut tx = factory.register().expect("registration failed");
 
     // Fill the ring
     for i in 0..4 {
@@ -52,8 +51,8 @@ async fn test_multiple_producers() {
     let (factory, mut rx) = channel::<u64>(Config::default());
 
     // Register multiple senders
-    let tx1 = factory.register().expect("registration failed");
-    let tx2 = factory.register().expect("registration failed");
+    let mut tx1 = factory.register().expect("registration failed");
+    let mut tx2 = factory.register().expect("registration failed");
 
     // Send from both producers
     tx1.send(10).await.expect("send failed");
@@ -100,7 +99,7 @@ async fn test_sink_trait() {
 #[tokio::test]
 async fn test_graceful_shutdown() {
     let (factory, mut rx) = channel::<u64>(Config::default());
-    let tx = factory.register().expect("registration failed");
+    let mut tx = factory.register().expect("registration failed");
 
     // Send some items
     tx.send(1).await.expect("send failed");
@@ -155,7 +154,7 @@ async fn test_closed_channel_error() {
 #[tokio::test]
 async fn test_fifo_ordering_single_producer() {
     let (factory, mut rx) = channel::<u64>(Config::default());
-    let tx = factory.register().expect("registration failed");
+    let mut tx = factory.register().expect("registration failed");
 
     // Send items in order
     for i in 0..100 {
@@ -220,7 +219,7 @@ async fn test_recheck_catches_prefilled_ring() {
     let config = ringmpsc_rs::Config::new(14, 4, false);
     let (factory, mut rx) =
         channel_with_stream_config::<u64>(config, stream_config);
-    let tx = factory.register().expect("registration failed");
+    let mut tx = factory.register().expect("registration failed");
 
     // Pre-fill 100 items synchronously (all in ring before receiver runs)
     for i in 0..100u64 {
@@ -271,12 +270,11 @@ async fn test_no_lost_wakeup_multi_producer() {
 
     let mut handles = Vec::new();
     for p in 0..num_producers {
-        let tx = Arc::new(factory.register().expect("registration failed"));
-        let tx_clone = Arc::clone(&tx);
+        let mut tx = factory.register().expect("registration failed");
         handles.push(tokio::spawn(async move {
             for i in 0..items_per_producer {
                 let val = (p as u64) * 1000 + i;
-                tx_clone.send(val).await.expect("send failed");
+                tx.send(val).await.expect("send failed");
                 if i % 5 == 0 {
                     tokio::task::yield_now().await;
                 }
@@ -340,15 +338,13 @@ async fn test_no_lost_wakeup_burst_pattern() {
 
     let (factory, mut rx) =
         channel_with_stream_config::<u64>(Config::default(), stream_config);
-    let tx = Arc::new(factory.register().expect("registration failed"));
+    let mut tx = factory.register().expect("registration failed");
 
     let total = 500u64;
-    let tx_clone = Arc::clone(&tx);
     let sender = tokio::spawn(async move {
         for burst in 0..10u64 {
             for i in 0..50u64 {
-                tx_clone
-                    .send(burst * 50 + i)
+                tx.send(burst * 50 + i)
                     .await
                     .expect("send failed");
             }

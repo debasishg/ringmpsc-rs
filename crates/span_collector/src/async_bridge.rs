@@ -298,7 +298,7 @@ pub struct AsyncSpanProducer {
 
 impl AsyncSpanProducer {
     /// Submits a span, waiting if the ring buffer is full
-    pub async fn submit_span(&self, span: Span) -> Result<(), SubmitError> {
+    pub async fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         loop {
             match self.producer.try_submit_span(span.clone()) {
                 Ok(()) => return Ok(()),
@@ -312,7 +312,7 @@ impl AsyncSpanProducer {
     }
 
     /// Tries to submit a span without blocking
-    pub fn try_submit_span(&self, span: Span) -> Result<(), SubmitError> {
+    pub fn try_submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         self.producer.try_submit_span(span)
     }
 }
@@ -332,7 +332,7 @@ mod tests {
         };
         let collector = AsyncSpanCollector::new(config, exporter.clone()).await;
 
-        let producer = collector.register_producer().await.unwrap();
+        let mut producer = collector.register_producer().await.unwrap();
 
         // Submit spans
         for i in 0..10 {
@@ -359,7 +359,7 @@ mod tests {
         for producer_id in 0..4 {
             let collector_clone = Arc::clone(&collector);
             let task = tokio::spawn(async move {
-                let producer = collector_clone.register_producer().await.unwrap();
+                let mut producer = collector_clone.register_producer().await.unwrap();
                 for seq in 0..100 {
                     let span = Span::new(
                         1,
@@ -395,7 +395,7 @@ mod tests {
         let config = AsyncCollectorConfig::default();
         let collector = AsyncSpanCollector::new(config, exporter.clone()).await;
 
-        let producer = collector.register_producer().await.unwrap();
+        let mut producer = collector.register_producer().await.unwrap();
 
         // Submit spans
         for i in 0..100 {

@@ -22,12 +22,12 @@ async fn single_writer_commit() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     let mut tx = Transaction::new();
     tx.insert("key1".into(), b"value1".to_vec());
     tx.insert("key2".into(), b"value2".to_vec());
-    tx.commit(&writer).await.unwrap();
+    tx.commit(&mut writer).await.unwrap();
 
     wal.shutdown().await.unwrap();
 
@@ -56,11 +56,11 @@ async fn multi_writer_concurrent_commits() {
     for i in 0..4 {
         let f = Arc::clone(&factory);
         handles.push(tokio::spawn(async move {
-            let writer = f.register().unwrap();
+            let mut writer = f.register().unwrap();
             for j in 0..10 {
                 let mut tx = Transaction::new();
                 tx.insert(format!("w{i}-k{j}"), format!("v{i}-{j}").into_bytes());
-                tx.commit(&writer).await.unwrap();
+                tx.commit(&mut writer).await.unwrap();
             }
         }));
     }
@@ -88,17 +88,17 @@ async fn abort_discards_entries() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     // Committed transaction
     let mut tx1 = Transaction::new();
     tx1.insert("kept".into(), b"yes".to_vec());
-    tx1.commit(&writer).await.unwrap();
+    tx1.commit(&mut writer).await.unwrap();
 
     // Aborted transaction
     let mut tx2 = Transaction::new();
     tx2.insert("discarded".into(), b"no".to_vec());
-    tx2.abort(&writer).await.unwrap();
+    tx2.abort(&mut writer).await.unwrap();
 
     wal.shutdown().await.unwrap();
 
@@ -145,13 +145,13 @@ async fn segment_rotation() {
         .with_batch_hint(32);
 
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     // Write enough data to trigger segment rotation (each entry ~530 bytes)
     for i in 0..50 {
         let mut tx = Transaction::new();
         tx.insert(format!("key{i}"), vec![0u8; 512]);
-        tx.commit(&writer).await.unwrap();
+        tx.commit(&mut writer).await.unwrap();
     }
 
     wal.shutdown().await.unwrap();
@@ -194,11 +194,11 @@ async fn backpressure_no_data_loss() {
     for i in 0..4 {
         let f = Arc::clone(&factory);
         handles.push(tokio::spawn(async move {
-            let writer = f.register().unwrap();
+            let mut writer = f.register().unwrap();
             for j in 0..100 {
                 let mut tx = Transaction::new();
                 tx.insert(format!("bp-w{i}-k{j}"), vec![i as u8; 32]);
-                tx.commit(&writer).await.unwrap();
+                tx.commit(&mut writer).await.unwrap();
             }
         }));
     }
@@ -243,13 +243,13 @@ async fn checkpoint_advancement() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     // Write two transactions
     for i in 0..2 {
         let mut tx = Transaction::new();
         tx.insert(format!("k{i}"), format!("v{i}").into_bytes());
-        tx.commit(&writer).await.unwrap();
+        tx.commit(&mut writer).await.unwrap();
     }
     wal.shutdown().await.unwrap();
 
@@ -277,13 +277,13 @@ async fn checkpoint_scheduler_truncates_segments() {
         .with_batch_hint(64);
 
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     // Write enough data to generate multiple segments
     for i in 0..50 {
         let mut tx = Transaction::new();
         tx.insert(format!("key-{i}"), vec![0u8; 512]);
-        tx.commit(&writer).await.unwrap();
+        tx.commit(&mut writer).await.unwrap();
     }
 
     // Start the checkpoint scheduler with a short interval
@@ -304,17 +304,17 @@ async fn recover_into_store_replays_committed() {
     let tmp = TempDir::new().unwrap();
     let config = test_config(tmp.path());
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     // Committed transaction
     let mut tx = Transaction::new();
     tx.insert("alive".to_string(), b"yes".to_vec());
-    tx.commit(&writer).await.unwrap();
+    tx.commit(&mut writer).await.unwrap();
 
     // Aborted transaction
     let mut tx2 = Transaction::new();
     tx2.insert("dead".to_string(), b"no".to_vec());
-    tx2.abort(&writer).await.unwrap();
+    tx2.abort(&mut writer).await.unwrap();
 
     wal.shutdown().await.unwrap();
 
@@ -342,12 +342,12 @@ async fn pipelined_multi_writer_commits() {
 
     let mut handles = Vec::new();
     for w in 0..4u8 {
-        let writer = factory.register().unwrap();
+        let mut writer = factory.register().unwrap();
         handles.push(tokio::spawn(async move {
             for i in 0..50u64 {
                 let mut tx = Transaction::new();
                 tx.insert(format!("k-{w}-{i}"), vec![w; 16]);
-                tx.commit(&writer).await.unwrap();
+                tx.commit(&mut writer).await.unwrap();
             }
         }));
     }
@@ -373,12 +373,12 @@ async fn pipelined_single_writer_commit() {
         .with_sync_mode(SyncMode::Pipelined);
 
     let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let writer = factory.register().unwrap();
+    let mut writer = factory.register().unwrap();
 
     let mut tx = Transaction::new();
     tx.insert("key1".into(), b"value1".to_vec());
     tx.insert("key2".into(), b"value2".to_vec());
-    tx.commit(&writer).await.unwrap();
+    tx.commit(&mut writer).await.unwrap();
 
     wal.shutdown().await.unwrap();
 
@@ -404,12 +404,12 @@ async fn pipelined_data_only_multi_writer_commits() {
 
     let mut handles = Vec::new();
     for w in 0..4u8 {
-        let writer = factory.register().unwrap();
+        let mut writer = factory.register().unwrap();
         handles.push(tokio::spawn(async move {
             for i in 0..50u64 {
                 let mut tx = Transaction::new();
                 tx.insert(format!("k-{w}-{i}"), vec![w; 16]);
-                tx.commit(&writer).await.unwrap();
+                tx.commit(&mut writer).await.unwrap();
             }
         }));
     }
@@ -439,12 +439,12 @@ async fn pipelined_dedicated_multi_writer_commits() {
 
     let mut handles = Vec::new();
     for w in 0..4u8 {
-        let writer = factory.register().unwrap();
+        let mut writer = factory.register().unwrap();
         handles.push(tokio::spawn(async move {
             for i in 0..50u64 {
                 let mut tx = Transaction::new();
                 tx.insert(format!("k-{w}-{i}"), vec![w; 16]);
-                tx.commit(&writer).await.unwrap();
+                tx.commit(&mut writer).await.unwrap();
             }
         }));
     }

@@ -104,7 +104,7 @@ async fn test_concurrent_span_submission() {
     for producer_id in 0..16 {
         let collector_clone = Arc::clone(&collector);
         let task = tokio::spawn(async move {
-            let producer = collector_clone.register_producer().await.unwrap();
+            let mut producer = collector_clone.register_producer().await.unwrap();
             for seq in 0..25_000 {
                 let span = create_test_span(producer_id, seq);
                 producer.submit_span(span).await.unwrap();
@@ -161,7 +161,7 @@ async fn test_backpressure() {
     let collector = AsyncSpanCollector::new(config, exporter.clone()).await;
 
     // Fast producer should block gracefully (not error)
-    let producer = collector.register_producer().await.unwrap();
+    let mut producer = collector.register_producer().await.unwrap();
     
     let start = std::time::Instant::now();
     for i in 0..10_000 {
@@ -184,7 +184,7 @@ async fn test_graceful_shutdown_with_inflight_spans() {
     let config = AsyncCollectorConfig::default();
     let collector = AsyncSpanCollector::new(config, exporter.clone()).await;
 
-    let producer = collector.register_producer().await.unwrap();
+    let mut producer = collector.register_producer().await.unwrap();
 
     // Submit spans
     for i in 0..1000 {
@@ -214,7 +214,7 @@ async fn test_mixed_workload() {
     for producer_id in 0..4 {
         let collector_clone = Arc::clone(&collector);
         let task = tokio::spawn(async move {
-            let producer = collector_clone.register_producer().await.unwrap();
+            let mut producer = collector_clone.register_producer().await.unwrap();
             for seq in 0..1000 {
                 let span = create_test_span(producer_id, seq);
                 producer.submit_span(span).await.unwrap();
@@ -227,7 +227,7 @@ async fn test_mixed_workload() {
     for producer_id in 4..8 {
         let collector_clone = Arc::clone(&collector);
         let task = tokio::spawn(async move {
-            let producer = collector_clone.register_producer().await.unwrap();
+            let mut producer = collector_clone.register_producer().await.unwrap();
             for seq in 0..100 {
                 let span = create_test_span(producer_id, seq);
                 producer.submit_span(span).await.unwrap();
@@ -257,7 +257,7 @@ async fn test_span_attributes_preserved() {
     let config = AsyncCollectorConfig::default();
     let collector = AsyncSpanCollector::new(config, exporter.clone()).await;
 
-    let producer = collector.register_producer().await.unwrap();
+    let mut producer = collector.register_producer().await.unwrap();
 
     let mut span = create_test_span(0, 1);
     span.set_attribute(
