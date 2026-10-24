@@ -48,7 +48,7 @@
 //! for h in handles { h.join().unwrap(); }
 //!
 //! // Consume on main thread
-//! let total = channel.consume_all(|v| println!("{}", v));
+//! let total = channel.consumer().unwrap().consume_all(|v| println!("{}", v));
 //! ```
 //!
 //! # Size Constraints
@@ -80,6 +80,9 @@ pub enum StackChannelError {
     /// Channel is closed.
     #[error("channel is closed")]
     Closed,
+    /// A [`StackConsumer`] for this channel already exists.
+    #[error("channel already has a consumer")]
+    ConsumerTaken,
 }
 
 // =============================================================================
@@ -118,6 +121,9 @@ pub struct StackChannel<T, const N: usize, const P: usize> {
     producer_count: AtomicUsize,
     /// Whether the channel is closed
     closed: AtomicBool,
+    /// Set while a [`StackConsumer`] exists. At most one can, which is what
+    /// makes the rings single-consumer.
+    consumer_taken: AtomicBool,
     /// Array of SPSC rings, one per producer slot
     rings: [StackRing<T, N>; P],
     /// Per-producer consumption count for FIFO verification (debug only)
@@ -126,8 +132,8 @@ pub struct StackChannel<T, const N: usize, const P: usize> {
 }
 
 // Safety: StackChannel is Send + Sync as long as T is Send.
-// Each producer has exclusive access to its ring's producer API.
-// The single consumer accesses all rings but from one thread.
+// Each producer has exclusive access to its ring's producer API, and the
+// one `StackConsumer` has exclusive access to every ring's consumer API.
 unsafe impl<T: Send, const N: usize, const P: usize> Send for StackChannel<T, N, P> {}
 unsafe impl<T: Send, const N: usize, const P: usize> Sync for StackChannel<T, N, P> {}
 
@@ -171,6 +177,7 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
         Self {
             producer_count: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
+            consumer_taken: AtomicBool::new(false),
             // Initialize P rings using const evaluation
             rings: [const { StackRing::new() }; P],
             // Initialize P consumption counters (debug only)
@@ -246,138 +253,35 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     }
 
     // =========================================================================
-    // CONSUMER API
+    // CONSUMER
     // =========================================================================
 
-    /// Consume from all producers - THE FAST PATH.
+    /// Claim the channel's consumer handle.
     ///
-    /// Iterates through all registered producers' rings and processes all
-    /// available items. Each ring is batch-consumed with a single atomic
-    /// head update.
+    /// All consumption goes through the returned [`StackConsumer`]. Only one
+    /// can exist at a time: while it is alive, further calls return
+    /// [`StackChannelError::ConsumerTaken`]. Dropping it releases the claim.
     ///
-    /// # Safety Note
+    /// Draining after [`close`](Self::close) is allowed, so this does not fail
+    /// on a closed channel.
     ///
-    /// This method is safe because it wraps the unsafe ring operations
-    /// internally. The SPSC invariant is maintained: only the registered
-    /// producer writes to each ring, only this consumer reads.
+    /// # Errors
     ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut sum = 0u64;
-    /// let consumed = channel.consume_all(|value| sum += value);
-    /// println!("Consumed {} items, sum = {}", consumed, sum);
-    /// ```
-    pub fn consume_all<F>(&self, mut handler: F) -> usize
-    where
-        F: FnMut(&T),
-    {
-        let count = self.producer_count.load(Ordering::Acquire);
-        let mut total = 0;
-
-        for (producer_id, ring) in self.rings[..count].iter().enumerate() {
-            // SAFETY: We are the single consumer. Producer writes are
-            // synchronized via Release on tail, Acquire here on consume.
-            let consumed = unsafe { ring.consume_batch(&mut handler) };
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.consumed_counts[producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
+    /// - [`StackChannelError::ConsumerTaken`] if a `StackConsumer` already exists
+    pub fn consumer(&self) -> Result<StackConsumer<'_, T, N, P>, StackChannelError> {
+        // Acquire pairs with the Release in `StackConsumer::drop`, so everything
+        // the previous consumer did happens before this one starts.
+        if self.consumer_taken.swap(true, Ordering::Acquire) {
+            return Err(StackChannelError::ConsumerTaken);
         }
-
-        total
-    }
-
-    /// Consume from all producers, transferring ownership.
-    ///
-    /// Similar to [`consume_all`], but the handler receives ownership of each item.
-    /// More efficient for types expensive to clone.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut items = Vec::new();
-    /// channel.consume_all_owned(|item| items.push(item));
-    /// ```
-    pub fn consume_all_owned<F>(&self, mut handler: F) -> usize
-    where
-        F: FnMut(T),
-    {
-        let count = self.producer_count.load(Ordering::Acquire);
-        let mut total = 0;
-
-        for (producer_id, ring) in self.rings[..count].iter().enumerate() {
-            let consumed = unsafe { ring.consume_batch_owned(&mut handler) };
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.consumed_counts[producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
-        }
-
-        total
-    }
-
-    /// Consume up to `max_total` items from all producers.
-    ///
-    /// Useful for real-world processing to limit batch size and avoid
-    /// long pauses. Prefers earlier producers (ring 0, then 1, etc.).
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Process at most 1000 items per iteration
-    /// while !channel.is_closed() {
-    ///     channel.consume_all_up_to(1000, |item| process(item));
-    ///     std::thread::yield_now();
-    /// }
-    /// ```
-    pub fn consume_all_up_to<F>(&self, max_total: usize, mut handler: F) -> usize
-    where
-        F: FnMut(&T),
-    {
-        let count = self.producer_count.load(Ordering::Acquire);
-        let mut total = 0;
-
-        for (producer_id, ring) in self.rings[..count].iter().enumerate() {
-            if total >= max_total {
-                break;
-            }
-            let remaining = max_total - total;
-            let consumed = unsafe { ring.consume_up_to(remaining, &mut handler) };
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.consumed_counts[producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(producer_id, old_count, new_count);
-                self.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
-        }
-
-        total
+        Ok(StackConsumer { channel: self })
     }
 
     /// Get a reference to a specific producer's ring.
     ///
-    /// Useful for dedicated consumer patterns where each consumer reads
-    /// from a specific ring.
+    /// The ring's consumer methods are `unsafe`: calling them while this
+    /// channel's [`StackConsumer`] exists, or from two threads at once, is
+    /// undefined behavior.
     ///
     /// Returns `None` if `ring_id >= P`.
     #[inline]
@@ -411,6 +315,169 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
 impl<T, const N: usize, const P: usize> Default for StackChannel<T, N, P> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =============================================================================
+// STACK CONSUMER
+// =============================================================================
+
+/// The consuming end of a [`StackChannel`].
+///
+/// Obtained from [`StackChannel::consumer`]. A channel has at most one
+/// `StackConsumer` at a time, and every method takes `&mut self`, so exactly
+/// one thread can drain the rings. A consume moves items out of the ring
+/// before it publishes the new head, and two consumers running at once would
+/// move out the same items.
+///
+/// `StackConsumer` is not `Clone`:
+///
+/// ```compile_fail,E0599
+/// use ringmpsc_rs::StackChannel;
+///
+/// let channel: StackChannel<u64, 64, 2> = StackChannel::new();
+/// let consumer = channel.consumer().unwrap();
+/// let second = consumer.clone(); // ERROR: no method `clone`
+/// ```
+pub struct StackConsumer<'a, T, const N: usize, const P: usize> {
+    channel: &'a StackChannel<T, N, P>,
+}
+
+impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
+    /// Consume from all producers - THE FAST PATH.
+    ///
+    /// Iterates through all registered producers' rings and processes all
+    /// available items. Each ring is batch-consumed with a single atomic
+    /// head update.
+    ///
+    /// # Safety Note
+    ///
+    /// This method is safe because it wraps the unsafe ring operations
+    /// internally. The SPSC invariant is maintained: only the registered
+    /// producer writes to each ring, and only this `StackConsumer` reads,
+    /// through `&mut self`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut sum = 0u64;
+    /// let consumed = consumer.consume_all(|value| sum += value);
+    /// println!("Consumed {} items, sum = {}", consumed, sum);
+    /// ```
+    pub fn consume_all<F>(&mut self, mut handler: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        let count = self.channel.producer_count.load(Ordering::Acquire);
+        let mut total = 0;
+
+        for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
+            // SAFETY: `&mut self` is exclusive and a channel has at most one
+            // `StackConsumer`, so this is the ring's only consumer. Producer
+            // writes are synchronized via Release on tail, Acquire on consume.
+            let consumed = unsafe { ring.consume_batch(&mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.channel.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(producer_id, old_count, new_count);
+                self.channel.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+
+    /// Consume from all producers, transferring ownership.
+    ///
+    /// Similar to [`consume_all`], but the handler receives ownership of each item.
+    /// More efficient for types expensive to clone.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut items = Vec::new();
+    /// consumer.consume_all_owned(|item| items.push(item));
+    /// ```
+    pub fn consume_all_owned<F>(&mut self, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        let count = self.channel.producer_count.load(Ordering::Acquire);
+        let mut total = 0;
+
+        for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
+            // SAFETY: as in `consume_all`.
+            let consumed = unsafe { ring.consume_batch_owned(&mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.channel.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(producer_id, old_count, new_count);
+                self.channel.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+
+    /// Consume up to `max_total` items from all producers.
+    ///
+    /// Useful for real-world processing to limit batch size and avoid
+    /// long pauses. Prefers earlier producers (ring 0, then 1, etc.).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Process at most 1000 items per iteration
+    /// while !channel.is_closed() {
+    ///     consumer.consume_all_up_to(1000, |item| process(item));
+    ///     std::thread::yield_now();
+    /// }
+    /// ```
+    pub fn consume_all_up_to<F>(&mut self, max_total: usize, mut handler: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        let count = self.channel.producer_count.load(Ordering::Acquire);
+        let mut total = 0;
+
+        for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
+            if total >= max_total {
+                break;
+            }
+            let remaining = max_total - total;
+            // SAFETY: as in `consume_all`.
+            let consumed = unsafe { ring.consume_up_to(remaining, &mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.channel.consumed_counts[producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(producer_id, old_count, new_count);
+                self.channel.consumed_counts[producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+}
+
+impl<T, const N: usize, const P: usize> Drop for StackConsumer<'_, T, N, P> {
+    fn drop(&mut self) {
+        // Release pairs with the Acquire in `StackChannel::consumer`.
+        self.channel.consumer_taken.store(false, Ordering::Release);
     }
 }
 
@@ -593,7 +660,7 @@ mod tests {
         assert!(producer.push(30));
 
         let mut values = Vec::new();
-        let consumed = channel.consume_all(|v| values.push(*v));
+        let consumed = channel.consumer().unwrap().consume_all(|v| values.push(*v));
 
         assert_eq!(consumed, 3);
         assert_eq!(values, vec![10, 20, 30]);
@@ -616,7 +683,7 @@ mod tests {
         p3.push(300);
 
         let mut sum = 0u64;
-        let consumed = channel.consume_all(|v| sum += v);
+        let consumed = channel.consumer().unwrap().consume_all(|v| sum += v);
 
         assert_eq!(consumed, 3);
         assert_eq!(sum, 600);
@@ -657,7 +724,7 @@ mod tests {
 
         // But we can still consume existing items
         let mut values = Vec::new();
-        channel.consume_all(|v| values.push(*v));
+        channel.consumer().unwrap().consume_all(|v| values.push(*v));
         assert_eq!(values, vec![42]);
     }
 
@@ -671,7 +738,7 @@ mod tests {
         assert_eq!(sent, 5);
 
         let mut received = Vec::new();
-        channel.consume_all(|v| received.push(*v));
+        channel.consumer().unwrap().consume_all(|v| received.push(*v));
         assert_eq!(received, vec![1, 2, 3, 4, 5]);
     }
 
@@ -684,7 +751,7 @@ mod tests {
         producer.push("world".to_string());
 
         let mut owned: Vec<String> = Vec::new();
-        channel.consume_all_owned(|s| owned.push(s));
+        channel.consumer().unwrap().consume_all_owned(|s| owned.push(s));
 
         assert_eq!(owned, vec!["hello".to_string(), "world".to_string()]);
     }
@@ -702,7 +769,7 @@ mod tests {
 
         // Consume at most 4
         let mut sum = 0u64;
-        let consumed = channel.consume_all_up_to(4, |v| sum += v);
+        let consumed = channel.consumer().unwrap().consume_all_up_to(4, |v| sum += v);
 
         assert_eq!(consumed, 4);
         // Should get all 3 from p1 (1+2+3=6) + 1 from p2 (4) = 10

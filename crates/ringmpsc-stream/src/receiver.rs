@@ -7,7 +7,7 @@ use crate::invariants::{
     debug_assert_shutdown_drained,
 };
 use crate::shutdown::{ShutdownHandle, ShutdownSignal, ShutdownState};
-use ringmpsc_rs::Channel;
+use ringmpsc_rs::Consumer;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,7 +35,8 @@ pin_project! {
     /// before returning `None`. Can also be composed with `StreamExt::take_until`
     /// for external cancellation control.
     pub struct RingReceiver<T> {
-        channel: Arc<Channel<T>>,
+        // The channel's one consumer handle. Every drain goes through it.
+        consumer: Consumer<T>,
         data_notify: Arc<Notify>,
         backpressure_notify: Arc<Notify>,
         shutdown_state: Arc<ShutdownState>,
@@ -51,9 +52,9 @@ pin_project! {
 }
 
 impl<T: Send + 'static> RingReceiver<T> {
-    /// Creates a new receiver wrapping the given channel.
+    /// Creates a new receiver draining through the channel's consumer handle.
     pub(crate) fn new(
-        channel: Arc<Channel<T>>,
+        consumer: Consumer<T>,
         data_notify: Arc<Notify>,
         backpressure_notify: Arc<Notify>,
         shutdown_state: Arc<ShutdownState>,
@@ -67,7 +68,7 @@ impl<T: Send + 'static> RingReceiver<T> {
         };
 
         Self {
-            channel,
+            consumer,
             data_notify,
             backpressure_notify,
             shutdown_state,
@@ -163,7 +164,7 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
 
                     // Drain all remaining items
                     let mut drained = 0usize;
-                    this.channel.consume_all_owned(|item| {
+                    this.consumer.consume_all_owned(|item| {
                         this.buffer.push_back(item);
                         drained += 1;
                     });
@@ -194,7 +195,7 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
             let batch_limit = this.config.batch_hint.saturating_sub(this.buffer.len());
             if batch_limit > 0 {
                 let mut drained = 0usize;
-                this.channel.consume_all_up_to_owned(batch_limit, |item| {
+                this.consumer.consume_all_up_to_owned(batch_limit, |item| {
                     this.buffer.push_back(item);
                     drained += 1;
                 });
@@ -238,7 +239,7 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
             let batch_limit = this.config.batch_hint.saturating_sub(this.buffer.len());
             if batch_limit > 0 {
                 let mut recheck_count = 0;
-                this.channel.consume_all_up_to_owned(batch_limit, |item| {
+                this.consumer.consume_all_up_to_owned(batch_limit, |item| {
                     this.buffer.push_back(item);
                     recheck_count += 1;
                 });
@@ -272,7 +273,7 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                         this.config.batch_hint.saturating_sub(this.buffer.len());
                     if batch_limit > 0 {
                         let mut count = 0;
-                        this.channel.consume_all_up_to_owned(batch_limit, |item| {
+                        this.consumer.consume_all_up_to_owned(batch_limit, |item| {
                             this.buffer.push_back(item);
                             count += 1;
                         });
@@ -297,7 +298,7 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
         if this.shutdown_state.is_closed() {
             // Try one more drain to ensure we got everything
             let mut found_any = false;
-            this.channel.consume_all_owned(|item| {
+            this.consumer.consume_all_owned(|item| {
                 this.buffer.push_back(item);
                 found_any = true;
             });

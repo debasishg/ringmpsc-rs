@@ -32,11 +32,22 @@ if let Some(mut reservation) = producer.reserve(1) {
     reservation.commit();
 }
 
-// Receive (batch)
-let consumed = channel.consume_all(|item: &u64| {
+// Receive (batch), through the channel's one consumer handle
+let mut consumer = channel.consumer().unwrap();
+let consumed = consumer.consume_all(|item: &u64| {
     println!("Received: {}", item);
 });
 ```
+
+### One Consumer per Channel
+
+Consumption goes through a `Consumer`, claimed with `channel.consumer()`. A
+channel has at most one at a time (a second claim returns
+`ChannelError::ConsumerTaken` until the first is dropped), and its methods take
+`&mut self`. That is what keeps the rings single-consumer: a consume moves items
+out before it publishes the new head, so two consumers on one ring would both
+take the same items. `Channel` itself stays `Clone`, so any thread can still
+register producers.
 
 ### Batch Processing Example
 
@@ -55,8 +66,9 @@ for i in 0..1000 {
 }
 
 // Process all available items with single atomic update
+let mut consumer = channel.consumer().unwrap();
 let mut sum = 0u64;
-let consumed = channel.consume_all(|item| {
+let consumed = consumer.consume_all(|item| {
     sum += item;
 });
 println!("Consumed {} items, sum = {}", consumed, sum);
@@ -66,7 +78,7 @@ println!("Consumed {} items, sum = {}", consumed, sum);
 
 ```rust
 // Consume up to 1000 items at a time to avoid long pauses
-let consumed = channel.consume_all_up_to(1000, |item| {
+let consumed = consumer.consume_all_up_to(1000, |item| {
     // Do some work with item
     process_item(item);
 });
@@ -104,7 +116,8 @@ thread::spawn(move || {
 });
 
 // Consumer polls all rings
-let consumed = channel.consume_all(|item| {
+let mut consumer = channel.consumer().unwrap();
+let consumed = consumer.consume_all(|item| {
     println!("{}", item);
 });
 ```
@@ -258,7 +271,7 @@ let channel = Channel::<u64, NumaAllocator>::new_numa(
 // Usage is identical to any other Channel
 let producer = channel.register().unwrap();
 producer.push(42);
-channel.consume_all(|item: &u64| println!("Got: {}", item));
+channel.consumer().unwrap().consume_all(|item: &u64| println!("Got: {}", item));
 ```
 
 ### Custom Allocator Example
@@ -269,7 +282,7 @@ The `BufferAllocator` trait controls how ring buffers allocate their backing mem
 use ringmpsc_rs::{AlignedAllocator, Channel, Config, Ring};
 
 // 128-byte cache-line aligned (eliminates false sharing)
-let ring = Ring::<u64, AlignedAllocator<128>>::new_in(
+let mut ring = Ring::<u64, AlignedAllocator<128>>::new_in(
     Config::default(),
     AlignedAllocator::<128>,
 );
@@ -285,7 +298,7 @@ let ch = Channel::<u64, AlignedAllocator<128>>::new_in(
 );
 let producer = ch.register().unwrap();
 producer.push(99);
-ch.consume_all(|item| println!("Got: {}", item));
+ch.consumer().unwrap().consume_all(|item| println!("Got: {}", item));
 ```
 
 #### Implementing a Custom Allocator
@@ -348,7 +361,7 @@ let channel: StackChannel<u64, 4096, 4> = StackChannel::new();
 let producer = channel.register().unwrap();
 producer.push(42);
 
-channel.consume_all(|v| println!("Received: {}", v));
+channel.consumer().unwrap().consume_all(|v| println!("Received: {}", v));
 ```
 
 See `examples/stack_ring.rs` for more examples.

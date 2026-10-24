@@ -20,7 +20,7 @@ use std::mem::MaybeUninit;
 #[test]
 fn test_numa_allocator_fixed_ring_push_consume() {
     let alloc = NumaAllocator::new(NumaPolicy::Fixed(0));
-    let ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
+    let mut ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
 
     ring.push(42);
     ring.push(43);
@@ -33,7 +33,7 @@ fn test_numa_allocator_fixed_ring_push_consume() {
 #[test]
 fn test_numa_allocator_round_robin_ring() {
     let alloc = NumaAllocator::new(NumaPolicy::RoundRobin);
-    let ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
+    let mut ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
 
     for i in 0..100u64 {
         ring.push(i);
@@ -47,7 +47,7 @@ fn test_numa_allocator_round_robin_ring() {
 #[test]
 fn test_numa_allocator_producer_local_ring() {
     let alloc = NumaAllocator::new(NumaPolicy::ProducerLocal);
-    let ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
+    let mut ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
 
     ring.push(99);
     let mut val = 0u64;
@@ -62,7 +62,7 @@ fn test_numa_allocator_producer_local_ring() {
 #[test]
 fn test_numa_ring_reserve_commit() {
     let alloc = NumaAllocator::new(NumaPolicy::Fixed(0));
-    let ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
+    let mut ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
 
     if let Some(mut reservation) = ring.reserve(3) {
         let slice = reservation.as_mut_slice();
@@ -96,7 +96,7 @@ fn test_numa_channel_fixed() {
     p2.push(2);
 
     let mut values = Vec::new();
-    channel.consume_all(|item: &u64| values.push(*item));
+    channel.consumer().unwrap().consume_all(|item: &u64| values.push(*item));
     values.sort();
     assert_eq!(values, vec![1, 2]);
 }
@@ -113,7 +113,7 @@ fn test_numa_channel_round_robin() {
     }
 
     let mut sum = 0u64;
-    channel.consume_all(|item: &u64| sum += item);
+    channel.consumer().unwrap().consume_all(|item: &u64| sum += item);
     assert_eq!(sum, 0 + 1 + 2 + 3);
 }
 
@@ -126,7 +126,7 @@ fn test_numa_channel_new_numa_convenience() {
     producer.push(42);
 
     let mut val = 0u64;
-    channel.consume_all(|item: &u64| val = *item);
+    channel.consumer().unwrap().consume_all(|item: &u64| val = *item);
     assert_eq!(val, 42);
 }
 
@@ -183,7 +183,7 @@ fn test_numa_available_function() {
 #[test]
 fn test_numa_ring_drop_with_unconsumed_items() {
     let alloc = NumaAllocator::new(NumaPolicy::Fixed(0));
-    let ring = Ring::<String, NumaAllocator>::new_in(
+    let mut ring = Ring::<String, NumaAllocator>::new_in(
         Config::new(8, 1, false),
         alloc,
     );
@@ -243,6 +243,6 @@ fn test_numa_channel_multithreaded() {
     }
 
     let mut count = 0u64;
-    channel.consume_all(|_: &u64| count += 1);
+    channel.consumer().unwrap().consume_all(|_: &u64| count += 1);
     assert_eq!(count, 400);
 }

@@ -217,7 +217,7 @@ use ringmpsc_rs::{AlignedAllocator, Config, Ring};
 let ring = Ring::<u64>::new(Config::default());
 
 // Ring::new_in() accepts any BufferAllocator
-let aligned_ring = Ring::<u64, AlignedAllocator<128>>::new_in(
+let mut aligned_ring = Ring::<u64, AlignedAllocator<128>>::new_in(
     Config::default(),
     AlignedAllocator::<128>,
 );
@@ -248,8 +248,8 @@ let handle = thread::spawn(move || {
     producer.push(42);
 });
 
-channel.consume_all(|val| println!("{}", val));
 handle.join().unwrap();
+channel.consumer().unwrap().consume_all(|val| println!("{}", val));
 ```
 
 The allocator is cloned once per ring at `Channel::new_in()` time. For ZST allocators like `HeapAllocator` and `AlignedAllocator`, cloning is free.

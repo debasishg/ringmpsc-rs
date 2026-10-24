@@ -119,6 +119,8 @@ A `Reservation` grants exclusive write access to uninitialized slots. The produc
 | `head` | Consumer only | Producer (Acquire) |
 | `cached_tail` | Consumer only | Consumer only |
 
+**Enforced by**: every consumer method on `Ring` takes `&mut self`, and a `Channel` (or `StackChannel`) hands out at most one `Consumer` (`StackConsumer`) at a time, whose methods also take `&mut self`. See INV-CH-02.
+
 ### INV-SW-03: Buffer Slot Ownership
 ```
 buffer[idx] written by producer  →  head ≤ idx < tail
@@ -221,8 +223,18 @@ Each item is dropped exactly once:
 ### INV-CH-01: One Ring Per Producer
 Each `Producer<T>` is assigned a unique `Ring<T>`. No two producers share a ring.
 
-### INV-CH-02: Sequential Consumption
-`Channel::consume_all()` polls rings sequentially on a single thread. No concurrent consumption of the same ring.
+### INV-CH-02: Single Consumer
+At most one consumer drains a channel's rings at any time. No concurrent consumption of the same ring.
+
+A consume moves items out of `[head, tail)` with `assume_init_read()` before it publishes the new head, so two concurrent consumers would both move out the same items, violating INV-DROP-03.
+
+**Enforced by**:
+- `Channel::consumer()` claims a flag with `swap(true, Acquire)` and fails with `ChannelError::ConsumerTaken` while a `Consumer` exists. `Consumer::drop` releases it with `store(false, Release)`, so a later consumer, on any thread, happens-after everything the previous one did.
+- `Consumer` is not `Clone`, and its methods take `&mut self`.
+- `Channel::get_ring()` hands out `&Ring`, which cannot consume (consumer methods need `&mut Ring`).
+- `StackChannel::consumer()` / `StackConsumer` follow the same protocol.
+
+**Verified by**: `tests/miri_double_consumer_test.rs` (Miri, both borrow models), `compile_fail` doctests on `Consumer`, `StackConsumer` and `Channel::get_ring`.
 
 ### INV-CH-03: Per-Producer FIFO
 Messages from a single producer are received in send order. No global ordering across producers.

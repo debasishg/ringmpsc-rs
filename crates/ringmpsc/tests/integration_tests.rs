@@ -16,7 +16,7 @@ fn test_fifo_ordering_single_producer() {
 
     // Verify FIFO order
     let mut expected = 0;
-    let consumed = channel.consume_all(|item| {
+    let consumed = channel.consumer().unwrap().consume_all(|item| {
         assert_eq!(*item, expected, "FIFO violation: expected {expected}, got {item}");
         expected += 1;
     });
@@ -53,7 +53,7 @@ fn test_fifo_ordering_multi_producer() {
 
     // Verify per-producer FIFO
     let mut last_seen = [0u64; N_PRODUCERS];
-    let consumed = channel.consume_all(|(producer_id, value)| {
+    let consumed = channel.consumer().unwrap().consume_all(|(producer_id, value)| {
         assert_eq!(
             *value, last_seen[*producer_id],
             "FIFO violation for producer {}: expected {}, got {}",
@@ -100,7 +100,7 @@ fn test_concurrent_stress() {
         let mut total = 0;
         let mut sum = 0u64;
         while total < N_PRODUCERS * ITEMS_PER_PRODUCER as usize {
-            total += ch.consume_all(|item| sum += item);
+            total += ch.consumer().unwrap().consume_all(|item| sum += item);
             if total < N_PRODUCERS * ITEMS_PER_PRODUCER as usize {
                 thread::yield_now();
             }
@@ -142,7 +142,7 @@ fn test_batch_operations() {
 
     // Consume in batches
     let mut received = vec![];
-    let consumed = channel.consume_all(|item| {
+    let consumed = channel.consumer().unwrap().consume_all(|item| {
         received.push(*item);
     });
 
@@ -172,13 +172,13 @@ fn test_wrap_around() {
         }
 
         if i % 10 == 0 {
-            channel.consume_all(|_| {});
+            channel.consumer().unwrap().consume_all(|_| {});
         }
     }
 
     // Consume remaining
     let mut received = 0;
-    channel.consume_all(|_| received += 1);
+    channel.consumer().unwrap().consume_all(|_| received += 1);
 
     assert!(received > 0);
 }
@@ -199,7 +199,7 @@ fn test_consume_up_to_limit() {
     // Consume in chunks of 100
     let mut total = 0;
     for _ in 0..10 {
-        let consumed = channel.consume_all_up_to(100, |_| {});
+        let consumed = channel.consumer().unwrap().consume_all_up_to(100, |_| {});
         assert!(consumed <= 100);
         total += consumed;
     }

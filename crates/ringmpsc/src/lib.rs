@@ -34,8 +34,9 @@
 //!     reservation.commit();
 //! }
 //!
-//! // Batch consume
-//! let consumed = channel.consume_all(|item: &u64| {
+//! // Batch consume, through the channel's one consumer handle
+//! let mut consumer = channel.consumer().unwrap();
+//! let consumed = consumer.consume_all(|item: &u64| {
 //!     println!("Received: {}", item);
 //! });
 //! ```
@@ -64,7 +65,7 @@ pub use numa::{NumaAllocator, NumaPolicy};
 #[cfg(feature = "allocator-api")]
 pub use allocator::StdAllocator;
 pub use backoff::Backoff;
-pub use channel::{Channel, ChannelError, Producer};
+pub use channel::{Channel, ChannelError, Consumer, Producer};
 pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use reservation::{CommitError, Reservation};
@@ -76,5 +77,5 @@ pub use stack_ring::{StackRing, StackRing4K, StackRing8K, StackRing16K, StackRin
 #[cfg(feature = "stack-ring")]
 pub use stack_channel::{
     StackChannel, StackChannel4K4P, StackChannel4K8P, StackChannel4K16P, StackChannel8K4P,
-    StackChannel16K4P, StackChannelError, StackProducer,
+    StackChannel16K4P, StackChannelError, StackConsumer, StackProducer,
 };

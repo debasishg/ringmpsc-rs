@@ -104,7 +104,7 @@ fn miri_channel_multi_producer() {
 
     // Consume all
     let mut sum = 0u64;
-    channel.consume_all(|item| sum += *item);
+    channel.consumer().unwrap().consume_all(|item| sum += *item);
     assert_eq!(sum, 33);
 }
 

@@ -136,11 +136,16 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// Register a producer. Returns error if P producers already registered.
     pub fn register(&self) -> Result<StackProducer<'_, T, N, P>, ChannelError>;
 
-    /// Consume from all active producers.
-    pub fn consume_all<F: FnMut(&T)>(&self, handler: F) -> usize;
+    /// Claim the one consumer handle. Errors while another one exists.
+    pub fn consumer(&self) -> Result<StackConsumer<'_, T, N, P>, StackChannelError>;
 
     /// Close the channel and all rings.
     pub fn close(&self);
+}
+
+impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
+    /// Consume from all active producers.
+    pub fn consume_all<F: FnMut(&T)>(&mut self, handler: F) -> usize;
 }
 ```
 
@@ -199,7 +204,7 @@ let handles: Vec<_> = (0..4).map(|i| {
 }).collect();
 
 // Consumer on main thread
-let total = channel.consume_all(|v| println!("{}", v));
+let total = channel.consumer().unwrap().consume_all(|v| println!("{}", v));
 ```
 
 ### Type Aliases for Common Configurations

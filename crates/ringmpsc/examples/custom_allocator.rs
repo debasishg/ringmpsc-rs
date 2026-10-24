@@ -121,8 +121,9 @@ fn bench_channel_mpsc<A: BufferAllocator + Clone + 'static>(name: &str, config: 
     }
 
     let mut received = 0usize;
+    let mut consumer = channel.consumer().unwrap();
     while received < total {
-        received += channel.consume_all(|_| {});
+        received += consumer.consume_all(|_| {});
         if received < total {
             std::hint::spin_loop();
         }

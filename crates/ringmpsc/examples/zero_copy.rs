@@ -70,10 +70,11 @@ fn main() {
     let consumer_handle = thread::spawn(move || {
         let mut total = 0;
         let target = N_PRODUCERS * BATCHES * BATCH_SIZE;
+        let mut consumer = ch.consumer().unwrap();
         
         while total < target {
             // Batch consume with limited size to avoid long pauses
-            let consumed = ch.consume_all_up_to(10_000, |item| {
+            let consumed = consumer.consume_all_up_to(10_000, |item| {
                 // Process the item (validate it)
                 let _ = item[0]; // Touch the data
             });

@@ -14,7 +14,7 @@ This document defines the invariants for the `ringmpsc-stream` crate, which prov
 ```
 Items from a single producer are received in the order they were sent. No global ordering across producers (inherits from ringmpsc).
 
-**Implementation**: Delegates to `Channel::consume_all_owned()` which preserves per-ring FIFO.
+**Implementation**: Delegates to `Consumer::consume_all_owned()` (the channel's one consumer handle, owned by `RingReceiver`), which preserves per-ring FIFO.
 
 ### INV-STREAM-02: Hybrid Polling
 ```

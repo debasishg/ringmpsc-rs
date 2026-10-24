@@ -118,7 +118,7 @@ impl AsyncSpanCollector {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Consume up to 10K spans (prevents long pauses)
-                        let consumed = collector.consume_all_up_to(10_000, |span| {
+                        let consumed = span_consumer.consume_all_up_to(10_000, |span| {
                             batch_processor.add(span);
                         });
                         if consumed > 0 {

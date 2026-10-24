@@ -1,5 +1,5 @@
 use crate::span::Span;
-use ringmpsc_rs::{Channel, ChannelError, Config, Producer};
+use ringmpsc_rs::{Channel, ChannelError, Config, Consumer, Producer};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -138,6 +138,33 @@ impl SpanCollector {
         &self.metrics
     }
 
+    /// Claims the collector's consumer handle.
+    ///
+    /// All consumption goes through the returned [`SpanConsumer`], and only
+    /// one can exist at a time, mirroring [`Channel::consumer`].
+    pub fn consumer(&self) -> Result<SpanConsumer, ChannelError> {
+        Ok(SpanConsumer {
+            consumer: self.channel.consumer()?,
+            metrics: Arc::clone(&self.metrics),
+        })
+    }
+
+    /// Closes the channel, preventing new producers from registering
+    pub fn close(&self) {
+        self.channel.close();
+    }
+}
+
+/// Handle for consuming spans from the collector.
+///
+/// Obtained from [`SpanCollector::consumer`]. Wraps the channel's single
+/// [`Consumer`], so every method takes `&mut self`.
+pub struct SpanConsumer {
+    consumer: Consumer<Span>,
+    metrics: Arc<CollectorMetrics>,
+}
+
+impl SpanConsumer {
     /// Consumes up to `limit` spans from all producers, transferring ownership.
     ///
     /// # Design Note
@@ -148,13 +175,13 @@ impl SpanCollector {
     /// purpose of zero-copy ring buffer design.
     ///
     /// For generic use cases where `T` might be `Copy`, see the core library's
-    /// `Channel::consume_all_up_to` which provides both reference and owned variants.
-    pub fn consume_all_up_to<F>(&self, limit: usize, mut f: F) -> usize
+    /// `Consumer::consume_all_up_to` which provides both reference and owned variants.
+    pub fn consume_all_up_to<F>(&mut self, limit: usize, mut f: F) -> usize
     where
         F: FnMut(Span),
     {
         let mut consumed = 0;
-        let result = self.channel.consume_all_up_to_owned(limit, |span| {
+        let result = self.consumer.consume_all_up_to_owned(limit, |span| {
             f(span);
             consumed += 1;
         });
@@ -175,12 +202,12 @@ impl SpanCollector {
     /// This collector only provides owned consumption APIs because `Span` contains
     /// heap-allocated fields (`String`, `Box<HashMap>`) making cloning expensive.
     /// See [`consume_all_up_to`] for detailed rationale.
-    pub fn consume_all<F>(&self, mut f: F) -> usize
+    pub fn consume_all<F>(&mut self, mut f: F) -> usize
     where
         F: FnMut(Span),
     {
         let mut consumed = 0;
-        let result = self.channel.consume_all_owned(|span| {
+        let result = self.consumer.consume_all_owned(|span| {
             f(span);
             consumed += 1;
         });
@@ -192,11 +219,6 @@ impl SpanCollector {
         }
         
         result
-    }
-
-    /// Closes the channel, preventing new producers from registering
-    pub fn close(&self) {
-        self.channel.close();
     }
 }
 
@@ -260,7 +282,7 @@ mod tests {
         producer.submit_span(span).unwrap();
 
         let mut consumed = Vec::new();
-        collector.consume_all(|span| {
+        collector.consumer().unwrap().consume_all(|span| {
             consumed.push(span);  // Zero-copy: ownership transferred
         });
 
@@ -283,7 +305,7 @@ mod tests {
         producer2.submit_span(span2).unwrap();
 
         let mut consumed = Vec::new();
-        collector.consume_all(|span| {
+        collector.consumer().unwrap().consume_all(|span| {
             consumed.push(span);  // Zero-copy: ownership transferred
         });
 
@@ -302,7 +324,7 @@ mod tests {
 
         assert_eq!(collector.metrics().spans_submitted(), 10);
 
-        collector.consume_all(|_span| {
+        collector.consumer().unwrap().consume_all(|_span| {
             // Span is dropped here after processing
         });
 

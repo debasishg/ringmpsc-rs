@@ -43,10 +43,11 @@ fn main() {
     let consumer_handle = thread::spawn(move || {
         let mut total = 0;
         let mut sum = 0u64;
+        let mut consumer = ch.consumer().unwrap();
         
         while total < N_PRODUCERS * ITEMS_PER_PRODUCER {
             // Batch consume all available items
-            let consumed = ch.consume_all(|item| {
+            let consumed = consumer.consume_all(|item| {
                 sum += item;
             });
             total += consumed;
