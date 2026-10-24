@@ -371,18 +371,22 @@ impl<T, const N: usize> StackRing<T, N> {
 
         // Fast path: check cached tail
         let mut cached_tail = *self.cached_tail.get();
-        let mut avail = cached_tail.wrapping_sub(head) as usize;
 
-        if avail == 0 {
+        // `cached_tail` can trail `head` (`consume_batch*`, `consume_up_to`
+        // and `advance` move `head` without refreshing it), so compare rather
+        // than subtract: the wrapped difference would hand out unwritten
+        // slots (#17).
+        if cached_tail <= head {
             // Slow path: refresh cache from producer's tail
             cached_tail = self.tail.load(Ordering::Acquire);
             *self.cached_tail.get() = cached_tail;
-            avail = cached_tail.wrapping_sub(head) as usize;
 
-            if avail == 0 {
+            if cached_tail <= head {
                 return None;
             }
         }
+        // Now head < cached_tail <= tail.
+        let avail = (cached_tail - head) as usize;
 
         let idx = (head as usize) & Self::MASK;
         let contiguous = avail.min(N - idx);

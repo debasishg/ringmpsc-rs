@@ -19,7 +19,7 @@ Each function has the same body as the corresponding expression in `crates/ringm
 | `lemma_stale_head_underestimates_space` | the `reserve` fast path | space computed from a stale `cached_head` never exceeds the real space, so a fast-path "yes" is always right |
 | `contiguous` | `n.min(capacity - idx)` | never past the buffer end, never more than asked, non-empty if anything was asked |
 | `lemma_contiguous_slots_do_not_wrap` | `make_reservation`'s slice | sequence number `tail + k` lands on slot `idx + k`, so the slice covers exactly the reserved sequence numbers |
-| `readable_avail` | `readable`'s fast path: `cached_tail.wrapping_sub(head)` | the item count, **only if `head <= cached_tail`**. See [A bug this found](#a-bug-this-found-17). |
+| `readable_avail` | `readable`'s fast-path decision: refresh if `cached_tail <= head`, else `cached_tail - head` | correct for every pair of values, including `cached_tail < head`. See [A bug this found](#a-bug-this-found-17-fixed). |
 
 ### `src/protocol.rs`: the SPSC protocol, as a VerusSync state machine
 
@@ -60,30 +60,30 @@ Each of these deliberate breakages makes verification fail, with the error shown
 
 | Mutation | Verus reports |
 |---|---|
-| `readable_avail` without `head <= cached_tail` | postcondition not satisfied |
+| `readable_avail` with the pre-#17 logic (`cached_tail.wrapping_sub(head) == 0` decides the refresh) | postcondition not satisfied |
 | `reserve` allows one slot more than `cached_head` permits | invariant `reservation_in_free_space` fails |
 | `commit(k)` without `k <= n` | invariant `bounded_count` fails |
 | `contiguous` as `n.min(cap - idx + 1)` | postcondition not satisfied |
 | `slot_index` masks with `cap` and not `cap - 1` | postcondition not satisfied |
 | `refresh_tail` overshoots: `cached_tail = tail + 1` | invariant `caches_lag` fails |
 
-## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17))
+## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
 
-The state machine's fast-path read needs `head < cached_tail`, and `cached_tail <= tail` alone doesn't give it. The code doesn't maintain `head <= cached_tail` either:
+The state machine's fast-path read needs `head < cached_tail`, and `cached_tail <= tail` alone doesn't give it. The code didn't maintain `head <= cached_tail` either:
 
-- `consume_batch*` and `consume_up_to*` advance `head` from a fresh load of `tail` without updating `cached_tail`.
-- A later `readable()` computes `cached_tail.wrapping_sub(head)`, which wraps to a huge count when `cached_tail < head`. The `avail == 0` refresh is skipped, and `readable` returns a slice over unwritten slots.
+- `consume_batch*` and `consume_up_to*` advance `head` from a fresh load of `tail` without updating `cached_tail`, and `advance` moves `head` without loading `tail` at all.
+- A later `readable()` computed `cached_tail.wrapping_sub(head)`, which wraps to a huge count when `cached_tail < head`. The `avail == 0` refresh was skipped, and `readable` returned a slice over unwritten slots.
 
 ```rust
 let mut ring = Ring::<u64>::new(Config::new(2, 1, false));
 ring.push(7);
 ring.consume_batch(|_| {});      // head = 1, cached_tail still 0
-ring.readable();                 // Some(slice of 3 unwritten slots)
+ring.readable();                 // was: Some(slice of 3 unwritten slots); now: None
 ```
 
-Natively this returns garbage values. Under Miri it is `Undefined Behavior: ... memory is uninitialized`. `recv()` reaches the same path. In debug builds it panics on `advance`'s `debug_assert!`; in release it reads uninitialized memory too. The Quint model doesn't catch this, because it compares `ct > h` over unbounded integers.
+Natively this returned garbage values. Under Miri it was `Undefined Behavior: ... memory is uninitialized`. `recv()` and `StackRing::peek` reached the same path. The Quint model didn't catch this, because it compares `ct > h` over unbounded integers.
 
-The fix belongs in `ring.rs`: test `cached_tail > head`, or have the consume paths keep `cached_tail` current. This crate doesn't change the ring. It records the precondition in `readable_avail`.
+**The fix** compares instead of subtracting: `readable` and `peek` refresh whenever `cached_tail <= head`. Keeping `cached_tail` current in the consume paths would not have been enough on its own, because `advance(n)` moves `head` without any Acquire load of `tail`, so it has no synchronized value to cache. `readable_avail` mirrors the fixed decision and verifies with no precondition. The old logic fails its postcondition.
 
 ## Not covered (yet)
 

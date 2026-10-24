@@ -128,9 +128,9 @@ flowchart LR
 | #13 | two consumers drain one ring: double free | code review, while planning the Verus model | Miri (both borrow models) | `Consumer` handle, `miri_double_consumer_test.rs`, `compile_fail` doctests |
 | #14 | `Ring::advance(n)` past `tail` in release | code review | Miri `--release` | open |
 | #15 | `StackRing::commit` publishes unwritten slots | code review | Miri | open |
-| #17 | `readable()` returns unwritten slots after `consume_batch*` | **Verus**: the protocol needs `head <= cached_tail` | Miri | open; precondition recorded in `arith::readable_avail` |
+| #17 | `readable()` returns unwritten slots after `consume_batch*` | **Verus**: the protocol needs `head < cached_tail` | Miri | Miri regression tests, a mixed-API property test against a FIFO model, and `arith::readable_avail` (the old logic fails its proof) |
 
-Every bug that reached code so far was UB that only Miri could *confirm*. But most were *found* by asking what the type system or the model would need to hold. #17 is the clearest case: no test reached it, the Quint model can't express it, and it surfaced only because the Verus proof wouldn't go through without an assumption the code doesn't make.
+Every bug that reached code so far was UB that only Miri could *confirm*. But most were *found* by asking what the type system or the model would need to hold. #17 is the clearest case: no test reached it, the Quint model can't express it, and it surfaced only because the Verus proof wouldn't go through without an assumption the code didn't make. Once it was known, a property test that mixes the consumer APIs against a FIFO model found it in its first cases. That test is the guard now.
 
 ## Running each layer
 
