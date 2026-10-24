@@ -2,7 +2,9 @@
 //!
 //! These macros provide runtime checks for the invariants documented in `spec.md`.
 //! They are only active in debug builds (`#[cfg(debug_assertions)]`), so there is
-//! zero overhead in release builds.
+//! zero overhead in release builds. The one exception is
+//! `assert_head_not_past_tail`, which guards memory safety and stays on in
+//! release builds.
 //!
 //! Used by both `Ring<T>` and `StackRing<T, N>`.
 
@@ -26,23 +28,33 @@ macro_rules! debug_assert_bounded_count {
     };
 }
 
-/// Assert that head does not advance past tail.
+/// Assert that advancing head by `n` does not move it past tail.
 ///
-/// **Invariant**: `head ≤ tail` (after advance)
+/// **Invariant**: `n ≤ tail - head`, so `head ≤ tail` after the advance
 ///
 /// This check enforces INV-ORD-03 (HappensBefore: `head ≤ tail`) which is also
 /// implied by INV-SEQ-01 (BoundedCount: `0 ≤ (tail - head) ≤ capacity`).
 ///
+/// Unlike the other macros here, this is a real `assert!` that stays on in
+/// release builds. A head past tail is not just a broken invariant: the next
+/// consume walks `[head, tail)` as if it were initialized, and reads unwritten
+/// slots (#14). The check compares `n` with the available count rather than
+/// `head + n` with `tail`, so an `n` large enough to wrap `head + n` around,
+/// which would move head *backwards* and re-read consumed slots, fails too.
+///
 /// Used in: `advance()` before updating head
-macro_rules! debug_assert_head_not_past_tail {
-    ($new_head:expr, $tail:expr) => {
-        debug_assert!(
-            $new_head <= $tail,
-            "INV-ORD-03 violated: advancing head {} beyond tail {}",
-            $new_head,
-            $tail
+macro_rules! assert_head_not_past_tail {
+    ($head:expr, $n:expr, $tail:expr) => {{
+        let available = $tail.wrapping_sub($head);
+        assert!(
+            ($n as u64) <= available,
+            "INV-ORD-03 violated: advancing head {} by {} past tail {} ({} available)",
+            $head,
+            $n,
+            $tail,
+            available
         )
-    };
+    }};
 }
 
 // =============================================================================
@@ -203,7 +215,7 @@ macro_rules! static_assert_zst {
 pub(crate) use debug_assert_bounded_count;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_fifo_count;
-pub(crate) use debug_assert_head_not_past_tail;
+pub(crate) use assert_head_not_past_tail;
 pub(crate) use debug_assert_initialized_read;
 pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;

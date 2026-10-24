@@ -416,12 +416,12 @@ Actual state from Ring<T> driver:
 
 ### At Runtime (debug_assert!)
 
-The implementation includes `debug_assert!` macros that check invariants in debug builds:
+The implementation includes `debug_assert!` macros that check invariants in debug builds. One check guards memory safety and stays on in release builds too:
 
 ```rust
 // In ring.rs
 debug_assert_bounded_count!(count, capacity);
-debug_assert_head_not_past_tail!(head, tail);
+assert_head_not_past_tail!(head, n, tail);   // always on: a head past tail reads unwritten slots (#14)
 ```
 
 ## 7. Trust Hierarchy

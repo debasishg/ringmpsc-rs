@@ -49,7 +49,7 @@
 //! For larger buffers, use the heap-based [`Ring<T>`] or `Box<StackRing<T, N>>`.
 
 use crate::invariants::{
-    debug_assert_bounded_count, debug_assert_head_not_past_tail, debug_assert_initialized_read,
+    assert_head_not_past_tail, debug_assert_bounded_count, debug_assert_initialized_read,
     debug_assert_monotonic, debug_assert_no_wrap,
 };
 
@@ -325,12 +325,27 @@ impl<T, const N: usize> StackRing<T, N> {
 
     /// Commit `n` elements that were written after a successful `reserve()`.
     ///
+    /// Committing publishes `[tail, tail + n)` to the consumer, which then
+    /// reads those slots as initialized `T`s. Nothing here can check that
+    /// they were written, so this is `unsafe`, like `reserve` (#15).
+    ///
     /// # Safety
     ///
-    /// The caller must have written exactly `n` initialized values to the
-    /// slots returned by the preceding `reserve()` call.
+    /// - `n` must be at most the length returned by the preceding `reserve()`.
+    /// - The caller must have written `n` initialized values to the first `n`
+    ///   slots that `reserve()` returned.
+    /// - The caller must be this ring's only producer.
+    ///
+    /// Calling it without `unsafe` does not compile:
+    ///
+    /// ```compile_fail,E0133
+    /// use ringmpsc_rs::StackRing;
+    ///
+    /// let ring = StackRing::<u64, 4>::new();
+    /// ring.commit(1); // ERROR: call to unsafe function
+    /// ```
     #[inline]
-    pub fn commit(&self, n: usize) {
+    pub unsafe fn commit(&self, n: usize) {
         let tail = self.tail.load(Ordering::Relaxed);
         let new_tail = tail.wrapping_add(n as u64);
         let head = self.head.load(Ordering::Relaxed);
@@ -397,18 +412,27 @@ impl<T, const N: usize> StackRing<T, N> {
 
     /// Advance the head pointer after reading `n` items.
     ///
-    /// # Safety
+    /// Normally `n` is the number of items read (and optionally dropped)
+    /// from the slots returned by the preceding `peek()` call. Advancing past
+    /// items without reading them skips them without dropping them (a leak,
+    /// not UB).
     ///
-    /// The caller must have read (and optionally dropped) exactly `n` items
-    /// from the slots returned by the preceding `peek()` call.
+    /// # Panics
+    ///
+    /// If `n` is more than the number of published items, in every build
+    /// profile. Moving head past tail would make the next consume read
+    /// unwritten slots.
     #[inline]
     pub fn advance(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
-        let new_head = head.wrapping_add(n as u64);
         let tail = self.tail.load(Ordering::Relaxed);
 
-        // INV-SEQ-01: Bounded Count - can't consume more than available
-        debug_assert_head_not_past_tail!(new_head, tail);
+        // INV-SEQ-01: Bounded Count - can't consume more than available.
+        // Checked in release builds too (#14). A Relaxed load of tail is
+        // enough: tail only grows, so a stale value only makes this stricter,
+        // and advance never reads the slots it moves past.
+        assert_head_not_past_tail!(head, n, tail);
+        let new_head = head.wrapping_add(n as u64);
 
         // INV-SEQ-02: Monotonic Progress - head only increases
         debug_assert_monotonic!("head", head, new_head);

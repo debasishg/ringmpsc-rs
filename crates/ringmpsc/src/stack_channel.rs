@@ -543,9 +543,29 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     }
 
     /// Commit `n` elements that were written after `reserve()`.
+    ///
+    /// # Safety
+    ///
+    /// - `n` must be at most the length returned by the preceding `reserve()`.
+    /// - The caller must have written `n` initialized values to the first `n`
+    ///   slots that `reserve()` returned.
+    ///
+    /// Without that, the consumer would read unwritten slots as `T`s (#15).
+    /// Calling it without `unsafe` does not compile:
+    ///
+    /// ```compile_fail,E0133
+    /// use ringmpsc_rs::StackChannel;
+    ///
+    /// let channel: StackChannel<u64, 4, 1> = StackChannel::new();
+    /// let producer = channel.register().unwrap();
+    /// producer.commit(1); // ERROR: call to unsafe function
+    /// ```
     #[inline]
-    pub fn commit(&self, n: usize) {
-        self.channel.rings[self.id].commit(n)
+    pub unsafe fn commit(&self, n: usize) {
+        // SAFETY: forwarded from this function's own contract. A
+        // `StackProducer` is its ring's only producer: ids are unique per
+        // `register()` and `StackProducer` is not `Clone`.
+        unsafe { self.channel.rings[self.id].commit(n) }
     }
 
     /// Push a single item. Returns `true` if successful.

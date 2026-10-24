@@ -107,8 +107,9 @@ impl<T, const N: usize> StackRing<T, N> {
     /// Returns pointer and actual reserved length (may be < n due to wrap).
     pub unsafe fn reserve(&self, n: usize) -> Option<(*mut T, usize)>;
 
-    /// Commit n elements that were written.
-    pub fn commit(&self, n: usize);
+    /// Commit n elements that were written. Unsafe: the caller promises the
+    /// first n reserved slots were written (#15).
+    pub unsafe fn commit(&self, n: usize);
 
     /// Peek at available data for reading.
     pub unsafe fn peek(&self) -> (*const T, usize);

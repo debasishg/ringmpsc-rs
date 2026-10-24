@@ -277,16 +277,18 @@ macro_rules! debug_assert_bounded_count {
     };
 }
 
-/// Assert that head does not advance past tail.
-macro_rules! debug_assert_head_not_past_tail {
-    ($new_head:expr, $tail:expr) => {
-        debug_assert!(
-            $new_head <= $tail,
-            "INV-ORD-03 violated: advancing head {} beyond tail {}",
-            $new_head,
-            $tail
+/// Assert that advancing head by `n` does not move it past tail.
+/// A real `assert!`, on in release builds too: a head past tail makes the
+/// next consume read unwritten slots (#14).
+macro_rules! assert_head_not_past_tail {
+    ($head:expr, $n:expr, $tail:expr) => {{
+        let available = $tail.wrapping_sub($head);
+        assert!(
+            ($n as u64) <= available,
+            "INV-ORD-03 violated: advancing head {} by {} past tail {} ({} available)",
+            $head, $n, $tail, available
         )
-    };
+    }};
 }
 ```
 
@@ -318,16 +320,14 @@ The macros are invoked at the **exact points** where the invariant could be viol
 │                                                                 │
 │  fn advance(&self, count: usize) {                              │
 │      let old_head = self.head.load(Relaxed);                    │
-│      let new_head = old_head + count as u64;                    │
+│      let tail = self.tail.load(Relaxed);                        │
 │                                                                 │
 │      // ┌────────────────────────────────────────────────────┐  │
-│      // │ INV-ORD-03 CHECK POINT                             │  │
+│      // │ INV-ORD-03 CHECK POINT (all build profiles)        │  │
 │      // │ Head must never advance past tail                  │  │
 │      // └────────────────────────────────────────────────────┘  │
-│      debug_assert_head_not_past_tail!(                          │
-│          new_head,                                              │
-│          self.tail.load(Acquire)                                │
-│      );                                                         │
+│      assert_head_not_past_tail!(old_head, count, tail);         │
+│      let new_head = old_head + count as u64;                    │
 │                                                                 │
 │      self.head.store(new_head, Release);                        │
 │  }                                                              │
@@ -573,7 +573,7 @@ Here is the full verification cycle showing how each layer catches different cla
 │        │  │  ring.rs / stack_ring.rs             │                      │
 │        │  │                                      │                      │
 │        │  │  debug_assert_bounded_count!(...)    │                      │
-│        │  │  debug_assert_head_not_past_tail!(..)│                      │
+│        │  │  assert_head_not_past_tail!(..)      │                      │
 │        │  └──────────────────────────────────────┘                      │
 │        │                                                                │
 │        │  ┌────────────────────────────────────────────────────┐        │

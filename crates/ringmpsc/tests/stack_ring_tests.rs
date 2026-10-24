@@ -266,3 +266,31 @@ fn test_stack_ring_peek_after_consume_batch() {
         assert_eq!(*ptr, 8);
     }
 }
+
+/// #14: `StackRing::advance` past tail panics in every build profile.
+#[test]
+#[should_panic(expected = "INV-ORD-03 violated")]
+fn test_stack_ring_advance_past_tail_panics() {
+    let ring = StackRing::<u64, 4>::new();
+    ring.advance(1);
+}
+
+/// #14: a wrapping `n` would move head backwards; it panics too.
+#[test]
+#[should_panic(expected = "INV-ORD-03 violated")]
+fn test_stack_ring_advance_wrapping_n_panics() {
+    let ring = StackRing::<u64, 4>::new();
+    // SAFETY: single thread, so this is the only producer and consumer; each
+    // reserve is followed by writing exactly the reserved slot and committing.
+    unsafe {
+        let (ptr, _) = ring.reserve(1).unwrap();
+        ptr.write(1);
+        ring.commit(1);
+        ring.consume_batch(|_| {}); // head = 1
+        let (ptr, _) = ring.reserve(1).unwrap();
+        ptr.write(2);
+        ring.commit(1); // tail = 2
+    }
+    ring.advance(usize::MAX); // 1 + MAX wraps to 0
+}
+
