@@ -12,7 +12,7 @@ flowchart TB
         direction LR
         QS["<b>Quint</b> · RingSPSC.qnt<br/>safety invariants<br/><i>quint run, TLC, Apalache</i><br/>bounded: CAPACITY = 4"]
         QL["<b>Quint</b> · RingSPSCLiveness.qnt<br/>leadsTo, weakFair<br/><i>TLC</i><br/>bounded"]
-        VP["<b>Verus</b> · protocol.rs<br/>VerusSync state machine<br/><i>Z3</i><br/>every capacity"]
+        VP["<b>Verus</b> · protocol.rs, slots.rs<br/>VerusSync state machines<br/><i>Z3</i><br/>every capacity"]
     end
 
     subgraph BRIDGE["2 · Bridge: does the code follow the design?"]
@@ -43,7 +43,7 @@ flowchart TB
     MBT --> CODE
     PT --> CODE
     VA -. "mirrors" .-> CODE
-    VP -. "not yet connected" .-> CODE
+    VP -. "proves its own ring (ring.rs),<br/>not the production code" .-> CODE
     STATIC --> CODE
     DYNAMIC --> CODE
 ```
@@ -59,6 +59,7 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | **Quint** liveness | If the consumer keeps running, does every item get consumed? | `RingSPSCLiveness.qnt` | the model, bounded | proof, for that bound |
 | **Verus** protocol | Are the invariants inductive, so they hold for every capacity and history? | `protocol.rs` | the model, unbounded | proof |
 | **Verus** arithmetic | Are masking, `len`, `space` and `contiguous` right for every input? | `arith.rs` (same bodies as `ring.rs`) | a copy of the code, unbounded | proof |
+| **Verus** exec ring | Is a ring with the production design memory-safe and a correct FIFO for every input? | `verus/.../ring.rs` on `slots.rs` (single-threaded) | a verified ring, not the production one | proof |
 | **quint-connect** | Does the real `Ring` do what the spec says, step by step? | spec traces replayed on `Ring<T>` | the real code | evidence |
 | **proptest** | Do the spec's invariants hold on random operation sequences? | `Ring<T>`, `StackRing` | the real code | evidence |
 | **borrow checker** | Can two producers, or two consumers, reach one ring at once? | the public API's signatures | the real code, all programs | proof, of exclusivity only |
@@ -82,11 +83,11 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | One producer, one consumer per ring | 🟡 assumed | 🟡 assumed | ⬜ | ✅ | ✅ repro | ⬜ | ⬜ |
 | Memory orderings (`Acquire`/`Release`) | ⬜ | ⬜ ² | ⬜ | ⬜ | ✅ | ✅ replica | ⬜ |
 | Aliasing (`&mut` uniqueness, retags) | ⬜ | ⬜ | ⬜ | 🟡 | ✅ | ⬜ | ⬜ |
-| Uninitialized reads, double free | ⬜ | ⬜ ³ | ⬜ | ⬜ | ✅ | ⬜ | ⬜ |
+| Uninitialized reads, double free | ⬜ | 🟡 ³ | ⬜ | ⬜ | ✅ | ⬜ | ⬜ |
 
 1. Both models guard the producer by `cached_head`, which is what the code reads on the fast path, and carry the invariant `cached_head <= hd` (`cachesLag` in Quint, `caches_lag` in Verus). Quint checks it at the bound; Verus proves it for every capacity.
 2. Verus treats atomics as sequentially consistent. That rules out reasoning about weaker orderings.
-3. Planned. Once slots are `PCell`s whose `PointsTo` tokens live in the protocol, Verus covers this for all inputs.
+3. Proven for the verified ring in `verus/ringmpsc-verified/src/ring.rs` (#22): its slots are `PCell`s whose `PointsTo` tokens live in the protocol, so every read needs an initialized token. Single-threaded so far, and not the production `Ring`.
 
 ## Quint and Verus: the overlap
 
@@ -105,7 +106,7 @@ Both models are maintained by hand, so they can drift. When they disagree on saf
 ```mermaid
 flowchart LR
     Q["Quint model"] -->|"quint-connect<br/>replays traces"| R["real Ring"]
-    VP["Verus protocol"] -.->|"gap: no exec ring yet"| R
+    VP["Verus protocol + ring.rs"] -.->|"gap: verifies its own ring,<br/>not the production one"| R
     VA["Verus arith.rs"] -.->|"gap: bodies copied by hand"| R
     L["loom LoomRing"] -.->|"gap: a replica,<br/>not the real Ring"| R
     M["Miri"] -->|"runs the real code,<br/>but only tested inputs"| R
@@ -113,7 +114,7 @@ flowchart LR
 
 | Gap | Risk | Mitigation |
 |---|---|---|
-| The Verus protocol isn't connected to the exec ring | a proven design, implemented differently | planned exec phases: `PCell` slots, then atomics holding the protocol's tokens |
+| Verus verifies its own exec ring (`ring.rs`), not the production `Ring` | the production code drifts from the verified design | the verified ring follows the production design line by line; phase 7 (#26) runs the same tests on both and decides whether the verified ring replaces the production one |
 | `arith.rs` copies `ring.rs` bodies by hand | the two drift apart | review both together; once the exec ring is verified, it calls the verified functions directly |
 | loom tests `LoomRing`, not `Ring` | the replica's orderings differ from the real ones | keep `LoomRing` in sync with `ring.rs`, or run loom on `Ring` via a `cfg(loom)` atomics shim |
 | Miri sees only the executions a test drives | a bug on an untested path | Miri runs targeted repros, and Verus covers the paths no test reaches |

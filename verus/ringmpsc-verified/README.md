@@ -54,6 +54,36 @@ The two models agree on state, actions and the safety invariants. Both guard the
 
 The models are maintained by hand. If they ever disagree on safety, this proof is the authority. Quint remains the only liveness check, and the source of the traces `quint-connect` replays against the real `Ring`.
 
+### `src/slots.rs` and `src/ring.rs`: a verified exec ring (phase 3, [#22](https://github.com/debasishg/ringmpsc-rs/issues/22))
+
+`slots.rs` is the protocol with the ring's memory in it: a VerusSync machine, `SpscSlots<T>`, whose `storage_map` holds a `PointsTo` permission token for every slot. Tokens are keyed by sequence number over the window `[head, head + cap)`, and sequence number `s` uses cell `cells[s % cap]`. A side can touch a slot only by withdrawing its token through a transition, and the transitions only allow what the protocol allows:
+
+| Transition | Code | Token movement |
+|---|---|---|
+| `produce_start` | `push`, before the write | withdraw the uninitialized token for `tail`, if `tail < cached_head + cap` |
+| `produce_end` | `tail.store(tail + 1)` | deposit it back initialized; append the value to the ghost `queue` |
+| `consume_start` | `pop`, before the read | withdraw the initialized token for `head`, if `head < cached_tail`; its value is `queue[0]` |
+| `consume_end` | `head.store(head + 1)` | deposit it back uninitialized under `head + cap`, the next sequence number for that cell |
+| `refresh_head`, `refresh_tail` | the slow paths | update the caches |
+
+The invariant `window` says every sequence number in the window has its token either in storage (initialized with `queue[s - head]` if published, uninitialized if not) or with the side that withdrew it, never both. It is proven inductive for every capacity.
+
+`ring.rs` is an exec `Ring<T>` built on it, single-threaded, with the same design as the production ring: unbounded `u64` sequence numbers, `arith::slot_index` for `seq & mask`, and a cached head and tail with fast and slow paths. Each slot is a `vstd` `PCell<T>`, which is `UnsafeCell<MaybeUninit<T>>` underneath, the production layout. It proves:
+
+| | Proven |
+|---|---|
+| **No uninitialized read** | `take` needs an initialized token, and the protocol hands one out only for a published sequence number |
+| **No double free** | a slot's token is unique, and `take` leaves it uninitialized until the producer writes again |
+| **FIFO** | `push` appends to the view; `pop` returns `view[0]`; `consume_up_to(max)` returns `view.take(k)` for `k = min(max, len)` |
+| **Completeness** | `push` succeeds whenever the ring isn't full |
+| **No sequence-number overflow** | `push` refuses once `tail == u64::MAX` (about 58 years at 10 billion items a second) instead of wrapping: INV-SEQ-03 as a checked fact |
+
+`pop` mirrors `readable`'s fast path as fixed in #17: it reads by the cached tail only when `cached_tail > head`. With the old `wrapping_sub` check it fails verification (mutation M7 below).
+
+Single-threaded for now: the ring holds every token itself. Phase 4 ([#23](https://github.com/debasishg/ringmpsc-rs/issues/23)) splits the tokens between a producer half and a consumer half, and puts `head` and `tail` in atomics. Batches (`reserve(n)`/`commit(k)`) and slice access (`readable`) come with the zero-copy `Reservation` in phase 5 ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)).
+
+Items still in the ring when it is dropped are leaked, not dropped: a `PCell` doesn't drop its contents. That is safe, unlike the production ring's `Drop`, which drops them. A verified drain-on-drop comes with phase 4.
+
 ### The proofs aren't vacuous
 
 Each of these deliberate breakages makes verification fail, with the error shown:
@@ -66,6 +96,12 @@ Each of these deliberate breakages makes verification fail, with the error shown
 | `contiguous` as `n.min(cap - idx + 1)` | postcondition not satisfied |
 | `slot_index` masks with `cap` and not `cap - 1` | postcondition not satisfied |
 | `refresh_tail` overshoots: `cached_tail = tail + 1` | invariant `caches_lag` fails |
+| M7: `pop` uses the pre-#17 check, `cached_tail.wrapping_sub(head) == 0` | precondition not satisfied (`consume_start` needs `head < cached_tail`) |
+| M8: `push` without the slow path (no `head` reload) | postcondition not satisfied ("not full implies `Ok`") |
+| M9: `push` writes slot `tail + 1` | precondition not satisfied (the token belongs to another cell) |
+| M10: `pop` takes the item twice, a double free | precondition not satisfied (the second `take` needs an initialized token) |
+| M11: the token goes back under `head` and not `head + cap` | invariant `window` fails |
+| M12: `push` without the `tail == u64::MAX` guard | possible arithmetic overflow |
 
 ## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
 
@@ -87,8 +123,9 @@ Natively this returned garbage values. Under Miri it was `Undefined Behavior: ..
 
 ## Not covered (yet)
 
-- **Slot contents and memory.** The protocol says *which* slots each side may touch. Tying that to real memory takes the exec ring, with `PCell` slots and `PointsTo` permission tokens held by the protocol.
-- **Atomics and threads.** `head`/`tail` as `vstd` atomics whose invariants hold the protocol's tokens.
+- **Atomics and threads** ([#23](https://github.com/debasishg/ringmpsc-rs/issues/23)). `head`/`tail` as `vstd` atomics whose invariants hold the protocol's tokens.
+- **Batches and slices** ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)). `reserve(n)`/`commit(k)` and `readable`'s `&[T]`.
+- **The production ring.** `ring.rs` is a verified ring with the production design, not the production code. Whether it replaces `crates/ringmpsc`'s `Ring` is decided in [#26](https://github.com/debasishg/ringmpsc-rs/issues/26).
 - **Memory orderings.** Verus treats atomics as sequentially consistent, so it can't show `Relaxed`/`Acquire`/`Release` suffice. That stays with loom and Miri.
 - **Liveness.** That stays in `RingSPSCLiveness.qnt`.
 - `Channel`, `StackRing`, allocators, NUMA.
@@ -108,6 +145,13 @@ cargo verus focus     # verify this crate only (vstd is trusted)
 cargo verus verify    # verify vstd too, then this crate
 ```
 
-Expected output: `verification results:: 31 verified, 0 errors`.
+Expected output: `verification results:: 54 verified, 0 errors`.
 
-Cargo caches the result: if nothing changed since the last run, you get only `Finished`. A plain `cargo build` (which compiles, with the ghost code erased) shares `target/` and can also make the next `cargo verus` skip verification. Run `cargo clean` to force a fresh check.
+The verified ring also compiles as ordinary Rust, with the ghost code erased. `tests/fifo.rs` runs it, including a 20,000-operation comparison against a `VecDeque`, natively and under Miri:
+
+```sh
+CARGO_TARGET_DIR=target/plain cargo test
+CARGO_TARGET_DIR=target/miri cargo +nightly miri test
+```
+
+Cargo caches the result: if nothing changed since the last run, you get only `Finished`. A plain `cargo build` or `cargo test` (which compiles, with the ghost code erased) in the default `target/` can also make the next `cargo verus` skip verification. That's why the commands above use separate target directories. Run `cargo clean` to force a fresh check.
