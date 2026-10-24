@@ -123,6 +123,13 @@ module RingSPSC {
     
     /// INV-ORD-03: Happens-Before (consumer never reads ahead of producer)
     val happensBefore: bool = hd <= tl
+
+    /// Cache soundness: each side's cached view of the other's cursor lags
+    /// the real value. Cursors only move forward, so a stale observation is
+    /// a lower bound. `cached_head <= hd` is what makes the producer's
+    /// fast-path space check (`producerHasSpace`) safe.
+    /// Matches `caches_lag` in verus/ringmpsc-verified/src/protocol.rs.
+    val cachesLag: bool = cached_head <= hd and cached_tail <= tl
     
     /// INV-MEM-04: Allocator Safety Contract (requirement 1)
     /// allocate(capacity) returns a buffer of exactly CAPACITY elements.
@@ -168,6 +175,7 @@ module RingSPSC {
     val safetyInvariant: bool = 
         boundedCount 
         and happensBefore 
+        and cachesLag
         and allocatorCapacityCorrect
         and alignmentGuarantee
         and zeroOverheadDefault
@@ -244,8 +252,14 @@ module RingSPSC {
     /// Rust: ring.rs commit_internal() - store tail with Release
     /// Models INV-ORD-01 Release semantics (publishes writes)
     /// Also models INV-INIT-01: marks the written slot as initialized.
+    ///
+    /// Guarded by `cached_head`, not `hd`: the producer never reads `head` on
+    /// the fast path, only its cache, and refreshes the cache (via
+    /// producerRefreshCache) when that says the ring is full. `cachesLag`
+    /// makes this conservative: space by `cached_head` is never more than
+    /// space by `hd`. Matches the Verus `reserve` transition.
     action producerWrite = all {
-        (tl - hd) < CAPACITY,                      // Actual space check
+        producerHasSpace(tl, cached_head),        // What the producer knows
         items_produced < MAX_ITEMS,                 // Bound for model checking
         tl' = tl + 1,                              // Release store
         items_produced' = items_produced + 1,
@@ -556,6 +570,9 @@ module RingSPSC {
             assert(initialized == Set(2, 3)),
             stutter,
         })
+        // The producer's cache still says head = 0, so the ring looks full to
+        // it: it must refresh (the slow path) before it can write again.
+        .then(producerRefreshCache)
         // Write 2 more — these wrap around to indices 0,1 (tl=4→idx 0, tl=5→idx 1)
         .then(producerWrite)
         .then(producerWrite)

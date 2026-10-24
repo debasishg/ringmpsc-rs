@@ -285,7 +285,7 @@ impl Driver for RingSPSCDriver {
                 // Drive the real Ring to verify conformance.
                 let slot_idx = self.produced % CAPACITY;
                 let mut reserved = self.ring.reserve(1)
-                    .expect("reserve(1) should succeed: Quint guard ensures (tail-head) < CAPACITY");
+                    .expect("reserve(1) should succeed: the Quint guard ensures (tail - cached_head) < CAPACITY, and cachesLag gives cached_head <= head");
                 // Safety-note: write value then commit (zero-copy reservation pattern)
                 reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
                 reserved.commit();

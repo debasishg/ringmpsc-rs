@@ -163,13 +163,14 @@ module RingSPSC {
 The Quint spec also encodes **state transitions** that must preserve INV-SEQ-01:
 
 ```quint
-    // ProducerWrite: Can only write if count < capacity
+    // ProducerWrite: Can only write if the producer's cache says count < capacity
     // ┌────────────────────────────────────────────────────────┐
-    // │  PRECONDITION: (tl - hd) < CAPACITY                    │
-    // │  This is the guard that PRESERVES INV-SEQ-01           │
+    // │  PRECONDITION: (tl - cached_head) < CAPACITY           │
+    // │  With cachesLag (cached_head <= hd), this implies      │
+    // │  (tl - hd) < CAPACITY, which PRESERVES INV-SEQ-01      │
     // └────────────────────────────────────────────────────────┘
     action producerWrite = all {
-        (tl - hd) < CAPACITY,              // ◄── guard ensures bounded count
+        producerHasSpace(tl, cached_head), // ◄── guard ensures bounded count
         items_produced < MAX_ITEMS,
         tl' = tl + 1,                      // ◄── only increments (monotonic)
         items_produced' = items_produced + 1,

@@ -150,6 +150,15 @@ cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 
 See [FORMAL_VERIFICATION_WORKFLOW.md](docs/FORMAL_VERIFICATION_WORKFLOW.md) and [tla/README.md](crates/ringmpsc/tla/README.md) for details.
 
+### Verus proofs
+
+[`verus/ringmpsc-verified`](verus/ringmpsc-verified/README.md) proves the ring's index and space arithmetic, and the SPSC protocol as a [Verus](https://github.com/verus-lang/verus) state machine. Where Quint checks the protocol for one small capacity, these proofs hold for all of them. It is a standalone workspace with its own pinned toolchain, so the crates above don't depend on it.
+
+```bash
+cd verus/ringmpsc-verified
+cargo verus focus   # requires a Verus release on PATH; see its README
+```
+
 ## License
 
 MIT

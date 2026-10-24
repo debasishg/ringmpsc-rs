@@ -11,6 +11,7 @@ This folder contains design documents, guides, and technical references for the 
 | [UB_FIX_MAKE_RESERVATION.md](UB_FIX_MAKE_RESERVATION.md) | Rust developers | Bug postmortem for the UB in `make_reservation` — debug vs release divergence explained |
 | [PERSISTENT_CONTEXT_GUIDE.md](PERSISTENT_CONTEXT_GUIDE.md) | AI agent users, maintainers | How to structure project knowledge so AI coding agents stay accurate |
 | [QUINT_TRANSLATION.md](QUINT_TRANSLATION.md) | Spec authors | Manual TLA+ → Quint translation reference |
+| [VERIFICATION_ARCHITECTURE.md](VERIFICATION_ARCHITECTURE.md) | All contributors | One-page map of every verification tool (Quint, Verus, quint-connect, proptest, Miri, loom, the borrow checker, debug asserts): what each checks, the gaps between them, and which tool caught which bug |
 | [FORMAL_VERIFICATION_WORKFLOW.md](FORMAL_VERIFICATION_WORKFLOW.md) | All contributors | Quick end-to-end overview of the TLA+ → Quint → Rust verification pipeline |
 | [self-verified-pipeline.md](self-verified-pipeline.md) | All contributors | Detailed visual walkthrough of the full invariant validation pipeline |
 | [FORMAL_METHODS_AGENTIC_DEVELOPMENT.md](FORMAL_METHODS_AGENTIC_DEVELOPMENT.md) | Architects, AI agent integrators | Conceptual rationale for integrating formal methods into AI-assisted development |
@@ -22,16 +23,17 @@ This folder contains design documents, guides, and technical references for the 
 ## Suggested Reading Order
 
 **New contributors** — start here:
-1. `FORMAL_VERIFICATION_WORKFLOW.md` — understand what layers exist and why
-2. `QUINT_TRANSLATION.md` — learn the TLA+ → Quint mapping
-3. `model-based-testing-in-agentic-development.md` — understand the current MBT approach
+1. `VERIFICATION_ARCHITECTURE.md` — the map: which tool checks what
+2. `FORMAL_VERIFICATION_WORKFLOW.md` — understand what layers exist and why
+3. `QUINT_TRANSLATION.md` — learn the TLA+ → Quint mapping
+4. `model-based-testing-in-agentic-development.md` — understand the current MBT approach
 
-> **Note**: If using Quint ≥ 0.31.0, read `QUINT_0_31_UPGRADE.md` after step 1 for context
+> **Note**: If using Quint ≥ 0.31.0, read `QUINT_0_31_UPGRADE.md` after step 2 for context
 > on the two-backend verification strategy and Rust evaluator.
 
 **Going deeper**:
-4. `self-verified-pipeline.md` — visual deep-dive into the full pipeline
-5. `FORMAL_METHODS_AGENTIC_DEVELOPMENT.md` — architectural rationale
+5. `self-verified-pipeline.md` — visual deep-dive into the full pipeline
+6. `FORMAL_METHODS_AGENTIC_DEVELOPMENT.md` — architectural rationale
 
 **Specific topics**:
 - Custom allocators: `CUSTOM_ALLOCATORS.md`
