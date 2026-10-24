@@ -128,7 +128,7 @@ So the proofs hold under **every interleaving** of the two threads:
 
 | Producer | Proven |
 |---|---|
-| `reserve(n)` | grants up to `n` slots, never more than the free space (by `cached_head`, reloading `head` when the cache says full) |
+| `reserve(n)` | grants all `n` slots or none, as production does: space by `cached_head`, reloading `head` when the cache says fewer than `n` |
 | `write_next(v)` | fills the next reserved slot; `pending()` grows by `v` |
 | `commit_up_to(k)`, `commit()` | publishes the first `min(k, filled)` written items with one `tail.store`; `produced` grows by exactly those; written items past `k` are dropped |
 | `abandon()` | publishes nothing and drops what was written (a `Reservation` dropped without committing) |
@@ -212,6 +212,47 @@ Each of these deliberate breakages makes verification fail, with the error shown
 | B5: `write_next` writes the slot after the next one | assertion failed (the token belongs to another cell) |
 | B6: `produce_end` doesn't require the published slots to be written (the production bug) | the state machine's `window` invariant can't be proven |
 
+## Differential testing and benchmarks (phase 7, [#26](https://github.com/debasishg/ringmpsc-rs/issues/26))
+
+The proofs cover the verified ring; they don't say it *behaves like* the production ring. Phase 7 checks that directly.
+
+### The same tests on both rings
+
+| Test | What it does |
+|---|---|
+| `tests/mbt.rs` | replays the **same Quint traces** as the production `quint_mbt.rs` (`RingSPSC.qnt`, same seeds) against the verified `spsc` halves, and compares state at every step. It also checks values, not just counts: each `pop` must return the next item pushed. |
+| `tests/differential.rs` | random operation sequences (`push`, batches with partial commits, abandon, `consume_up_to`, `readable`+`get`+`advance`, `recv`) applied to the **production `Ring`, the verified ring and a `VecDeque` model** at once. All three must agree after every step. Where production's contiguous slices legitimately differ, its result drives the verified ring in lockstep. |
+
+**Differential testing found two behavioral differences in the verified ring.** Neither is a safety issue: the proofs promise items in order, never "everything published." Both were fixed so the verified ring now behaves like production.
+
+| Finding | Before | Now |
+|---|---|---|
+| `consume_up_to` saw fewer items than production | it read through `readable()`, which trusts `cached_tail` whenever the cache is ahead of `head`; production's `consume_up_to` always reloads `tail` | `consume_up_to` uses the new `readable_fresh()`, which reloads `tail` first |
+| `reserve(n)` granted fewer slots than production | it reloaded `head` only when the cache said *full*, then granted what fit | it reloads when the cache says *fewer than `n`* and is all or nothing, as production (`granted == 0 \|\| granted == n` is in its contract) |
+
+Both are progress properties, which the safety proofs don't state. Testing the verified ring against the production one is what surfaced them.
+
+### Benchmarks
+
+`benches/verified_vs_production.rs` (criterion), on an Apple M1:
+
+| Benchmark | Production | Verified | Gap |
+|---|---|---|---|
+| one thread, push then pop one item | 99.0 M items/s | 48.6 M items/s | 2.0x |
+| one thread, reserve/write/commit 64, consume 64 | 1.84 G items/s | 553 M items/s | 3.3x |
+| two threads, 1M items in batches of 64 | 1.03 G items/s | 703 M items/s | 1.5x |
+| atomic store, Release vs SeqCst | 2.06 G/s | 2.04 G/s | none |
+| atomic load, Acquire vs SeqCst | 1.38 G/s | 1.38 G/s | none |
+
+**SeqCst isn't the cost here.** On AArch64, Release and SeqCst stores both compile to `stlr`, and Acquire and SeqCst loads both to `ldar`. On x86-64 a SeqCst store is an `xchg`, so this should be re-measured there.
+
+**The cost is API shape:**
+
+- **One allocation per consume.** The verified consumer returns owned items in a `Vec`, where production hands them to a closure. Pre-sizing that `Vec` (`Vec::with_capacity(k)` in `release`, now in place) more than doubled the batch throughput (237 M to 553 M items/s) and lifted the two-thread case from 484 M to 703 M items/s.
+- **Per-slot calls.** The rest is per-slot `write_next`/`take` (each computing its slot and going through a `PCell`), where production writes and reads slices in bulk.
+
+Closing more of the gap would mean a consumer API without the per-call `Vec`, for example consuming into a caller-provided buffer.
+
 ## Bugs this found
 
 ### `Reservation::commit` published unwritten slots ([#32](https://github.com/debasishg/ringmpsc-rs/issues/32), fixed)
@@ -270,7 +311,7 @@ cargo verus focus     # verify this crate only (vstd is trusted)
 cargo verus verify    # verify vstd too, then this crate
 ```
 
-Expected output: `verification results:: 94 verified, 0 errors`.
+Expected output: `verification results:: 95 verified, 0 errors`.
 
 The verified rings also compile as ordinary Rust, with the ghost code erased.
 
@@ -284,6 +325,14 @@ All pass natively and under Miri. For the threaded tests, use preemption so Miri
 ```sh
 CARGO_TARGET_DIR=target/plain cargo test
 CARGO_TARGET_DIR=target/miri MIRIFLAGS="-Zmiri-preemption-rate=0.1" cargo +nightly miri test
+```
+
+The phase 7 tests compare against the production crate (a path dev-dependency). `tests/mbt.rs` needs the Quint CLI on `PATH`. They don't run under Miri, which can't spawn Quint:
+
+```sh
+CARGO_TARGET_DIR=target/plain cargo test --test mbt --test differential
+PROPTEST_CASES=5000 CARGO_TARGET_DIR=target/plain cargo test --release --test differential
+CARGO_TARGET_DIR=target/plain cargo bench --bench verified_vs_production
 ```
 
 Cargo caches the result: if nothing changed since the last run, you get only `Finished`. A plain `cargo build` or `cargo test` (which compiles, with the ghost code erased) in the default `target/` can also make the next `cargo verus` skip verification. That's why the commands above use separate target directories. Run `cargo clean` to force a fresh check.

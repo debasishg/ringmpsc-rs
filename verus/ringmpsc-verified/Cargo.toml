@@ -7,6 +7,20 @@ edition = "2021"
 vstd = "=0.0.0-2026-10-18-0147"
 verus_state_machines_macros = "=0.0.0-2026-10-18-0147"
 
+# Phase 7 (#26): differential tests and benchmarks against the production
+# crate. Dev-only: verification (`cargo verus`) never builds these.
+[dev-dependencies]
+ringmpsc-rs = { path = "../../crates/ringmpsc" }
+quint-connect = "0.1.1"
+anyhow = "1"  # used by quint-connect's `switch!` expansion
+serde = { version = "1.0", features = ["derive"] }
+proptest = "1.4"
+criterion = "0.5"
+
+[[bench]]
+name = "verified_vs_production"
+harness = false
+
 [package.metadata.verus]
 verify = true
 
