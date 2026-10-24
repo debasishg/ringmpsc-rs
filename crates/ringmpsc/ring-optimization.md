@@ -321,7 +321,7 @@ The `Release` store on `tail` acts as a **memory fence** that ensures all buffer
 `consume_batch()` processes all available items but issues only **one** atomic store of `head`:
 
 ```rust
-pub fn consume_batch<F>(&self, mut handler: F) -> usize {
+pub(crate) unsafe fn consume_batch_shared<F>(&self, mut handler: F) -> usize {
     let head = self.head.load(Relaxed);
     let tail = self.tail.load(Acquire);
     let avail = (tail - head) as usize;

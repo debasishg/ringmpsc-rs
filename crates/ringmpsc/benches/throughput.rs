@@ -41,8 +41,9 @@ fn bench_spsc(c: &mut Criterion) {
 
             // Consumer thread
             let mut count = 0u64;
+            let mut consumer = ch.consumer().unwrap();
             while count < MSG_PER_PRODUCER {
-                count += ch.consume_all(|item| {
+                count += consumer.consume_all(|item| {
                     black_box(item);
                 }) as u64;
                 if count < MSG_PER_PRODUCER {
@@ -107,8 +108,9 @@ fn bench_mpsc(c: &mut Criterion) {
                         let mut count = 0u64;
                         let target = MSG_PER_PRODUCER * (n as u64);
                         
+                        let mut consumer = ch.consumer().unwrap();
                         while count < target {
-                            count += ch.consume_all(|item| {
+                            count += consumer.consume_all(|item| {
                                 black_box(item);
                             }) as u64;
                             if count < target {
@@ -170,8 +172,9 @@ fn bench_batch_sizes(c: &mut Criterion) {
                     });
 
                     let mut count = 0u64;
+                    let mut consumer = ch.consumer().unwrap();
                     while count < MSG_PER_PRODUCER {
-                        count += ch.consume_all_up_to(batch, |item| {
+                        count += consumer.consume_all_up_to(batch, |item| {
                             black_box(item);
                         }) as u64;
                         if count < MSG_PER_PRODUCER {
@@ -223,8 +226,9 @@ fn bench_zero_copy(c: &mut Criterion) {
             });
 
             let mut count = 0u64;
+            let mut consumer = ch.consumer().unwrap();
             while count < msgs {
-                count += ch.consume_all(|item| {
+                count += consumer.consume_all(|item| {
                     black_box(item);
                 }) as u64;
                 if count < msgs {
@@ -285,8 +289,9 @@ fn bench_contention(c: &mut Criterion) {
                     let cnt = Arc::clone(&counter);
                     let consumer = thread::spawn(move || {
                         let target = msgs * (n as u64);
+                        let mut rx = ch.consumer().unwrap();
                         while cnt.load(Ordering::Relaxed) < target {
-                            let consumed = ch.consume_all(|item| {
+                            let consumed = rx.consume_all(|item| {
                                 black_box(item);
                             });
                             cnt.fetch_add(consumed as u64, Ordering::Relaxed);

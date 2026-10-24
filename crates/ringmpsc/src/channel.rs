@@ -20,6 +20,9 @@ pub enum ChannelError {
     /// Channel is closed.
     #[error("channel is closed")]
     Closed,
+    /// A [`Consumer`] for this channel already exists.
+    #[error("channel already has a consumer")]
+    ConsumerTaken,
 }
 
 /// Multi-Producer Single-Consumer channel using ring decomposition.
@@ -38,6 +41,9 @@ struct ChannelInner<T, A: BufferAllocator = HeapAllocator> {
     rings: Vec<Ring<T, A>>,
     producer_count: AtomicUsize,
     closed: AtomicBool,
+    /// Set while a [`Consumer`] exists. At most one can, which is what makes
+    /// the rings single-consumer.
+    consumer_taken: AtomicBool,
     config: Config,
     /// Per-producer consumption count for FIFO verification (debug only)
     #[cfg(debug_assertions)]
@@ -94,6 +100,7 @@ impl<T, A: BufferAllocator + Clone> Channel<T, A> {
                 rings,
                 producer_count: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
+                consumer_taken: AtomicBool::new(false),
                 config,
                 #[cfg(debug_assertions)]
                 consumed_counts,
@@ -125,176 +132,36 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         })
     }
 
-    /// Round-robin receive from all active producers (convenience method).
-    pub fn recv(&self, out: &mut [T]) -> usize
-    where
-        T: Copy,
-    {
-        let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
-
-        for ring in &self.inner.rings[..count] {
-            if total >= out.len() {
-                break;
-            }
-            total += ring.recv(&mut out[total..]);
-        }
-
-        total
-    }
-
-    /// Batch consume from all producers - THE FAST PATH.
+    /// Claim the channel's consumer handle.
     ///
-    /// Processes all available items from all rings with minimal atomic operations.
+    /// All consumption goes through the returned [`Consumer`]. Only one can
+    /// exist at a time: while it is alive, further calls return
+    /// [`ChannelError::ConsumerTaken`]. Dropping it releases the claim, so
+    /// another thread can take over consumption.
     ///
-    /// # When to Use
+    /// Draining after [`close`](Self::close) is allowed, so this does not fail
+    /// on a closed channel.
     ///
-    /// Use this method when:
-    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
-    /// - You only need to inspect or log items without storing them
-    ///
-    /// For types expensive to clone (containing `String`, `HashMap`, `Vec`),
-    /// prefer [`consume_all_owned`] which transfers ownership directly.
-    pub fn consume_all<F>(&self, mut handler: F) -> usize
-    where
-        F: FnMut(&T),
-    {
-        let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
-
-        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
-            let consumed = ring.consume_batch(&mut handler);
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(_producer_id, old_count, new_count);
-                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
-        }
-
-        total
-    }
-
-    /// Consume up to `max_total` items from all producers.
-    ///
-    /// Useful for real-world processing to limit batch size and avoid long pauses.
-    /// Prefers earlier rings (producer 0, then 1, etc.).
-    ///
-    /// # When to Use
-    ///
-    /// Use this method when:
-    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
-    /// - You only need to inspect or log items without storing them
-    ///
-    /// For types expensive to clone, prefer [`consume_all_up_to_owned`].
-    pub fn consume_all_up_to<F>(&self, max_total: usize, mut handler: F) -> usize
-    where
-        F: FnMut(&T),
-    {
-        let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
-
-        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
-            if total >= max_total {
-                break;
-            }
-            let remaining = max_total - total;
-            let consumed = ring.consume_up_to(remaining, &mut handler);
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(_producer_id, old_count, new_count);
-                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
-        }
-
-        total
-    }
-
-    /// Batch consume from all producers, transferring ownership - THE FAST PATH.
-    ///
-    /// Similar to [`consume_all`], but the handler receives ownership of each item.
-    ///
-    /// # When to Use
-    ///
-    /// Use this method when:
-    /// - `T` contains heap allocations (`String`, `HashMap`, `Vec`, `Box<_>`)
-    /// - You need to move items into a collection or storage
-    /// - You want to avoid clone overhead entirely
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Zero-copy transfer into batch processor
-    /// channel.consume_all_owned(|span| batch_processor.add(span));
     /// ```
-    pub fn consume_all_owned<F>(&self, mut handler: F) -> usize
-    where
-        F: FnMut(T),
-    {
-        let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
-
-        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
-            let consumed = ring.consume_batch_owned(&mut handler);
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(_producer_id, old_count, new_count);
-                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
-        }
-
-        total
-    }
-
-    /// Consume up to `max_total` items from all producers, transferring ownership.
+    /// use ringmpsc_rs::{Channel, ChannelError, Config};
     ///
-    /// Similar to `consume_all_up_to`, but the handler receives ownership of each
-    /// item instead of a reference. This is more efficient when you need to move
-    /// items (e.g., into a collection) since it avoids cloning.
-    pub fn consume_all_up_to_owned<F>(&self, max_total: usize, mut handler: F) -> usize
-    where
-        F: FnMut(T),
-    {
-        let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
-
-        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
-            if total >= max_total {
-                break;
-            }
-            let remaining = max_total - total;
-            let consumed = ring.consume_up_to_owned(remaining, &mut handler);
-
-            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
-            #[cfg(debug_assertions)]
-            {
-                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
-                let new_count = old_count + consumed as u64;
-                debug_assert_fifo_count!(_producer_id, old_count, new_count);
-                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
-            }
-
-            total += consumed;
+    /// let channel = Channel::<u64>::new(Config::default());
+    /// let consumer = channel.consumer().unwrap();
+    /// assert_eq!(channel.consumer().err(), Some(ChannelError::ConsumerTaken));
+    ///
+    /// drop(consumer);
+    /// assert!(channel.consumer().is_ok());
+    /// ```
+    pub fn consumer(&self) -> Result<Consumer<T, A>, ChannelError> {
+        // Acquire pairs with the Release in `Consumer::drop`, so everything the
+        // previous consumer did (its cached tail, its slot reads) happens
+        // before this one starts.
+        if self.inner.consumer_taken.swap(true, Ordering::Acquire) {
+            return Err(ChannelError::ConsumerTaken);
         }
-
-        total
+        Ok(Consumer {
+            inner: Arc::clone(&self.inner),
+        })
     }
 
     /// Close the channel, preventing further operations.
@@ -336,10 +203,22 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         m
     }
 
-    /// Get a reference to a specific ring for dedicated consumer access.
+    /// Get a reference to a specific ring, for inspection.
     ///
-    /// This allows implementing the N-producer N-consumer pattern where each
-    /// consumer has a dedicated ring to read from (matching the Zig implementation).
+    /// A `&Ring` can report `len`, `is_empty`, `is_closed` and metrics, but it
+    /// cannot consume: every consumer method needs `&mut Ring`, and the only
+    /// route to consume a channel's rings is its [`Consumer`].
+    ///
+    /// ```compile_fail,E0596
+    /// use ringmpsc_rs::{Channel, Config};
+    ///
+    /// let channel = Channel::<u64>::new(Config::default());
+    /// let ring = channel.get_ring(0).unwrap();
+    /// ring.consume_batch(|_| {}); // ERROR: cannot borrow as mutable
+    /// ```
+    ///
+    /// For one consumer per producer (the N-producer, N-consumer pattern),
+    /// use N channels with one producer each.
     ///
     /// Returns None if the `ring_id` is >= `max_producers`.
     #[must_use] 
@@ -364,6 +243,229 @@ impl<T, A: BufferAllocator> Clone for Channel<T, A> {
 // BufferAllocator requires Send + Sync.
 unsafe impl<T: Send, A: BufferAllocator> Send for Channel<T, A> {}
 unsafe impl<T: Send, A: BufferAllocator> Sync for Channel<T, A> {}
+
+/// The consuming end of a [`Channel`].
+///
+/// Obtained from [`Channel::consumer`]. A channel has at most one `Consumer`
+/// at a time, and every method takes `&mut self`, so exactly one thread can
+/// drain the rings. That is the "single consumer" in MPSC: a consume moves
+/// items out of the ring before it publishes the new head, and two consumers
+/// running at once would move out the same items.
+///
+/// `Consumer` is not `Clone`:
+///
+/// ```compile_fail,E0599
+/// use ringmpsc_rs::{Channel, Config};
+///
+/// let channel = Channel::<u64>::new(Config::default());
+/// let consumer = channel.consumer().unwrap();
+/// let second = consumer.clone(); // ERROR: no method `clone`
+/// ```
+///
+/// and a shared reference to it cannot consume:
+///
+/// ```compile_fail,E0596
+/// use ringmpsc_rs::{Channel, Config};
+///
+/// let channel = Channel::<u64>::new(Config::default());
+/// let consumer = channel.consumer().unwrap();
+/// let shared = &consumer;
+/// shared.consume_all(|_| {}); // ERROR: cannot borrow as mutable
+/// ```
+pub struct Consumer<T, A: BufferAllocator = HeapAllocator> {
+    inner: Arc<ChannelInner<T, A>>,
+}
+
+impl<T, A: BufferAllocator> Consumer<T, A> {
+    /// Round-robin receive from all active producers (convenience method).
+    pub fn recv(&mut self, out: &mut [T]) -> usize
+    where
+        T: Copy,
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for ring in &self.inner.rings[..count] {
+            if total >= out.len() {
+                break;
+            }
+            // SAFETY: `&mut self` is exclusive and a channel has at most one
+            // `Consumer`, so no other consumer call on this ring can be running.
+            total += unsafe { ring.recv_shared(&mut out[total..]) };
+        }
+
+        total
+    }
+
+    /// Batch consume from all producers - THE FAST PATH.
+    ///
+    /// Processes all available items from all rings with minimal atomic operations.
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
+    /// - You only need to inspect or log items without storing them
+    ///
+    /// For types expensive to clone (containing `String`, `HashMap`, `Vec`),
+    /// prefer [`consume_all_owned`] which transfers ownership directly.
+    pub fn consume_all<F>(&mut self, mut handler: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+            // SAFETY: `&mut self` is exclusive and a channel has at most one
+            // `Consumer`, so no other consumer call on this ring can be running.
+            let consumed = unsafe { ring.consume_batch_shared(&mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+
+    /// Consume up to `max_total` items from all producers.
+    ///
+    /// Useful for real-world processing to limit batch size and avoid long pauses.
+    /// Prefers earlier rings (producer 0, then 1, etc.).
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` is `Copy` (e.g., `u64`, `i32`) - no clone overhead
+    /// - You only need to inspect or log items without storing them
+    ///
+    /// For types expensive to clone, prefer [`consume_all_up_to_owned`].
+    pub fn consume_all_up_to<F>(&mut self, max_total: usize, mut handler: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+            if total >= max_total {
+                break;
+            }
+            let remaining = max_total - total;
+            // SAFETY: `&mut self` is exclusive and a channel has at most one
+            // `Consumer`, so no other consumer call on this ring can be running.
+            let consumed = unsafe { ring.consume_up_to_shared(remaining, &mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+
+    /// Batch consume from all producers, transferring ownership - THE FAST PATH.
+    ///
+    /// Similar to [`consume_all`], but the handler receives ownership of each item.
+    ///
+    /// # When to Use
+    ///
+    /// Use this method when:
+    /// - `T` contains heap allocations (`String`, `HashMap`, `Vec`, `Box<_>`)
+    /// - You need to move items into a collection or storage
+    /// - You want to avoid clone overhead entirely
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Zero-copy transfer into batch processor
+    /// consumer.consume_all_owned(|span| batch_processor.add(span));
+    /// ```
+    pub fn consume_all_owned<F>(&mut self, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+            // SAFETY: `&mut self` is exclusive and a channel has at most one
+            // `Consumer`, so no other consumer call on this ring can be running.
+            let consumed = unsafe { ring.consume_batch_owned_shared(&mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+
+    /// Consume up to `max_total` items from all producers, transferring ownership.
+    ///
+    /// Similar to `consume_all_up_to`, but the handler receives ownership of each
+    /// item instead of a reference. This is more efficient when you need to move
+    /// items (e.g., into a collection) since it avoids cloning.
+    pub fn consume_all_up_to_owned<F>(&mut self, max_total: usize, mut handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        let mut total = 0;
+        let count = self.inner.producer_count.load(Ordering::Acquire);
+
+        for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
+            if total >= max_total {
+                break;
+            }
+            let remaining = max_total - total;
+            // SAFETY: `&mut self` is exclusive and a channel has at most one
+            // `Consumer`, so no other consumer call on this ring can be running.
+            let consumed = unsafe { ring.consume_up_to_owned_shared(remaining, &mut handler) };
+
+            // INV-CH-03: Verify per-producer FIFO by tracking cumulative count
+            #[cfg(debug_assertions)]
+            {
+                let old_count = self.inner.consumed_counts[_producer_id].load(Ordering::Relaxed);
+                let new_count = old_count + consumed as u64;
+                debug_assert_fifo_count!(_producer_id, old_count, new_count);
+                self.inner.consumed_counts[_producer_id].store(new_count, Ordering::Relaxed);
+            }
+
+            total += consumed;
+        }
+
+        total
+    }
+}
+
+impl<T, A: BufferAllocator> Drop for Consumer<T, A> {
+    fn drop(&mut self) {
+        // Release pairs with the Acquire in `Channel::consumer`.
+        self.inner.consumer_taken.store(false, Ordering::Release);
+    }
+}
 
 /// Producer handle for sending to the channel.
 ///
@@ -420,7 +522,7 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     /// r.commit();
     ///
     /// let mut seen = Vec::new();
-    /// channel.consume_all(|v| seen.push(*v));
+    /// channel.consumer().unwrap().consume_all(|v| seen.push(*v));
     /// assert_eq!(seen, vec![7, 8]);
     /// ```
     #[inline]
@@ -461,7 +563,7 @@ impl<T, A: BufferAllocator> Producer<T, A> {
         // holds that `&mut` borrow - so this method cannot be called. No
         // other route reaches this ring: ids are unique per `register()`,
         // `Producer` is not `Clone`, and `Channel::get_ring` hands out `&Ring`,
-        // which cannot reserve.
+        // which can neither reserve nor consume.
         unsafe { self.channel.rings[self.id].push_shared(item) }
     }
 
@@ -513,7 +615,7 @@ mod tests {
         assert_eq!(p2.send(&[20, 21]), 2);
 
         let mut out = [0u64; 10];
-        let n = ch.recv(&mut out);
+        let n = ch.consumer().unwrap().recv(&mut out);
         assert_eq!(n, 4);
     }
 
@@ -528,7 +630,7 @@ mod tests {
         assert_eq!(p2.send(&[4, 5, 6]), 3);
 
         let mut sum = 0u64;
-        let consumed = ch.consume_all(|item| sum += item);
+        let consumed = ch.consumer().unwrap().consume_all(|item| sum += item);
 
         assert_eq!(consumed, 6);
         assert_eq!(sum, 21);
@@ -545,7 +647,7 @@ mod tests {
         assert_eq!(p2.send(&[4, 5, 6]), 3);
 
         let mut sum = 0u64;
-        let consumed = ch.consume_all_up_to(4, |item| sum += item);
+        let consumed = ch.consumer().unwrap().consume_all_up_to(4, |item| sum += item);
 
         assert_eq!(consumed, 4);
         // Depending on order, but since p1 first: 1+2+3+4=10
@@ -562,6 +664,46 @@ mod tests {
 
         // Should fail
         assert!(matches!(ch.register(), Err(ChannelError::TooManyProducers { max: 2 })));
+    }
+
+    #[test]
+    fn test_consumer_is_exclusive() {
+        let ch = Channel::<u64>::new(Config::default());
+        let clone = ch.clone();
+
+        let consumer = ch.consumer().unwrap();
+        // A second claim fails, through the same handle or a clone of it.
+        assert_eq!(ch.consumer().err(), Some(ChannelError::ConsumerTaken));
+        assert_eq!(clone.consumer().err(), Some(ChannelError::ConsumerTaken));
+
+        // Dropping the consumer releases the claim.
+        drop(consumer);
+        assert!(clone.consumer().is_ok());
+    }
+
+    #[test]
+    fn test_consumer_hands_off_across_threads() {
+        let ch = Channel::<String>::new(Config::new(4, 1, false));
+        let p = ch.register().unwrap();
+        for i in 0..3 {
+            assert!(p.push(i.to_string()));
+        }
+
+        // The first consumer drains one item on another thread, then drops.
+        let mut first = ch.consumer().unwrap();
+        let taken = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            first.consume_all_up_to_owned(1, |s| got.push(s));
+            got
+        })
+        .join()
+        .unwrap();
+        assert_eq!(taken, vec!["0".to_string()]);
+
+        // The next consumer resumes where it stopped: nothing is seen twice.
+        let mut rest = Vec::new();
+        ch.consumer().unwrap().consume_all_owned(|s| rest.push(s));
+        assert_eq!(rest, vec!["1".to_string(), "2".to_string()]);
     }
 
     #[test]

@@ -53,8 +53,10 @@ pub fn channel_with_stream_config<T: Send + 'static>(
     let backpressure_notify = Arc::new(Notify::new());
     let shutdown_state = Arc::new(ShutdownState::new());
 
+    // A fresh channel has no consumer yet, so this cannot fail.
+    let consumer = channel.consumer().expect("a new channel has no consumer");
     let receiver = RingReceiver::new(
-        Arc::clone(&channel),
+        consumer,
         Arc::clone(&data_notify),
         Arc::clone(&backpressure_notify),
         Arc::clone(&shutdown_state),

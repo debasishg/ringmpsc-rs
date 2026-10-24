@@ -120,8 +120,9 @@ fn bench_spsc_threaded(c: &mut Criterion) {
             });
 
             let mut count = 0u64;
+            let mut consumer = ch.consumer().unwrap();
             while count < MSG_COUNT {
-                count += ch.consume_all(|item| {
+                count += consumer.consume_all(|item| {
                     black_box(item);
                 }) as u64;
                 if count < MSG_COUNT {
@@ -161,8 +162,9 @@ fn bench_spsc_threaded(c: &mut Criterion) {
             });
 
             let mut count = 0u64;
+            let mut consumer = ch.consumer().unwrap();
             while count < MSG_COUNT {
-                count += ch.consume_all(|item| {
+                count += consumer.consume_all(|item| {
                     black_box(item);
                 }) as u64;
                 if count < MSG_COUNT {
@@ -217,8 +219,9 @@ fn bench_mpsc(c: &mut Criterion) {
             }
 
             let mut count = 0u64;
+            let mut consumer = channel.consumer().unwrap();
             while count < total {
-                count += channel.consume_all(|item| {
+                count += consumer.consume_all(|item| {
                     black_box(item);
                 }) as u64;
                 if count < total {
@@ -264,8 +267,9 @@ fn bench_mpsc(c: &mut Criterion) {
             }
 
             let mut count = 0u64;
+            let mut consumer = channel.consumer().unwrap();
             while count < total {
-                count += channel.consume_all(|item| {
+                count += consumer.consume_all(|item| {
                     black_box(item);
                 }) as u64;
                 if count < total {

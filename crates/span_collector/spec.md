@@ -76,10 +76,10 @@ Spans are moved (not cloned) through the entire pipeline:
 ### INV-OWN-02: Owned-Only Consumption
 ```rust
 // CORRECT: owned consumption
-collector.consume_all_up_to_owned(limit, |span: Span| { ... });
+consumer.consume_all_up_to(limit, |span: Span| { ... });
 
 // NOT PROVIDED: reference consumption would force clone
-// collector.consume_all_up_to(limit, |span: &Span| { ... });
+// consumer.consume_all_up_to_ref(limit, |span: &Span| { ... });
 ```
 The collector exposes only owned consumption APIs because `Span` contains heap allocations (`String`, `Box<HashMap>`). Reference-based consumption would force callers to clone.
 
@@ -107,7 +107,7 @@ Batches are flushed when either:
 On shutdown, all remaining spans are consumed and exported:
 ```rust
 // In shutdown handler
-collector.consume_all(|span| batch_processor.add(span));
+consumer.consume_all(|span| batch_processor.add(span));
 if let Some(batch) = batch_processor.take_batch() {
     exporter.export_boxed(batch).await;  // Final flush is sequential
 }

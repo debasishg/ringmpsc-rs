@@ -38,7 +38,7 @@ fn test_stack_channel_per_producer_fifo() {
 
     // Consume until we have all items
     while total_received < NUM_PRODUCERS * ITEMS_PER_PRODUCER {
-        let consumed = channel.consume_all(|(producer_id, seq)| {
+        let consumed = channel.consumer().unwrap().consume_all(|(producer_id, seq)| {
             // Verify FIFO order per producer
             if let Some(&prev) = last_seq.get(producer_id) {
                 assert_eq!(
@@ -117,7 +117,7 @@ fn test_stack_channel_stress() {
     let mut received_count = 0usize;
 
     while received_count < TOTAL_ITEMS {
-        let consumed = channel.consume_all(|v| {
+        let consumed = channel.consumer().unwrap().consume_all(|v| {
             received_sum += v;
         });
         received_count += consumed;
@@ -168,7 +168,7 @@ fn test_stack_channel_owned_strings() {
     let mut count = 0;
 
     while count < 400 {
-        let consumed = channel.consume_all_owned(|s| {
+        let consumed = channel.consumer().unwrap().consume_all_owned(|s| {
             owned_messages.push(s);
         });
         count += consumed;
@@ -239,7 +239,7 @@ fn test_stack_channel_close() {
 
     // But we can still drain existing items
     let mut values = Vec::new();
-    channel.consume_all(|v| values.push(*v));
+    channel.consumer().unwrap().consume_all(|v| values.push(*v));
     assert_eq!(values, vec![100, 200]);
 }
 
@@ -261,7 +261,7 @@ fn test_stack_channel_batch_reserve_commit() {
     }
 
     let mut values = Vec::new();
-    channel.consume_all(|v| values.push(*v));
+    channel.consumer().unwrap().consume_all(|v| values.push(*v));
 
     // Verify sequential values
     for (i, v) in values.iter().enumerate() {
@@ -285,17 +285,17 @@ fn test_stack_channel_consume_up_to_limit() {
 
     // Consume at most 5
     let mut batch1 = Vec::new();
-    let consumed1 = channel.consume_all_up_to(5, |v| batch1.push(*v));
+    let consumed1 = channel.consumer().unwrap().consume_all_up_to(5, |v| batch1.push(*v));
     assert_eq!(consumed1, 5);
     assert_eq!(batch1.len(), 5);
 
     // Consume another 10
     let mut batch2 = Vec::new();
-    let consumed2 = channel.consume_all_up_to(10, |v| batch2.push(*v));
+    let consumed2 = channel.consumer().unwrap().consume_all_up_to(10, |v| batch2.push(*v));
     assert_eq!(consumed2, 10);
 
     // Consume rest
     let mut batch3 = Vec::new();
-    let consumed3 = channel.consume_all_up_to(100, |v| batch3.push(*v));
+    let consumed3 = channel.consumer().unwrap().consume_all_up_to(100, |v| batch3.push(*v));
     assert_eq!(consumed3, 5); // 20 total - 5 - 10 = 5 remaining
 }

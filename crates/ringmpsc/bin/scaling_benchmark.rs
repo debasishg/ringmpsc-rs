@@ -48,9 +48,10 @@ fn benchmark_config(num_producers: usize) {
     let consumer_handle = thread::spawn(move || {
         let target = (num_producers as u64) * MSG_PER_PRODUCER;
         let mut total = 0u64;
+        let mut consumer = ch.consumer().unwrap();
         
         while total < target {
-            let consumed = ch.consume_all_up_to(BATCH_SIZE, |_item| {
+            let consumed = consumer.consume_all_up_to(BATCH_SIZE, |_item| {
                 // Process
             });
             total += consumed as u64;

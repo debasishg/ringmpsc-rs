@@ -8,8 +8,12 @@ const MSG_PER_PRODUCER: u64 = 500_000_000; // 500M messages per producer
 const BATCH_SIZE: usize = 32_768; // 32K batch
 
 fn run_benchmark(num_producers: usize) {
-    let config = Config::new(16, num_producers.max(16), false); // 64K ring
-    let channel = Arc::new(Channel::<u32>::new(config));
+    // One single-producer channel per producer/consumer pair, so each consumer
+    // owns its channel's `Consumer` and drains a dedicated ring.
+    let config = Config::new(16, 1, false); // 64K ring
+    let channels: Vec<Arc<Channel<u32>>> = (0..num_producers)
+        .map(|_| Arc::new(Channel::new(config)))
+        .collect();
     
     // Consumer counts (one per consumer thread)
     let consumer_counts: Vec<Arc<AtomicU64>> = (0..num_producers)
@@ -21,16 +25,17 @@ fn run_benchmark(num_producers: usize) {
     // Spawn N consumer threads (one per ring) - like Zig version
     let mut consumer_handles = vec![];
     for (id, count) in consumer_counts.iter().enumerate().take(num_producers) {
-        let ch = Arc::clone(&channel);
+        let ch = Arc::clone(&channels[id]);
         let count = Arc::clone(count);
         
         let handle = thread::spawn(move || {
-            // Get dedicated ring for this consumer
-            let ring = ch.get_ring(id).expect("Invalid ring ID");
+            // Dedicated ring for this consumer: the only ring of its channel
+            let mut consumer = ch.consumer().expect("one consumer per channel");
+            let ring = ch.get_ring(0).expect("channel has one ring");
             let mut consumed = 0u64;
             
             loop {
-                let n = ring.consume_batch(|_item| {
+                let n = consumer.consume_all(|_item| {
                     // Process item (no-op for benchmark)
                 }) as u64;
                 
@@ -52,8 +57,8 @@ fn run_benchmark(num_producers: usize) {
     
     // Spawn N producer threads
     let mut producer_handles = vec![];
-    for _ in 0..num_producers {
-        let ch = Arc::clone(&channel);
+    for ch in &channels {
+        let ch = Arc::clone(ch);
         
         let handle = thread::spawn(move || {
             let mut producer = ch.register().unwrap();
@@ -99,7 +104,9 @@ fn run_benchmark(num_producers: usize) {
     }
     
     // Close all rings to signal consumers
-    channel.close();
+    for ch in &channels {
+        ch.close();
+    }
     
     // Wait for all consumers
     for handle in consumer_handles {

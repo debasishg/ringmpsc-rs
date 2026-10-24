@@ -149,7 +149,7 @@ fn example_mpsc_basic() {
 
     // Consume all messages
     let mut messages = Vec::new();
-    channel.consume_all_owned(|msg| messages.push(msg));
+    channel.consumer().unwrap().consume_all_owned(|msg| messages.push(msg));
 
     for msg in &messages {
         println!("   Received: {}", msg);
@@ -199,8 +199,9 @@ fn example_mpsc_throughput() {
 
     // Consumer on main thread
     let mut received = 0u64;
+    let mut consumer = channel_ref.consumer().unwrap();
     while received < MSG_COUNT {
-        let consumed = channel_ref.consume_all(|_| {});
+        let consumed = consumer.consume_all(|_| {});
         received += consumed as u64;
         if consumed == 0 {
             std::hint::spin_loop();

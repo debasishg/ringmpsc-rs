@@ -29,6 +29,6 @@ fn producer_cannot_hold_two_overlapping_reservations() {
     r2.commit();
 
     let mut seen = Vec::new();
-    channel.consume_all(|v| seen.push(*v));
+    channel.consumer().unwrap().consume_all(|v| seen.push(*v));
     assert_eq!(seen, vec![1, 2, 3, 4]);
 }

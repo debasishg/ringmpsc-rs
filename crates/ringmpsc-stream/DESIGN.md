@@ -311,7 +311,7 @@ Ok(RingSender::new(
 │  Step 2: RECEIVER - Drain Items, Signal Space Available                 │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│   channel.consume_all_up_to_owned(batch_limit, |item| { ... });         │
+│   consumer.consume_all_up_to_owned(batch_limit, |item| { ... });        │
 │                     │                                                   │
 │                     ▼                                                   │
 │   backpressure_notify.notify_waiters()                                  │

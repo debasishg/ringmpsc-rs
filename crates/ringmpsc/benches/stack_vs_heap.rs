@@ -27,7 +27,7 @@ fn bench_heap_single_thread(c: &mut Criterion) {
     group.throughput(Throughput::Elements(MSG_COUNT));
 
     group.bench_function("heap_ring", |b| {
-        let ring = Ring::<u32>::new(Config::default());
+        let mut ring = Ring::<u32>::new(Config::default());
         
         b.iter(|| {
             let mut sent = 0u64;
@@ -113,10 +113,13 @@ fn bench_heap_spsc(c: &mut Criterion) {
 
     group.bench_function("heap_ring", |b| {
         b.iter(|| {
-            let ring = Arc::new(Ring::<u32>::new(Config::default()));
+            // A bare `Ring` cannot be split across threads (both ends need
+            // `&mut Ring`), so a one-producer `Channel` stands in for it.
+            let channel = Channel::<u32>::new(Config::new(16, 1, false));
+            let mut ring_p = channel.register().unwrap();
+            let mut consumer = channel.consumer().unwrap();
             let done = Arc::new(AtomicBool::new(false));
 
-            let ring_p = Arc::clone(&ring);
             let done_p = Arc::clone(&done);
             
             let producer = thread::spawn(move || {
@@ -140,10 +143,10 @@ fn bench_heap_spsc(c: &mut Criterion) {
             // Consumer
             let mut total = 0u64;
             loop {
-                let consumed = ring.consume_batch(|_| {});
+                let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
                 if consumed == 0 {
-                    if done.load(Ordering::Acquire) && ring.is_empty() {
+                    if done.load(Ordering::Acquire) && channel.get_ring(0).unwrap().is_empty() {
                         break;
                     }
                     std::hint::spin_loop();
@@ -296,7 +299,7 @@ fn bench_heap_mpsc(c: &mut Criterion) {
                 // Spawn producers
                 let handles: Vec<_> = (0..num_producers)
                     .map(|_| {
-                        let producer = channel.register().unwrap();
+                        let mut producer = channel.register().unwrap();
                         let _done = Arc::clone(&done);
                         thread::spawn(move || {
                             let mut sent = 0u64;
@@ -319,8 +322,9 @@ fn bench_heap_mpsc(c: &mut Criterion) {
                 
                 // Consumer
                 let mut total = 0u64;
+                let mut consumer = channel.consumer().unwrap();
                 loop {
-                    let consumed = channel.consume_all(|_| {});
+                    let consumed = consumer.consume_all(|_| {});
                     total += consumed as u64;
                     if total >= MPSC_MSG_COUNT {
                         break;
@@ -381,8 +385,9 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
                 .collect();
             
             let mut total = 0u64;
+            let mut consumer = channel_ref.consumer().unwrap();
             loop {
-                let consumed = channel_ref.consume_all(|_| {});
+                let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
                 if total >= MPSC_MSG_COUNT {
                     break;
@@ -442,8 +447,9 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
                 .collect();
             
             let mut total = 0u64;
+            let mut consumer = channel_ref.consumer().unwrap();
             loop {
-                let consumed = channel_ref.consume_all(|_| {});
+                let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
                 if total >= MPSC_MSG_COUNT {
                     break;
@@ -503,8 +509,9 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
                 .collect();
             
             let mut total = 0u64;
+            let mut consumer = channel_ref.consumer().unwrap();
             loop {
-                let consumed = channel_ref.consume_all(|_| {});
+                let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
                 if total >= MPSC_MSG_COUNT {
                     break;

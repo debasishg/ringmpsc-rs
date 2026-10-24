@@ -143,8 +143,11 @@ impl AsyncSpanCollector {
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
-        // Spawn consumer task with concurrent export support
-        let collector_clone = Arc::clone(&collector);
+        // Spawn consumer task with concurrent export support. It owns the
+        // collector's one consumer handle.
+        let mut span_consumer = collector
+            .consumer()
+            .expect("a new collector has no consumer");
         let backpressure_clone = Arc::clone(&backpressure_notify);
         let metrics_clone = Arc::clone(&export_metrics);
         let consumer_interval = config.consumer_interval;
@@ -180,7 +183,7 @@ impl AsyncSpanCollector {
 
                     _ = interval.tick() => {
                         // Consume spans from ring buffers (zero-copy transfer)
-                        let consumed = collector_clone.consume_all_up_to(max_consume, |span| {
+                        let consumed = span_consumer.consume_all_up_to(max_consume, |span| {
                             batch_processor.add(span);
                         });
 
@@ -212,7 +215,7 @@ impl AsyncSpanCollector {
 
                     _ = &mut shutdown_rx => {
                         // Drain remaining spans (zero-copy transfer)
-                        collector_clone.consume_all(|span| {
+                        span_consumer.consume_all(|span| {
                             batch_processor.add(span);
                         });
 

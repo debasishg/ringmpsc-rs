@@ -49,8 +49,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 // - `buffer[idx]`: Written by producer (between tail reservation and commit),
 //                  read by consumer (between head load and advance)
 //
-// These invariants are enforced by the SPSC design: one Producer handle,
-// one consumer (Channel polls rings sequentially on single thread).
+// These invariants are enforced by the type system: producer methods need
+// `&mut Ring` or `&mut Producer`, consumer methods need `&mut Ring` or
+// `&mut Consumer`, and a channel hands out at most one `Consumer` at a time.
 //
 // =============================================================================
 
@@ -401,10 +402,32 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     // ---------------------------------------------------------------------
     // CONSUMER API
     // ---------------------------------------------------------------------
+    //
+    // Every consumer method takes `&mut self`, for the same reason `reserve`
+    // does. A consume moves items out of `[head, tail)` before it stores the
+    // new head, so two consumers running at once would both move out the
+    // same slots and own each item twice.
+    //
+    // `Channel` reaches its rings through a shared `Arc`, so it calls the
+    // `*_shared` variants and proves exclusivity with its `Consumer` handle.
 
     /// Get readable slice. Returns None if empty.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn readable(&self) -> Option<&[T]> {
+    pub fn readable(&mut self) -> Option<&[T]> {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.readable_shared() }
+    }
+
+    /// [`Ring::readable`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    unsafe fn readable_shared(&self) -> Option<&[T]> {
         let head = self.head.load(Ordering::Relaxed);
 
         // Fast path: check cached tail
@@ -450,7 +473,22 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// Pre:  `head < tail` (items available)
     /// Post: `head' = head + n`, consumption published via Release store
     #[inline]
-    pub fn advance(&self, n: usize) {
+    pub fn advance(&mut self, n: usize) {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.advance_shared(n) }
+    }
+
+    /// [`Ring::advance`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    #[inline]
+    unsafe fn advance_shared(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
         let new_head = head.wrapping_add(n as u64);
         let tail = self.tail.load(Ordering::Relaxed);
@@ -515,7 +553,24 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// after the handler processes them. This ensures proper cleanup for types
     /// that implement `Drop`.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn consume_batch<F>(&self, mut handler: F) -> usize
+    pub fn consume_batch<F>(&mut self, handler: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.consume_batch_shared(handler) }
+    }
+
+    /// [`Ring::consume_batch`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    pub(crate) unsafe fn consume_batch_shared<F>(&self, mut handler: F) -> usize
     where
         F: FnMut(&T),
     {
@@ -589,7 +644,24 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// The handler receives ownership and is responsible for the item. If the handler
     /// doesn't move or store the item, it will be dropped when the handler returns.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn consume_batch_owned<F>(&self, mut handler: F) -> usize
+    pub fn consume_batch_owned<F>(&mut self, handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.consume_batch_owned_shared(handler) }
+    }
+
+    /// [`Ring::consume_batch_owned`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    pub(crate) unsafe fn consume_batch_owned_shared<F>(&self, mut handler: F) -> usize
     where
         F: FnMut(T),
     {
@@ -640,7 +712,24 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     ///
     /// Useful for real-world processing where large batches may block too long.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn consume_up_to<F>(&self, max_items: usize, mut handler: F) -> usize
+    pub fn consume_up_to<F>(&mut self, max_items: usize, handler: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.consume_up_to_shared(max_items, handler) }
+    }
+
+    /// [`Ring::consume_up_to`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    pub(crate) unsafe fn consume_up_to_shared<F>(&self, max_items: usize, mut handler: F) -> usize
     where
         F: FnMut(&T),
     {
@@ -700,7 +789,24 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// instead of a reference. This is more efficient when you need to move items
     /// (e.g., into a collection) since it avoids cloning.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn consume_up_to_owned<F>(&self, max_items: usize, mut handler: F) -> usize
+    pub fn consume_up_to_owned<F>(&mut self, max_items: usize, handler: F) -> usize
+    where
+        F: FnMut(T),
+    {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.consume_up_to_owned_shared(max_items, handler) }
+    }
+
+    /// [`Ring::consume_up_to_owned`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    pub(crate) unsafe fn consume_up_to_owned_shared<F>(&self, max_items: usize, mut handler: F) -> usize
     where
         F: FnMut(T),
     {
@@ -819,14 +925,33 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     }
 
     /// Batch receive (convenience).
-    pub fn recv(&self, out: &mut [T]) -> usize
+    pub fn recv(&mut self, out: &mut [T]) -> usize
     where
         T: Copy,
     {
-        self.readable().map_or(0, |slice| {
+        // SAFETY: `&mut self` is exclusive, so no other consumer call on
+        // this ring can be running.
+        unsafe { self.recv_shared(out) }
+    }
+
+    /// [`Ring::recv`] without proving consumer exclusivity through the
+    /// type system.
+    ///
+    /// # Safety
+    ///
+    /// No other consumer call on this ring may run while this one does.
+    /// Callers holding a unique handle - `&mut Ring`, or `&mut Consumer`,
+    /// which is the only route to consume a channel's rings - discharge this.
+    pub(crate) unsafe fn recv_shared(&self, out: &mut [T]) -> usize
+    where
+        T: Copy,
+    {
+        // SAFETY: forwarded from this function's own precondition.
+        unsafe { self.readable_shared() }.map_or(0, |slice| {
             let n = slice.len().min(out.len());
             out[..n].copy_from_slice(&slice[..n]);
-            self.advance(n);
+            // SAFETY: as above.
+            unsafe { self.advance_shared(n) };
             n
         })
     }

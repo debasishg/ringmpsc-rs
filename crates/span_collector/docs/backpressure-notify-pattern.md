@@ -330,7 +330,7 @@ let consumer_task = tokio::spawn(async move {
         tokio::select! {
             _ = interval.tick() => {
                 // Consume spans from ring buffers
-                let consumed = collector_clone.consume_all_up_to(max_consume, |span| {
+                let consumed = span_consumer.consume_all_up_to(max_consume, |span| {
                     batch_processor.add(span.clone());
                 });
 

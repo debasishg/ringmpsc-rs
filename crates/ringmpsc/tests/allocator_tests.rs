@@ -34,7 +34,7 @@ fn test_heap_allocator_channel() {
     let p = ch.register().unwrap();
     p.push(99);
     let mut val = 0u64;
-    ch.consume_all(|item| val = *item);
+    ch.consumer().unwrap().consume_all(|item| val = *item);
     assert_eq!(val, 99);
 }
 
@@ -44,7 +44,7 @@ fn test_heap_allocator_channel_explicit() {
     let p = ch.register().unwrap();
     p.push(99);
     let mut val = 0u64;
-    ch.consume_all(|item| val = *item);
+    ch.consumer().unwrap().consume_all(|item| val = *item);
     assert_eq!(val, 99);
 }
 
@@ -129,7 +129,7 @@ fn test_custom_allocator_channel_multi_producer() {
     p1.push(10u64);
     p2.push(20u64);
     let mut sum = 0u64;
-    ch.consume_all(|item| sum += *item);
+    ch.consumer().unwrap().consume_all(|item| sum += *item);
     assert_eq!(sum, 30);
 }
 
@@ -207,7 +207,7 @@ fn test_custom_allocator_concurrent_stress() {
     let expected = msg_count * 4;
     let mut total = 0u64;
     while total < expected {
-        total += channel.consume_all(|_| {}) as u64;
+        total += channel.consumer().unwrap().consume_all(|_| {}) as u64;
         if total < expected {
             std::hint::spin_loop();
         }
@@ -248,7 +248,7 @@ mod nightly_tests {
         let mut p = ch.register().unwrap();
         p.push(99u64);
         let mut val = 0u64;
-        ch.consume_all(|item| val = *item);
+        ch.consumer().unwrap().consume_all(|item| val = *item);
         assert_eq!(val, 99);
     }
 }
@@ -321,7 +321,7 @@ fn test_aligned_allocator_channel_multi_producer() {
     p1.push(10u64);
     p2.push(20u64);
     let mut sum = 0u64;
-    ch.consume_all(|item| sum += *item);
+    ch.consumer().unwrap().consume_all(|item| sum += *item);
     assert_eq!(sum, 30);
 }
 
@@ -397,7 +397,7 @@ fn test_aligned_allocator_concurrent_stress() {
     let expected = msg_count * 4;
     let mut total = 0u64;
     while total < expected {
-        total += channel.consume_all(|_| {}) as u64;
+        total += channel.consumer().unwrap().consume_all(|_| {}) as u64;
         if total < expected {
             std::hint::spin_loop();
         }
@@ -535,7 +535,7 @@ mod bumpalo_tests {
         p1.push(10u64);
         p2.push(20u64);
         let mut sum = 0u64;
-        ch.consume_all(|item| sum += *item);
+        ch.consumer().unwrap().consume_all(|item| sum += *item);
         assert_eq!(sum, 30);
     }
 
@@ -561,7 +561,7 @@ mod bumpalo_tests {
         let expected = msg_count * 2;
         let mut total = 0u64;
         while total < expected {
-            total += channel.consume_all(|_| {}) as u64;
+            total += channel.consumer().unwrap().consume_all(|_| {}) as u64;
             if total < expected {
                 std::hint::spin_loop();
             }

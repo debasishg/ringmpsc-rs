@@ -43,7 +43,7 @@ fn spsc_producer_and_consumer_overlap() {
         let mut total = 0usize;
         let mut sum = 0u64;
         while total < ITEMS as usize {
-            total += ch.consume_all(|item| sum += item);
+            total += ch.consumer().unwrap().consume_all(|item| sum += item);
             if total < ITEMS as usize {
                 thread::yield_now();
             }
