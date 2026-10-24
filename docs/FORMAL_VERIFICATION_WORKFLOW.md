@@ -115,14 +115,19 @@ val boundedCount: bool =
 
 /// INV-ORD-03: Happens-Before
 val happensBefore: bool = hd <= tl
+
+/// Cache soundness: each side's cache lags the real cursor
+val cachesLag: bool = cached_head <= hd and cached_tail <= tl
 ```
 
 ### Quint Actions
 
 ```quint
-/// ProducerWrite: Commit item to ring
+/// ProducerWrite: Commit item to ring.
+/// Guarded by cached_head, the only view of head the producer has on the
+/// fast path; cachesLag (cached_head <= hd) makes this conservative.
 action producerWrite = all {
-    (tl - hd) < CAPACITY,
+    producerHasSpace(tl, cached_head),   // (tl - cached_head) < CAPACITY
     items_produced < MAX_ITEMS,
     tl' = tl + 1,
     items_produced' = items_produced + 1,

@@ -76,7 +76,7 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | Concern | Quint | Verus | MBT / proptest | Borrow checker | Miri | loom | debug_assert |
 |---|---|---|---|---|---|---|---|
 | Protocol invariants (INV-SEQ, INV-INIT) | ✅ bounded | ✅ unbounded | ✅ | ⬜ | 🟡 | 🟡 | ✅ |
-| Cache soundness (`cached_head`, `cached_tail`) | 🟡 ¹ | ✅ | 🟡 | ⬜ | 🟡 | ✅ | ⬜ |
+| Cache soundness (`cached_head`, `cached_tail`) | ✅ bounded ¹ | ✅ | 🟡 | ⬜ | 🟡 | ✅ | ⬜ |
 | Index arithmetic, wrap-around | ⬜ | ✅ | 🟡 | ⬜ | 🟡 | ⬜ | 🟡 |
 | Liveness (no stuck items) | ✅ bounded | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | One producer, one consumer per ring | 🟡 assumed | 🟡 assumed | ⬜ | ✅ | ✅ repro | ⬜ | ⬜ |
@@ -84,9 +84,21 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | Aliasing (`&mut` uniqueness, retags) | ⬜ | ⬜ | ⬜ | 🟡 | ✅ | ⬜ | ⬜ |
 | Uninitialized reads, double free | ⬜ | ⬜ ³ | ⬜ | ⬜ | ✅ | ⬜ | ⬜ |
 
-1. Quint's `producerWrite` checks space against the real `hd`, which the producer never reads on the fast path. The Verus model guards `reserve` by `cached_head` and proves `cached_head <= head`.
+1. Both models guard the producer by `cached_head`, which is what the code reads on the fast path, and carry the invariant `cached_head <= hd` (`cachesLag` in Quint, `caches_lag` in Verus). Quint checks it at the bound; Verus proves it for every capacity.
 2. Verus treats atomics as sequentially consistent. That rules out reasoning about weaker orderings.
 3. Planned. Once slots are `PCell`s whose `PointsTo` tokens live in the protocol, Verus covers this for all inputs.
+
+## Quint and Verus: the overlap
+
+Both model the same SPSC protocol. They share the four cursors (`hd`/`head`, `tl`/`tail`, both caches), have one-to-one actions, guard the producer by `cached_head`, and carry the same safety invariants: bounded count, head never passes tail, and both caches lag. That is the only layer where they overlap, and there Verus is strictly stronger: it proves for every capacity what Quint checks at `CAPACITY = 4`.
+
+| Only Quint | Only Verus |
+|---|---|
+| Liveness (`RingSPSCLiveness.qnt`) | The real `u64` arithmetic, with its wrap-around (`arith.rs`) |
+| Conformance of the real code: `quint-connect` replays its traces on `Ring` | Batches, partial commits, abandoned reservations |
+| Fast, readable counterexample traces from `quint run` | Slot disjointness and distinctness as proven properties |
+
+Both models are maintained by hand, so they can drift. When they disagree on safety, the Verus proof is the authority.
 
 ## Gaps between the layers
 

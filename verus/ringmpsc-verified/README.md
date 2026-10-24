@@ -50,10 +50,9 @@ This is the Verus counterpart of `crates/ringmpsc/tla/RingSPSC.qnt`. Quint model
 - `reserved_slots_distinct`: the `&mut [MaybeUninit<T>]` a reservation hands out never has two elements on the same slot.
 - `reads_are_published`: the consumer only reads sequence numbers below `tail`.
 
-Two things this model has that the Quint model doesn't:
+The two models agree on state, actions and the safety invariants. Both guard the producer by `cached_head`, the only view of `head` it has on the fast path, and both carry cache soundness (`cachesLag` in Quint, `caches_lag` here). One thing this model has that the Quint model doesn't: **batches and partial commits.** That covers `reserve(n)`, `commit(k <= n)`, `abandon()`, and reading a window then advancing by less.
 
-- **Batches and partial commits.** `reserve(n)`, `commit(k <= n)`, `abandon()`, and reading a window then advancing by less.
-- **Only what each side actually knows.** Quint's `producerWrite` checks space against the real `hd`, which the producer never reads on the fast path. Here `reserve` is guarded by `cached_head`, and `cached_head <= head` is what makes that sound.
+The models are maintained by hand. If they ever disagree on safety, this proof is the authority. Quint remains the only liveness check, and the source of the traces `quint-connect` replays against the real `Ring`.
 
 ### The proofs aren't vacuous
 

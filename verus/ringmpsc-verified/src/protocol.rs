@@ -5,17 +5,16 @@
 //! invariants are proven inductive, so they hold for every capacity and every
 //! number of items.
 //!
-//! Two things the Quint model abstracts away are modeled here:
+//! The two models agree on state, actions and the safety invariants,
+//! including cache soundness (`cachesLag` in Quint, `caches_lag` here) and
+//! a producer guarded by `cached_head`. One thing the Quint model abstracts
+//! away is modeled here:
 //!
 //! - **Batches and partial commits.** `reserve(n)` claims `n` slots,
 //!   `commit(k)` publishes the first `k <= n` of them (`try_commit_n`,
 //!   `commit_up_to`), and `abandon()` drops a reservation without committing
 //!   (`Reservation` has no `Drop` impl). The consumer reads a whole window
 //!   `[head, end)` and may advance by fewer than it read (`consume_up_to`).
-//! - **What each side actually knows.** Quint's `producerWrite` checks space
-//!   against the real `hd`. The producer never reads `head` on the fast path,
-//!   only `cached_head`. Here `reserve` is guarded by `cached_head`, and the
-//!   invariant `cached_head <= head` is what makes that sound.
 //!
 //! The model covers the protocol only: who may touch which sequence numbers
 //! when. Memory orderings are out of scope (Verus treats atomics as
