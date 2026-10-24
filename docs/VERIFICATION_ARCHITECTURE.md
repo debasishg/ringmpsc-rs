@@ -115,7 +115,7 @@ flowchart LR
 
 | Gap | Risk | Mitigation |
 |---|---|---|
-| Verus verifies its own exec ring (`ring.rs`), not the production `Ring` | the production code drifts from the verified design | the verified ring follows the production design line by line; phase 7 (#26) runs the same tests on both and decides whether the verified ring replaces the production one |
+| Verus verifies its own exec ring (`ring.rs`, `spsc.rs`), not the production `Ring` | the production code drifts from the verified design | phase 7 (#26): the same Quint traces (`verus/.../tests/mbt.rs`) and a differential property test (`tests/differential.rs`) run on both rings and a model at once. The differential test already found two places the verified ring behaved differently (`consume_up_to`, `reserve`), now aligned. Whether the verified ring replaces production is still open in #26. |
 | `arith.rs` copies `ring.rs` bodies by hand | the two drift apart | review both together; once the exec ring is verified, it calls the verified functions directly |
 | loom tests `LoomRing`, not `Ring` | the replica's orderings differ from the real ones | keep `LoomRing` in sync with `ring.rs`, or run loom on `Ring` via a `cfg(loom)` atomics shim |
 | Miri sees only the executions a test drives | a bug on an untested path | Miri runs targeted repros, and Verus covers the paths no test reaches |

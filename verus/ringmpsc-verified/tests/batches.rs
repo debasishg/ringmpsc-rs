@@ -32,17 +32,21 @@ fn reserve_write_commit_in_order() {
     assert_eq!(c.consume_up_to(10), vec![10, 11, 12, 13, 14]);
 }
 
+/// All or nothing, as production's `reserve`: `n` slots if `n` are free,
+/// otherwise none.
 #[test]
-fn reserve_is_capped_by_free_space() {
+fn reserve_is_all_or_nothing() {
     let (mut p, mut c) = channel::<u64>(2); // capacity 4
-    assert_eq!(p.reserve(10), 4);
+    assert_eq!(p.reserve(10), 0, "more than the ring holds");
+    assert_eq!(p.reserve(4), 4);
     for v in 0..4 {
         p.write_next(v);
     }
     assert_eq!(p.commit(), 4);
     assert_eq!(p.reserve(1), 0, "the ring is full");
     assert_eq!(c.pop(), Some(0));
-    assert_eq!(p.reserve(3), 1, "one slot was freed");
+    assert_eq!(p.reserve(3), 0, "only one slot was freed");
+    assert_eq!(p.reserve(1), 1);
     p.abandon();
 }
 

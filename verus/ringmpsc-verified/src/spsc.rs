@@ -240,11 +240,16 @@ impl<T> Producer<T> {
         self.shared.cap
     }
 
-    /// Reserve up to `n` slots; returns how many were granted (0 if the
-    /// ring is full).
+    /// Reserve `n` slots: all of them, or none (returns 0) if the ring
+    /// doesn't have `n` free.
     ///
     /// Mirrors `reserve_shared`: space by `cached_head` first, and reload
-    /// `head` from its atomic only when the cache says the ring is full.
+    /// `head` from its atomic when the cache says there are fewer than `n`.
+    /// (Production can also grant fewer because its reservation is one
+    /// contiguous slice and stops at the buffer's wrap point; this ring has
+    /// no slice, so it doesn't.) Differential testing (#26) found the
+    /// earlier policy, which reloaded only when the cache said full and then
+    /// granted what fit, granting fewer than production on a stale cache.
     pub fn reserve(&mut self, n: usize) -> (granted: usize)
         requires
             old(self).wf(),
@@ -254,7 +259,7 @@ impl<T> Producer<T> {
             final(self).id() == old(self).id(),
             final(self).capacity_spec() == old(self).capacity_spec(),
             final(self).produced() == old(self).produced(),
-            granted <= n,
+            granted == 0 || granted == n,
             final(self).reserved_len() == granted,
             final(self).filled_len() == 0,
     {
@@ -266,8 +271,9 @@ impl<T> Producer<T> {
             return 0;
         }
         let cap = self.shared.cap as u64;
+        let want = n as u64;
         let mut used = self.tail - self.cached_head;
-        if used >= cap {
+        if used >= cap || cap - used < want {
             // Slow path: reload head from its atomic into the cache.
             let h = atomic_with_ghost!(&self.shared.head => load();
                 ghost g => {
@@ -281,19 +287,15 @@ impl<T> Producer<T> {
                 self.shared.inst.borrow().producer_facts(&t.cached_head, &t.produced);
             }
             used = self.tail - self.cached_head;
-            if used >= cap {
+            if used >= cap || cap - used < want {
                 return 0;
             }
         }
-        let space = cap - used;
-        let mut g: u64 = if (n as u64) < space { n as u64 } else { space };
-        // Never let `tail + g` overflow (after 2^64 items: INV-SEQ-03).
-        if g > u64::MAX - self.tail {
-            g = u64::MAX - self.tail;
-        }
-        if g == 0 {
+        // Never let `tail + n` overflow (after 2^64 items: INV-SEQ-03).
+        if want > u64::MAX - self.tail {
             return 0;
         }
+        let g = want;
         let tracked mut m: Map<nat, PointsTo<T>>;
         proof {
             let tracked t = self.toks.borrow_mut();
@@ -599,6 +601,38 @@ impl<T> Consumer<T> {
         self.held_len
     }
 
+    /// Like `readable`, but reloads `tail` from its atomic first when
+    /// nothing is held, the way the production `consume_batch` and
+    /// `consume_up_to` do. So it holds every item published by the time of
+    /// the load, not just those the cache already knew about.
+    ///
+    /// Differential testing against the production ring (#26) found that a
+    /// `consume_up_to` built on the cached path alone could see fewer items
+    /// than production's. That is safe (the proofs promise a prefix, in
+    /// order) but not the production behavior.
+    pub fn readable_fresh(&mut self) -> (n: usize)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).id() == old(self).id(),
+            final(self).capacity_spec() == old(self).capacity_spec(),
+            final(self).consumed() == old(self).consumed(),
+            n == final(self).held_len_spec(),
+            old(self).held_len_spec() > 0 ==> final(self).held_view() == old(self).held_view() && n == old(self).held_len_spec(),
+    {
+        if self.held_len == 0 {
+            let t_now = atomic_with_ghost!(&self.shared.tail => load();
+                ghost g => {
+                    let tracked t = self.toks.borrow_mut();
+                    self.shared.inst.borrow().refresh_tail(&g, &mut t.cached_tail);
+                }
+            );
+            self.cached_tail = t_now;
+        }
+        self.readable()
+    }
+
     /// Borrow held item `i` in place: zero-copy access to the ring slot.
     pub fn get(&self, i: usize) -> (r: &T)
         requires
@@ -640,7 +674,9 @@ impl<T> Consumer<T> {
         let ghost hi = lo + self.held_len as nat;
         let ghost cap = self.shared.cap as nat;
         let ghost hv = self.held_view();
-        let mut out: Vec<T> = Vec::new();
+        // Sized up front: growing it one push at a time dominated the batch
+        // benchmark (#26).
+        let mut out: Vec<T> = Vec::with_capacity(k);
         let mut j: usize = 0;
         while j < k
             invariant
@@ -788,7 +824,7 @@ impl<T> Consumer<T> {
     }
 
     /// `consume_up_to_owned`: up to `max` of the published items, oldest
-    /// first.
+    /// first. Reloads `tail` first, as production does (`readable_fresh`).
     pub fn consume_up_to(&mut self, max: usize) -> (out: Vec<T>)
         requires
             old(self).wf(),
@@ -799,7 +835,7 @@ impl<T> Consumer<T> {
             out@.len() <= max,
             final(self).consumed() == old(self).consumed() + out@,
     {
-        let n = self.readable();
+        let n = self.readable_fresh();
         if n == 0 {
             let out = Vec::new();
             proof {
