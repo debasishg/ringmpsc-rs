@@ -24,6 +24,9 @@ verify = true
 # `verus_only` feature flag being undeclared.
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(verus_only)',
+  # Emitted by `tokenized_state_machine!` for ghost-only items.
+  'cfg(verus_keep_ghost)',
+  'cfg(verus_keep_ghost_body)',
 ] }
 # Standalone workspace: Verus pins its own toolchain, so this crate stays
 # out of the root workspace.
