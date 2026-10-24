@@ -229,9 +229,10 @@ tokenized_state_machine!{
         }
 
         /// Fast path of `readable`: read `[head, end)` using only
-        /// `cached_tail`. The guard needs `head < cached_tail`. The code
-        /// tests `cached_tail.wrapping_sub(head) != 0`, which is only the same
-        /// test when `head <= cached_tail` (see `arith::readable_avail`).
+        /// `cached_tail`. The guard needs `head < cached_tail`, which is what
+        /// the code tests since #17 (see `arith::readable_avail`). Before, it
+        /// tested `cached_tail.wrapping_sub(head) != 0`, which differs when
+        /// `cached_tail < head`.
         transition!{
             read_cached(end: nat) {
                 require pre.consumer is Idle;

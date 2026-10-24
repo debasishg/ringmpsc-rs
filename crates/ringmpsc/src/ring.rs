@@ -434,19 +434,24 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         // SAFETY: cached_tail is only written by the consumer (this code path).
         // No other thread writes to it, so this unsynchronized read is safe.
         let mut cached_tail = unsafe { *self.cached_tail.get() };
-        let mut avail = cached_tail.wrapping_sub(head) as usize;
 
-        if avail == 0 {
+        // `cached_tail` can trail `head`: `consume_batch*`, `consume_up_to*`
+        // and `advance` all move `head` without refreshing it. So compare,
+        // don't subtract: `cached_tail.wrapping_sub(head)` would wrap to a
+        // huge count and hand out unwritten slots (#17).
+        if cached_tail <= head {
             // Slow path: refresh cache
             cached_tail = self.tail.load(Ordering::Acquire);
             // SAFETY: cached_tail is only written by the consumer (this code path).
             // The Acquire load above synchronizes with the producer's Release store.
             unsafe { *self.cached_tail.get() = cached_tail; }
-            avail = cached_tail.wrapping_sub(head) as usize;
-            if avail == 0 {
+            if cached_tail <= head {
                 return None;
             }
         }
+        // Now head < cached_tail <= tail, so this is the number of published
+        // items the consumer may read.
+        let avail = (cached_tail - head) as usize;
 
         let mask = self.mask();
         let idx = (head as usize) & mask;

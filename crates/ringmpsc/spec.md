@@ -148,17 +148,19 @@ tail.store(new_tail, Release) // PUBLISHES writes to consumer
 
 ### INV-ORD-02: Consumer Read Protocol
 ```rust
-// Fast path (cached)
+// Fast path (cached), taken only if cached_tail > head
 head.load(Relaxed)           // Only consumer writes head
 cached_tail (UnsafeCell)     // No ordering needed - single writer
 
-// Slow path (refresh cache)  
+// Slow path (refresh cache), whenever cached_tail <= head
 tail.load(Acquire)           // SYNCHRONIZES with producer's Release
 
 // Advance
 read_data_from_buffer()      // No ordering - protected by protocol
 head.store(new_head, Release) // Publishes consumption to producer
 ```
+
+`cached_tail` may trail `head`: `consume_batch*` and `consume_up_to*` advance `head` from a direct Acquire load of `tail`, and `advance` moves it without loading `tail` at all. Neither updates the cache. So the fast path must *compare* `cached_tail > head`, not test `cached_tail.wrapping_sub(head) != 0`, which wraps when the cache trails (#17). The same holds for `StackRing::peek`.
 
 ### INV-ORD-03: Happens-Before Chain
 ```

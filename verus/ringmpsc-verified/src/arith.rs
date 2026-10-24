@@ -138,22 +138,26 @@ pub proof fn lemma_stale_head_underestimates_space(
 {
 }
 
-/// The consumer's fast path in `readable`: `cached_tail.wrapping_sub(head)`.
+/// The consumer's fast-path decision in `readable` (and `StackRing::peek`):
+/// refresh when `cached_tail <= head`, otherwise read `cached_tail - head`
+/// items. `None` means "take the slow path".
 ///
-/// This is the item count only when `head <= cached_tail`, and nothing in
-/// `ring.rs` maintains that. `consume_batch*` and `consume_up_to*` advance
-/// `head` from a fresh load of `tail` without updating `cached_tail`, so a
-/// later `readable` can see `cached_tail < head`. The subtraction then wraps
-/// to a huge count, `readable` skips its refresh, and it returns a slice over
-/// unwritten slots (issue #17). Drop the `head <= cached_tail` precondition
-/// and this function no longer verifies: that failure is the bug.
-pub fn readable_avail(head: u64, cached_tail: u64) -> (avail: usize)
-    requires
-        head <= cached_tail,
+/// `cached_tail` can trail `head`, because `consume_batch*`, `consume_up_to*`
+/// and `advance` move `head` without refreshing it. The code used to compute
+/// `cached_tail.wrapping_sub(head)` and refresh only when that was 0. With
+/// `cached_tail < head` it wrapped to a huge count, skipped the refresh, and
+/// handed out unwritten slots (#17). This version needs no precondition: it is
+/// correct for every pair of values.
+pub fn readable_avail(head: u64, cached_tail: u64) -> (avail: Option<usize>)
     ensures
-        avail as int == cached_tail - head,
+        cached_tail <= head ==> avail is None,
+        head < cached_tail ==> avail == Some((cached_tail - head) as usize),
 {
-    cached_tail.wrapping_sub(head) as usize
+    if cached_tail <= head {
+        None
+    } else {
+        Some((cached_tail - head) as usize)
+    }
 }
 
 /// `make_reservation`: `n.min(capacity - idx)`.

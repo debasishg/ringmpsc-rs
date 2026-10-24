@@ -293,3 +293,97 @@ proptest! {
         }
     }
 }
+
+// =============================================================================
+// INV-INIT-01 across mixed consumer APIs (#17)
+// "the consumer only ever sees published items, whichever API it uses"
+//
+// Interleaves random producer and consumer operations on one ring and checks
+// every observation against a FIFO model. The consumer APIs keep different
+// views of `tail` (`readable` caches it, the `consume_*` methods load it
+// directly, `advance` loads neither), so mixing them is what exposes a stale
+// cache.
+// =============================================================================
+
+#[derive(Debug, Clone)]
+enum Op {
+    Push,
+    ConsumeBatch,
+    ConsumeUpTo(usize),
+    ReadableAdvance(usize),
+    Recv(usize),
+    Advance(usize),
+}
+
+fn op_strategy() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        3 => Just(Op::Push),
+        1 => Just(Op::ConsumeBatch),
+        1 => (0usize..6).prop_map(Op::ConsumeUpTo),
+        2 => (0usize..6).prop_map(Op::ReadableAdvance),
+        1 => (0usize..6).prop_map(Op::Recv),
+        1 => (0usize..6).prop_map(Op::Advance),
+    ]
+}
+
+proptest! {
+    #[test]
+    fn prop_consumer_sees_only_published_items(
+        ops in proptest::collection::vec(op_strategy(), 1..200),
+    ) {
+        use std::collections::VecDeque;
+
+        let mut ring = Ring::<u64>::new(Config::new(2, 1, false)); // capacity 4
+        let mut model: VecDeque<u64> = VecDeque::new();
+        let mut next = 0u64;
+
+        for op in ops {
+            match op {
+                Op::Push => {
+                    let pushed = ring.push(next);
+                    prop_assert_eq!(pushed, model.len() < 4);
+                    if pushed {
+                        model.push_back(next);
+                    }
+                    next += 1;
+                }
+                Op::ConsumeBatch => {
+                    let mut got = Vec::new();
+                    ring.consume_batch(|v| got.push(*v));
+                    let want: Vec<u64> = model.drain(..).collect();
+                    prop_assert_eq!(got, want);
+                }
+                Op::ConsumeUpTo(k) => {
+                    let mut got = Vec::new();
+                    ring.consume_up_to(k, |v| got.push(*v));
+                    let want: Vec<u64> = model.drain(..k.min(model.len())).collect();
+                    prop_assert_eq!(got, want);
+                }
+                Op::ReadableAdvance(k) => {
+                    let seen: Vec<u64> = ring.readable().map(<[u64]>::to_vec).unwrap_or_default();
+                    // A contiguous prefix of the published items, never more.
+                    prop_assert!(seen.len() <= model.len(),
+                        "readable returned {} items, only {} published", seen.len(), model.len());
+                    prop_assert!(seen.iter().eq(model.iter().take(seen.len())));
+                    prop_assert_eq!(seen.is_empty(), model.is_empty());
+                    let n = k.min(seen.len());
+                    ring.advance(n);
+                    model.drain(..n);
+                }
+                Op::Recv(k) => {
+                    let mut out = vec![0u64; k];
+                    let n = ring.recv(&mut out);
+                    prop_assert!(n <= model.len());
+                    let want: Vec<u64> = model.drain(..n).collect();
+                    prop_assert_eq!(&out[..n], &want[..]);
+                }
+                Op::Advance(k) => {
+                    // Skip published items without reading them (a leak, not UB).
+                    let n = k.min(model.len());
+                    ring.advance(n);
+                    model.drain(..n);
+                }
+            }
+        }
+    }
+}

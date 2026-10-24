@@ -238,3 +238,31 @@ fn test_stack_ring_string_type() {
 
     assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 20);
 }
+
+/// #17: `peek` after `consume_batch` must see an empty ring.
+///
+/// `consume_batch` moves `head` without refreshing `cached_tail`, and `peek`
+/// used to compute `cached_tail.wrapping_sub(head)`, which wraps to a huge
+/// count when `cached_tail < head`.
+#[test]
+fn test_stack_ring_peek_after_consume_batch() {
+    let ring = StackRing::<u64, 4>::new();
+    // SAFETY: single thread, so this is the only producer and consumer; each
+    // reserve is followed by writing exactly the reserved slot and committing.
+    unsafe {
+        let (ptr, len) = ring.reserve(1).unwrap();
+        assert_eq!(len, 1);
+        ptr.write(7);
+        ring.commit(1);
+
+        assert_eq!(ring.consume_batch(|_| {}), 1); // head = 1, cached_tail = 0
+        assert!(ring.peek().is_none(), "empty ring must have nothing to peek");
+
+        let (ptr, _) = ring.reserve(1).unwrap();
+        ptr.write(8);
+        ring.commit(1);
+        let (ptr, len) = ring.peek().unwrap();
+        assert_eq!(len, 1);
+        assert_eq!(*ptr, 8);
+    }
+}

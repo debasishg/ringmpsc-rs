@@ -195,3 +195,68 @@ fn miri_push_convenience() {
     ring.consume_batch(|item| sum += *item);
     assert_eq!(sum, 10);
 }
+
+// =============================================================================
+// #17: `cached_tail` can trail `head`
+//
+// `consume_batch*`, `consume_up_to*` and a bare `advance` move `head` without
+// refreshing the consumer's `cached_tail`. `readable` (and `recv`, which uses
+// it) used to compute `cached_tail.wrapping_sub(head)`, which wraps to a huge
+// count when `cached_tail < head`, and then returned a slice over unwritten
+// slots. Each test below leaves `cached_tail < head` and checks that the next
+// read sees exactly what was published.
+// =============================================================================
+
+/// After `consume_batch` drains the ring, `readable` must see it empty.
+#[test]
+fn miri_readable_after_consume_batch() {
+    let mut ring = Ring::<u64>::new(Config::new(2, 1, false)); // capacity = 4
+    assert!(ring.push(7));
+    assert_eq!(ring.consume_batch(|_| {}), 1); // head = 1, cached_tail = 0
+
+    assert!(ring.readable().is_none(), "empty ring must have nothing readable");
+
+    // Newly published items are seen, and only those.
+    assert!(ring.push(8));
+    assert!(ring.push(9));
+    assert_eq!(ring.readable(), Some(&[8u64, 9][..]));
+}
+
+/// `consume_up_to` leaves items behind; `readable` must see only those.
+#[test]
+fn miri_readable_after_consume_up_to() {
+    let mut ring = Ring::<u64>::new(Config::new(2, 1, false));
+    for v in [1, 2, 3] {
+        assert!(ring.push(v));
+    }
+    assert_eq!(ring.consume_up_to(2, |_| {}), 2); // head = 2, cached_tail = 0
+
+    assert_eq!(ring.readable(), Some(&[3u64][..]));
+}
+
+/// `advance` can skip published items without the consumer ever loading
+/// `tail`; `readable` must still see the ring as empty afterwards.
+#[test]
+fn miri_readable_after_bare_advance() {
+    let mut ring = Ring::<u64>::new(Config::new(2, 1, false));
+    assert!(ring.push(1));
+    assert!(ring.push(2));
+    ring.advance(2); // head = 2, cached_tail = 0
+
+    assert!(ring.readable().is_none());
+}
+
+/// `recv` goes through `readable`, so it hit the same bug.
+#[test]
+fn miri_recv_after_consume_batch() {
+    let mut ring = Ring::<u64>::new(Config::new(2, 1, false));
+    assert!(ring.push(7));
+    ring.consume_batch(|_| {});
+
+    let mut out = [0u64; 4];
+    assert_eq!(ring.recv(&mut out), 0);
+
+    assert!(ring.push(8));
+    assert_eq!(ring.recv(&mut out), 1);
+    assert_eq!(out[0], 8);
+}
