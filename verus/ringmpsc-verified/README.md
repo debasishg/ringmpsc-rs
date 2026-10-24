@@ -61,12 +61,14 @@ The models are maintained by hand. If they ever disagree on safety, this proof i
 | Transition | Code | Token movement |
 |---|---|---|
 | `produce_start` | `push`, before the write | withdraw the uninitialized token for `tail`, if `tail < cached_head + cap` |
-| `produce_end` | `tail.store(tail + 1)` | deposit it back initialized; append the value to the ghost `queue` |
-| `consume_start` | `pop`, before the read | withdraw the initialized token for `head`, if `head < cached_tail`; its value is `queue[0]` |
+| `produce_end` | `tail.store(tail + 1)` | deposit it back initialized; append the value to the producer's ghost history `produced` |
+| `consume_start` | `pop`, before the read | withdraw the initialized token for `head`, if `head < cached_tail`; append its value to the consumer's ghost history `consumed` |
 | `consume_end` | `head.store(head + 1)` | deposit it back uninitialized under `head + cap`, the next sequence number for that cell |
 | `refresh_head`, `refresh_tail` | the slow paths | update the caches |
 
-The invariant `window` says every sequence number in the window has its token either in storage (initialized with `queue[s - head]` if published, uninitialized if not) or with the side that withdrew it, never both. It is proven inductive for every capacity.
+The invariant `window` says every sequence number in the window has its token either in storage (initialized with `produced[s]` if published, uninitialized if not) or with the side that withdrew it, never both. The invariant `fifo` says `consumed` is always a prefix of `produced`. Both are proven inductive for every capacity.
+
+The contents are two histories, not one queue, so that each side owns the one it updates. A single queue would be updated by both sides, and its token couldn't live with either thread. Each side's start transition is keyed by its own history's length (equal to `tail` or `head` by invariant), so it needs only tokens that side owns.
 
 `ring.rs` is an exec `Ring<T>` built on it, single-threaded, with the same design as the production ring: unbounded `u64` sequence numbers, `arith::slot_index` for `seq & mask`, and a cached head and tail with fast and slow paths. Each slot is a `vstd` `PCell<T>`, which is `UnsafeCell<MaybeUninit<T>>` underneath, the production layout. It proves:
 
@@ -80,9 +82,60 @@ The invariant `window` says every sequence number in the window has its token ei
 
 `pop` mirrors `readable`'s fast path as fixed in #17: it reads by the cached tail only when `cached_tail > head`. With the old `wrapping_sub` check it fails verification (mutation M7 below).
 
-Single-threaded for now: the ring holds every token itself. Phase 4 ([#23](https://github.com/debasishg/ringmpsc-rs/issues/23)) splits the tokens between a producer half and a consumer half, and puts `head` and `tail` in atomics. Batches (`reserve(n)`/`commit(k)`) and slice access (`readable`) come with the zero-copy `Reservation` in phase 5 ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)).
+`Ring` holds every token itself, so it is single-threaded. `spsc.rs` (below) splits them between two threads. Batches (`reserve(n)`/`commit(k)`) and slice access (`readable`) come with the zero-copy `Reservation` in phase 5 ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)).
 
-Items still in the ring when it is dropped are leaked, not dropped: a `PCell` doesn't drop its contents. That is safe, unlike the production ring's `Drop`, which drops them. A verified drain-on-drop comes with phase 4.
+Dropping a `Ring` drops the items still in it, as the production ring does (see [Trusted code](#trusted-code)).
+
+### `src/spsc.rs`: a verified concurrent ring (phase 4, [#23](https://github.com/debasishg/ringmpsc-rs/issues/23))
+
+`channel(ring_bits)` returns a `Producer` and a `Consumer` that run on different threads. They share the cells and two `vstd` atomics through an `Arc`:
+
+| Atomic | Holds | Invariant |
+|---|---|---|
+| `tail` | the protocol's `tail` token | the token's value is the atomic's value |
+| `head` | the protocol's `head` token | the same |
+
+Each half owns the rest of its side's tokens:
+
+| Half | Tokens |
+|---|---|
+| `Producer` | `cached_head`, `producing`, `produced` |
+| `Consumer` | `cached_tail`, `consuming`, `consumed` |
+
+Neither half is `Clone`, and every method takes `&mut self`. Because the tokens can't be duplicated, there is provably one producer and one consumer, the property #12 enforces in the production crate.
+
+Every protocol step that touches a shared cursor happens inside an atomic operation on it (`atomic_with_ghost!`). These are the same points where the production code does its `load`s and `store`s:
+
+| Code | Atomic operation | Protocol step |
+|---|---|---|
+| `push`, slow path | `head.load()` | `refresh_head` |
+| `push`, publish | `tail.store(tail + 1)` | `produce_end` |
+| `pop`, slow path | `tail.load()` | `refresh_tail` |
+| `pop`, release | `head.store(head + 1)` | `consume_end` |
+
+So the proofs hold under **every interleaving** of the two threads:
+
+| | Proven |
+|---|---|
+| **No data race on a slot** | a slot is written only while the producer holds its token, and read only while the consumer does |
+| **No uninitialized read, no double free** | as for `Ring`, now across threads |
+| **FIFO across threads** | `push` appends to `produced`; `pop` appends what it returns to `consumed`; `fifo_holds(&producer, &consumer)` proves `consumed` is a prefix of `produced` |
+| **One producer, one consumer** | each side's tokens exist once |
+
+`Consumer::consume_up_to(max)` returns items in order and extends `consumed` by exactly them.
+
+**Orderings:** `vstd` atomics are sequentially consistent, and Verus reasons about them that way. The proof shows the protocol is race-free. It does not show that the production code's `Relaxed`/`Acquire`/`Release` are enough; that stays with loom and Miri. Measuring what SeqCst costs is part of phase 7 ([#26](https://github.com/debasishg/ringmpsc-rs/issues/26)).
+
+### Trusted code
+
+Everything above is verified, except two small pieces outside `vstd` that Verus takes on trust:
+
+| What | Why it is trusted | Why it is sound |
+|---|---|---|
+| `arc_clone` in `spsc.rs`, one line, `#[verifier::external_body]` | `vstd` has no spec for `Arc::clone` | its spec says only that the clone points at the same value |
+| `impl Drop` for `Consumer` and `Ring`, plain Rust outside `verus!` | Verus has no way to let `Drop::drop` assume `wf()` short of converting the types to type invariants | each calls the verified `consume_up_to`, whose precondition `wf()` holds for every value safe code can obtain: fields are private, constructors establish it, and every method preserves it |
+
+`Consumer`'s `Drop` drops the items published so far. Items the producer publishes after that are leaked (safely).
 
 ### The proofs aren't vacuous
 
@@ -102,6 +155,12 @@ Each of these deliberate breakages makes verification fail, with the error shown
 | M10: `pop` takes the item twice, a double free | precondition not satisfied (the second `take` needs an initialized token) |
 | M11: the token goes back under `head` and not `head + cap` | invariant `window` fails |
 | M12: `push` without the `tail == u64::MAX` guard | possible arithmetic overflow |
+| C1: the producer publishes `tail` before writing the slot | precondition not satisfied (`produce_end` needs an initialized token) |
+| C2: the consumer releases `head` before taking the item | rejected by the borrow checker: the token was already given back |
+| C3: the `tail` atomic's invariant doesn't tie the token to the value | postcondition not satisfied (the consumer's refreshed cache can't be trusted) |
+| C4: the consumer uses the pre-#17 check | precondition not satisfied, and a possible underflow |
+| C5: the producer's space check is off by one (`>` for `>=`) | precondition not satisfied (`produce_start` needs room) |
+| C6: `consume_start` doesn't record the item in `consumed` | invariant `cursors` fails |
 
 ## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
 
@@ -123,12 +182,11 @@ Natively this returned garbage values. Under Miri it was `Undefined Behavior: ..
 
 ## Not covered (yet)
 
-- **Atomics and threads** ([#23](https://github.com/debasishg/ringmpsc-rs/issues/23)). `head`/`tail` as `vstd` atomics whose invariants hold the protocol's tokens.
 - **Batches and slices** ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)). `reserve(n)`/`commit(k)` and `readable`'s `&[T]`.
-- **The production ring.** `ring.rs` is a verified ring with the production design, not the production code. Whether it replaces `crates/ringmpsc`'s `Ring` is decided in [#26](https://github.com/debasishg/ringmpsc-rs/issues/26).
+- **The production ring.** `ring.rs` and `spsc.rs` are verified rings with the production design, not the production code. Whether it replaces `crates/ringmpsc`'s `Ring` is decided in [#26](https://github.com/debasishg/ringmpsc-rs/issues/26).
 - **Memory orderings.** Verus treats atomics as sequentially consistent, so it can't show `Relaxed`/`Acquire`/`Release` suffice. That stays with loom and Miri.
 - **Liveness.** That stays in `RingSPSCLiveness.qnt`.
-- `Channel`, `StackRing`, allocators, NUMA.
+- `Channel` ([#25](https://github.com/debasishg/ringmpsc-rs/issues/25)), `StackRing`, allocators, NUMA.
 
 ## Running
 
@@ -145,13 +203,18 @@ cargo verus focus     # verify this crate only (vstd is trusted)
 cargo verus verify    # verify vstd too, then this crate
 ```
 
-Expected output: `verification results:: 54 verified, 0 errors`.
+Expected output: `verification results:: 67 verified, 0 errors`.
 
-The verified ring also compiles as ordinary Rust, with the ghost code erased. `tests/fifo.rs` runs it, including a 20,000-operation comparison against a `VecDeque`, natively and under Miri:
+The verified rings also compile as ordinary Rust, with the ghost code erased.
+
+- `tests/fifo.rs` runs `Ring`, including a 20,000-operation comparison against a `VecDeque`.
+- `tests/spsc.rs` runs `channel` on two real threads: 100,000 items in order, batches with `consume_up_to`, and drop counting.
+
+Both pass natively and under Miri. For the threaded tests, use preemption so Miri explores interleavings:
 
 ```sh
 CARGO_TARGET_DIR=target/plain cargo test
-CARGO_TARGET_DIR=target/miri cargo +nightly miri test
+CARGO_TARGET_DIR=target/miri MIRIFLAGS="-Zmiri-preemption-rate=0.1" cargo +nightly miri test
 ```
 
 Cargo caches the result: if nothing changed since the last run, you get only `Finished`. A plain `cargo build` or `cargo test` (which compiles, with the ghost code erased) in the default `target/` can also make the next `cargo verus` skip verification. That's why the commands above use separate target directories. Run `cargo clean` to force a fresh check.
