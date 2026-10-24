@@ -152,7 +152,7 @@ See [FORMAL_VERIFICATION_WORKFLOW.md](docs/FORMAL_VERIFICATION_WORKFLOW.md) and 
 
 ### Verus proofs
 
-[`verus/ringmpsc-verified`](verus/ringmpsc-verified/README.md) proves the ring's index and space arithmetic, the SPSC protocol as a [Verus](https://github.com/verus-lang/verus) state machine, and exec rings built on it, single-threaded and two-threaded, that are memory-safe and a correct FIFO for every input and every interleaving. Where Quint checks the protocol for one small capacity, these proofs hold for all of them. Progress is tracked in [#27](https://github.com/debasishg/ringmpsc-rs/issues/27). It is a standalone workspace with its own pinned toolchain, so the crates above don't depend on it.
+[`verus/ringmpsc-verified`](verus/ringmpsc-verified/README.md) proves the ring's index and space arithmetic, the SPSC protocol as a [Verus](https://github.com/verus-lang/verus) state machine, and exec rings and an MPSC channel built on it that are memory-safe and a correct FIFO (per producer) for every input and every interleaving. Where Quint checks the protocol for one small capacity, these proofs hold for all of them. Progress is tracked in [#27](https://github.com/debasishg/ringmpsc-rs/issues/27). It is a standalone workspace with its own pinned toolchain, so the crates above don't depend on it.
 
 ```bash
 cd verus/ringmpsc-verified

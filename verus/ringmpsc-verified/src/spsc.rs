@@ -43,7 +43,7 @@ verus! {
 /// this one-line wrapper states it. It is this crate's only trusted
 /// function outside `vstd`.
 #[verifier::external_body]
-fn arc_clone<S>(a: &Arc<S>) -> (r: Arc<S>)
+pub(crate) fn arc_clone<S>(a: &Arc<S>) -> (r: Arc<S>)
     ensures
         *r == **a,
 {
