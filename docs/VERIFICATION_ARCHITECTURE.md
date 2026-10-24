@@ -43,7 +43,7 @@ flowchart TB
     MBT --> CODE
     PT --> CODE
     VA -. "mirrors" .-> CODE
-    VP -. "proves its own ring (ring.rs),<br/>not the production code" .-> CODE
+    VP -. "proves its own rings (ring.rs, spsc.rs),<br/>not the production code" .-> CODE
     STATIC --> CODE
     DYNAMIC --> CODE
 ```
@@ -59,7 +59,7 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | **Quint** liveness | If the consumer keeps running, does every item get consumed? | `RingSPSCLiveness.qnt` | the model, bounded | proof, for that bound |
 | **Verus** protocol | Are the invariants inductive, so they hold for every capacity and history? | `protocol.rs` | the model, unbounded | proof |
 | **Verus** arithmetic | Are masking, `len`, `space` and `contiguous` right for every input? | `arith.rs` (same bodies as `ring.rs`) | a copy of the code, unbounded | proof |
-| **Verus** exec ring | Is a ring with the production design memory-safe and a correct FIFO for every input? | `verus/.../ring.rs` on `slots.rs` (single-threaded) | a verified ring, not the production one | proof |
+| **Verus** exec rings | Is a ring with the production design memory-safe and a correct FIFO for every input, and for every interleaving of a producer and a consumer thread? | `verus/.../ring.rs` (single-threaded) and `spsc.rs` (two threads, SeqCst atomics), on `slots.rs` | verified rings, not the production one | proof |
 | **quint-connect** | Does the real `Ring` do what the spec says, step by step? | spec traces replayed on `Ring<T>` | the real code | evidence |
 | **proptest** | Do the spec's invariants hold on random operation sequences? | `Ring<T>`, `StackRing` | the real code | evidence |
 | **borrow checker** | Can two producers, or two consumers, reach one ring at once? | the public API's signatures | the real code, all programs | proof, of exclusivity only |
@@ -80,14 +80,15 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | Cache soundness (`cached_head`, `cached_tail`) | ✅ bounded ¹ | ✅ | 🟡 | ⬜ | 🟡 | ✅ | ⬜ |
 | Index arithmetic, wrap-around | ⬜ | ✅ | 🟡 | ⬜ | 🟡 | ⬜ | 🟡 |
 | Liveness (no stuck items) | ✅ bounded | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| One producer, one consumer per ring | 🟡 assumed | 🟡 assumed | ⬜ | ✅ | ✅ repro | ⬜ | ⬜ |
+| One producer, one consumer per ring | 🟡 assumed | ✅ verified ring ⁴ | ⬜ | ✅ | ✅ repro | ⬜ | ⬜ |
 | Memory orderings (`Acquire`/`Release`) | ⬜ | ⬜ ² | ⬜ | ⬜ | ✅ | ✅ replica | ⬜ |
 | Aliasing (`&mut` uniqueness, retags) | ⬜ | ⬜ | ⬜ | 🟡 | ✅ | ⬜ | ⬜ |
 | Uninitialized reads, double free | ⬜ | 🟡 ³ | ⬜ | ⬜ | ✅ | ⬜ | ⬜ |
 
 1. Both models guard the producer by `cached_head`, which is what the code reads on the fast path, and carry the invariant `cached_head <= hd` (`cachesLag` in Quint, `caches_lag` in Verus). Quint checks it at the bound; Verus proves it for every capacity.
 2. Verus treats atomics as sequentially consistent. That rules out reasoning about weaker orderings.
-3. Proven for the verified ring in `verus/ringmpsc-verified/src/ring.rs` (#22): its slots are `PCell`s whose `PointsTo` tokens live in the protocol, so every read needs an initialized token. Single-threaded so far, and not the production `Ring`.
+3. Proven for the verified rings in `verus/ringmpsc-verified`: `ring.rs` (#22, single-threaded) and `spsc.rs` (#23, a producer and a consumer thread). Their slots are `PCell`s whose `PointsTo` tokens live in the protocol, so every read needs an initialized token. Not the production `Ring`.
+4. In `spsc.rs`, each side's protocol tokens exist once and the halves aren't `Clone`, so a second producer or consumer can't be created. The production crate enforces the same rule with `&mut` and the `Consumer` claim (#12).
 
 ## Quint and Verus: the overlap
 

@@ -12,9 +12,18 @@
 //! the consumer releases `head`, the token goes back under `head + cap`, the
 //! next sequence number that will use the same cell.
 //!
-//! The machine also carries `queue`, the ghost contents of the ring, so the
-//! exec ring can be proven a correct FIFO queue and not just a memory-safe
-//! one.
+//! The ring's contents are tracked as two ghost histories: `produced`, owned
+//! by the producer, and `consumed`, owned by the consumer. The invariant
+//! `fifo` says `consumed` is always a prefix of `produced`: the consumer gets
+//! exactly what the producer sent, in order. Splitting the history this way
+//! (one shared queue would be updated by both sides) is what lets each side
+//! run on its own thread holding only its own tokens (#23).
+//!
+//! Each side's transitions need only tokens that side owns, except the
+//! cursor it publishes (`tail` for the producer, `head` for the consumer) and
+//! the one it refreshes from. Those tokens live inside the `head` and `tail`
+//! atomics, so the exec code touches them only within an atomic load or
+//! store.
 //!
 //! This is the single-slot form: one item per produce or consume. Batches
 //! (`reserve(n)`, `commit(k)`) come with the zero-copy `Reservation` (#24).
@@ -40,6 +49,12 @@ pub proof fn lemma_next_lap_same_cell(s: nat, cap: nat)
     vstd::arithmetic::div_mod::lemma_mod_add_multiples_vanish(s as int, cap as int);
 }
 
+/// `a` is a prefix of `b`.
+pub open spec fn is_prefix<T>(a: Seq<T>, b: Seq<T>) -> bool {
+    &&& a.len() <= b.len()
+    &&& forall |i: int| 0 <= i < a.len() ==> #[trigger] a[i] == b[i]
+}
+
 } // verus!
 
 tokenized_state_machine!{
@@ -56,36 +71,46 @@ tokenized_state_machine!{
             #[sharding(storage_map)]
             pub slots: Map<nat, PointsTo<T>>,
 
+            /// Lives in the `head` atomic. Written by the consumer only.
             #[sharding(variable)]
             pub head: nat,
 
+            /// Lives in the `tail` atomic. Written by the producer only.
             #[sharding(variable)]
             pub tail: nat,
 
+            /// Producer-owned.
             #[sharding(variable)]
             pub cached_head: nat,
 
+            /// Consumer-owned.
             #[sharding(variable)]
             pub cached_tail: nat,
 
-            /// The producer holds the token for `tail`.
+            /// Producer-owned: it holds the token for `tail`.
             #[sharding(variable)]
             pub producing: bool,
 
-            /// The consumer holds the token for `head`.
+            /// Consumer-owned: it holds the token for `head`.
             #[sharding(variable)]
             pub consuming: bool,
 
-            /// Ghost contents of the ring: `queue[i]` is the item at `head + i`.
+            /// Producer-owned: every item ever pushed, in order.
             #[sharding(variable)]
-            pub queue: Seq<T>,
+            pub produced: Seq<T>,
+
+            /// Consumer-owned: every item ever taken, in order.
+            #[sharding(variable)]
+            pub consumed: Seq<T>,
         }
 
         // ---------------------------------------------------------------
         // Invariants
         // ---------------------------------------------------------------
 
-        /// INV-SEQ-01, INV-ORD-03, and both caches lag.
+        /// INV-SEQ-01, INV-ORD-03, and both caches lag. The histories'
+        /// lengths are the cursors (the consumer's runs one ahead while it
+        /// holds a slot).
         #[invariant]
         pub fn cursors(&self) -> bool {
             &&& self.cap > 0
@@ -94,7 +119,14 @@ tokenized_state_machine!{
             &&& self.tail <= self.head + self.cap
             &&& self.cached_head <= self.head
             &&& self.cached_tail <= self.tail
-            &&& self.queue.len() == self.tail - self.head
+            &&& self.produced.len() == self.tail
+            &&& self.consumed.len() == if self.consuming { self.head + 1 } else { self.head }
+        }
+
+        /// FIFO: the consumer got exactly what the producer sent, in order.
+        #[invariant]
+        pub fn fifo(&self) -> bool {
+            is_prefix(self.consumed, self.produced)
         }
 
         /// The producer only holds a free slot; the consumer only a full one.
@@ -121,14 +153,14 @@ tokenized_state_machine!{
         }
 
         /// INV-INIT-01/02 for one sequence number: its token is in storage,
-        /// belongs to its cell, and is initialized with the queued item iff
+        /// belongs to its cell, and is initialized with the produced item iff
         /// `s` was published.
         pub open spec fn slot_ok(&self, s: nat) -> bool {
             &&& self.slots.dom().contains(s)
             &&& self.slots[s].id() == self.cells[(s % self.cap) as int]
             &&& s < self.tail ==> {
                 &&& self.slots[s].is_init()
-                &&& self.slots[s].value() == self.queue[s - self.head]
+                &&& self.slots[s].value() == self.produced[s as int]
             }
             &&& s >= self.tail ==> self.slots[s].is_uninit()
         }
@@ -155,7 +187,8 @@ tokenized_state_machine!{
                 init cached_tail = 0;
                 init producing = false;
                 init consuming = false;
-                init queue = Seq::empty();
+                init produced = Seq::empty();
+                init consumed = Seq::empty();
             }
         }
 
@@ -170,20 +203,21 @@ tokenized_state_machine!{
             }
         }
 
-        /// Take the free slot for `tail`, if the cache says there is room.
+        /// Take the free slot for `tail` (`produced.len()`, which the
+        /// producer owns), if the cache says there is room.
         transition!{
             produce_start() {
                 require !pre.producing;
-                require pre.tail < pre.cached_head + pre.cap;
+                require pre.produced.len() < pre.cached_head + pre.cap;
                 update producing = true;
-                withdraw slots -= [pre.tail => let perm] by {
-                    assert(pre.slot_ok(pre.tail));
+                withdraw slots -= [pre.produced.len() => let perm] by {
+                    assert(pre.slot_ok(pre.produced.len()));
                 };
                 assert({
-                    &&& perm.id() == pre.cells[(pre.tail % pre.cap) as int]
+                    &&& perm.id() == pre.cells[(pre.produced.len() % pre.cap) as int]
                     &&& perm.is_uninit()
                 }) by {
-                    assert(pre.slot_ok(pre.tail));
+                    assert(pre.slot_ok(pre.produced.len()));
                 };
             }
         }
@@ -196,7 +230,7 @@ tokenized_state_machine!{
                 require perm.is_init();
                 update producing = false;
                 update tail = pre.tail + 1;
-                update queue = pre.queue.push(perm.value());
+                update produced = pre.produced.push(perm.value());
                 deposit slots += [pre.tail => perm];
             }
         }
@@ -212,23 +246,25 @@ tokenized_state_machine!{
             }
         }
 
-        /// Take the full slot for `head`, if the cache says it was published.
-        /// The guard is `head < cached_tail`, as in `readable` since #17.
+        /// Take the full slot for `head` (`consumed.len()`, which the
+        /// consumer owns), if the cache says it was published. The guard is
+        /// `head < cached_tail`, as in `readable` since #17. The item joins
+        /// the consumer's history.
         transition!{
             consume_start() {
                 require !pre.consuming;
-                require pre.head < pre.cached_tail;
+                require pre.consumed.len() < pre.cached_tail;
                 update consuming = true;
-                withdraw slots -= [pre.head => let perm] by {
-                    assert(pre.slot_ok(pre.head));
+                withdraw slots -= [pre.consumed.len() => let perm] by {
+                    assert(pre.slot_ok(pre.consumed.len()));
                 };
                 assert({
-                    &&& perm.id() == pre.cells[(pre.head % pre.cap) as int]
+                    &&& perm.id() == pre.cells[(pre.consumed.len() % pre.cap) as int]
                     &&& perm.is_init()
-                    &&& perm.value() == pre.queue[0]
                 }) by {
-                    assert(pre.slot_ok(pre.head));
+                    assert(pre.slot_ok(pre.consumed.len()));
                 };
+                update consumed = pre.consumed.push(perm.value());
             }
         }
 
@@ -241,7 +277,6 @@ tokenized_state_machine!{
                 require perm.is_uninit();
                 update consuming = false;
                 update head = pre.head + 1;
-                update queue = pre.queue.drop_first();
                 deposit slots += [pre.head + pre.cap => perm] by {
                     assert(!pre.slots.dom().contains(pre.head + pre.cap));
                 };
@@ -249,11 +284,42 @@ tokenized_state_machine!{
         }
 
         // ---------------------------------------------------------------
-        // Properties: facts the exec ring can learn from its tokens
+        // Properties: facts a token holder can learn
         // ---------------------------------------------------------------
 
-        /// The cursor invariants, exported for the exec ring. It holds every
-        /// token, but invariants are only visible through properties.
+        /// FIFO, for whoever holds both histories (for example after joining
+        /// the producer and consumer threads).
+        property!{
+            fifo_holds() {
+                assert(is_prefix(pre.consumed, pre.produced));
+            }
+        }
+
+        /// The producer's own tokens: its cache is never ahead of `tail`.
+        property!{
+            producer_facts() {
+                assert(pre.cached_head <= pre.produced.len());
+            }
+        }
+
+        /// Inside the `tail` atomic: the published `tail` is the producer's
+        /// history length.
+        property!{
+            tail_is_produced_len() {
+                assert(pre.tail == pre.produced.len());
+            }
+        }
+
+        /// Inside the `head` atomic: the published `head` is the consumer's
+        /// history length (one less while it holds a slot).
+        property!{
+            head_is_consumed_len() {
+                assert(pre.consumed.len() == if pre.consuming { pre.head + 1 } else { pre.head });
+            }
+        }
+
+        /// Everything at once, for the single-threaded ring that holds every
+        /// token.
         property!{
             cursor_facts() {
                 assert({
@@ -261,7 +327,9 @@ tokenized_state_machine!{
                     &&& pre.tail <= pre.head + pre.cap
                     &&& pre.cached_head <= pre.head
                     &&& pre.cached_tail <= pre.tail
-                    &&& pre.queue.len() == pre.tail - pre.head
+                    &&& pre.produced.len() == pre.tail
+                    &&& pre.consumed.len() == if pre.consuming { pre.head + 1 } else { pre.head }
+                    &&& is_prefix(pre.consumed, pre.produced)
                 });
             }
         }
@@ -302,6 +370,10 @@ tokenized_state_machine!{
                     assert(pre.slot_ok(s));
                 }
             }
+            assert forall |i: int| 0 <= i < post.consumed.len()
+                implies #[trigger] post.consumed[i] == post.produced[i] by {
+                assert(pre.consumed[i] == pre.produced[i]);
+            }
         }
 
         #[inductive(refresh_tail)]
@@ -314,9 +386,16 @@ tokenized_state_machine!{
 
         #[inductive(consume_start)]
         fn consume_start_inductive(pre: Self, post: Self) {
+            assert(pre.slot_ok(pre.head));
             assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
                 implies #[trigger] post.slot_ok(s) by {
                 assert(pre.slot_ok(s));
+            }
+            assert forall |i: int| 0 <= i < post.consumed.len()
+                implies #[trigger] post.consumed[i] == post.produced[i] by {
+                if i < pre.consumed.len() {
+                    assert(pre.consumed[i] == pre.produced[i]);
+                }
             }
         }
 

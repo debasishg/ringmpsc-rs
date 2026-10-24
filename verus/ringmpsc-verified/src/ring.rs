@@ -39,7 +39,8 @@ pub tracked struct Tokens<T> {
     pub cached_tail: SpscSlots::cached_tail<T>,
     pub producing: SpscSlots::producing<T>,
     pub consuming: SpscSlots::consuming<T>,
-    pub queue: SpscSlots::queue<T>,
+    pub produced: SpscSlots::produced<T>,
+    pub consumed: SpscSlots::consumed<T>,
 }
 
 pub struct Ring<T> {
@@ -56,9 +57,10 @@ pub struct Ring<T> {
 }
 
 impl<T> Ring<T> {
-    /// The ring's contents, oldest first.
+    /// The ring's contents, oldest first: what was produced and not yet
+    /// consumed.
     pub closed spec fn view(&self) -> Seq<T> {
-        self.toks@.queue.value()
+        self.toks@.produced.value().skip(self.toks@.consumed.value().len() as int)
     }
 
     pub closed spec fn capacity_spec(&self) -> nat {
@@ -85,7 +87,8 @@ impl<T> Ring<T> {
         &&& t.cached_tail.instance_id() == t.inst.id()
         &&& t.producing.instance_id() == t.inst.id()
         &&& t.consuming.instance_id() == t.inst.id()
-        &&& t.queue.instance_id() == t.inst.id()
+        &&& t.produced.instance_id() == t.inst.id()
+        &&& t.consumed.instance_id() == t.inst.id()
         &&& t.head.value() == self.head as nat
         &&& t.tail.value() == self.tail as nat
         &&& t.cached_head.value() == self.cached_head as nat
@@ -103,10 +106,13 @@ impl<T> Ring<T> {
             self.tail - self.head <= self.cap,
             self.cached_head <= self.head,
             self.cached_tail <= self.tail,
+            self.toks@.produced.value().len() == self.tail,
+            self.toks@.consumed.value().len() == self.head,
+            crate::slots::is_prefix(self.toks@.consumed.value(), self.toks@.produced.value()),
             self@.len() == self.tail - self.head,
     {
         let tracked t = self.toks.borrow();
-        t.inst.cursor_facts(&t.head, &t.tail, &t.cached_head, &t.cached_tail, &t.queue);
+        t.inst.cursor_facts(&t.head, &t.tail, &t.cached_head, &t.cached_tail, &t.consuming, &t.produced, &t.consumed);
     }
 
     /// An empty ring with `2^ring_bits` slots (`Config::new`'s range).
@@ -150,7 +156,8 @@ impl<T> Ring<T> {
             Tracked(cached_tail),
             Tracked(producing),
             Tracked(consuming),
-            Tracked(queue),
+            Tracked(produced),
+            Tracked(consumed),
         ) = SpscSlots::Instance::initialize(cap as nat, ids, perms, perms);
         Ring {
             cells,
@@ -160,7 +167,7 @@ impl<T> Ring<T> {
             tail: 0,
             cached_head: 0,
             cached_tail: 0,
-            toks: Tracked(Tokens { inst, head, tail, cached_head, cached_tail, producing, consuming, queue }),
+            toks: Tracked(Tokens { inst, head, tail, cached_head, cached_tail, producing, consuming, produced, consumed }),
         }
     }
 
@@ -227,14 +234,17 @@ impl<T> Ring<T> {
         let tracked mut perm: PointsTo<T>;
         proof {
             let tracked t = self.toks.borrow_mut();
-            perm = t.inst.produce_start(&t.tail, &t.cached_head, &mut t.producing);
+            perm = t.inst.produce_start(&t.cached_head, &mut t.producing, &t.produced);
         }
         self.cells[idx].put(Tracked(&mut perm), v);
         proof {
             let tracked t = self.toks.borrow_mut();
-            t.inst.produce_end(perm, perm, &mut t.tail, &mut t.producing, &mut t.queue);
+            t.inst.produce_end(perm, perm, &mut t.tail, &mut t.producing, &mut t.produced);
         }
         self.tail = self.tail + 1;
+        proof {
+            assert(self@ =~= old(self)@.push(v));
+        }
         Ok(())
     }
 
@@ -267,14 +277,21 @@ impl<T> Ring<T> {
         let tracked mut perm: PointsTo<T>;
         proof {
             let tracked t = self.toks.borrow_mut();
-            perm = t.inst.consume_start(&t.head, &t.cached_tail, &mut t.consuming, &t.queue);
+            perm = t.inst.consume_start(&t.cached_tail, &mut t.consuming, &mut t.consumed);
         }
         let v = self.cells[idx].take(Tracked(&mut perm));
         proof {
             let tracked t = self.toks.borrow_mut();
-            t.inst.consume_end(perm, perm, &mut t.head, &mut t.consuming, &mut t.queue);
+            t.inst.consume_end(perm, perm, &mut t.head, &mut t.consuming);
         }
         self.head = self.head + 1;
+        proof {
+            // The item taken is the oldest one: FIFO says the consumer's new
+            // history entry equals the produced item at the old head.
+            self.lemma_cursors();
+            assert(self.toks@.consumed.value()[old(self).head as int] == self.toks@.produced.value()[old(self).head as int]);
+            assert(self@ =~= old(self)@.drop_first());
+        }
         Some(v)
     }
 
@@ -324,3 +341,18 @@ impl<T> Ring<T> {
 }
 
 } // verus!
+
+/// Dropping the ring drops the items still in it, as the production ring's
+/// `Drop` does. Without this they would leak (safely: a `PCell` never drops
+/// its contents).
+///
+/// Trusted glue, outside `verus!`: it calls the verified `consume_up_to`,
+/// whose precondition `wf()` holds for every `Ring` safe code can obtain.
+/// The fields are private, `new` establishes `wf()`, and every method
+/// preserves it.
+impl<T> Drop for Ring<T> {
+    fn drop(&mut self) {
+        let n = self.len();
+        let _ = self.consume_up_to(n);
+    }
+}
