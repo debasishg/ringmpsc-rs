@@ -260,3 +260,44 @@ fn miri_recv_after_consume_batch() {
     assert_eq!(ring.recv(&mut out), 1);
     assert_eq!(out[0], 8);
 }
+
+// =============================================================================
+// #14: `advance(n)` must never move head past tail
+//
+// The bound used to be a `debug_assert!`, so in release builds an oversized
+// `advance` moved head past tail and the next consume read unwritten slots.
+// It is now an `assert!` in every profile. These tests run in both.
+// =============================================================================
+
+/// Advancing an empty ring panics, where release builds used to move head
+/// past tail and let the next consume read an unwritten `Box`.
+#[test]
+#[should_panic(expected = "INV-ORD-03 violated")]
+fn miri_advance_past_tail_panics() {
+    let mut ring = Ring::<Box<u64>>::new(Config::new(2, 1, false));
+    ring.advance(1);
+}
+
+/// An `n` large enough to wrap `head + n` around would move head *backwards*
+/// and re-read slots already moved out (a double free). The old debug check,
+/// `head + n <= tail`, passed for it even in debug builds.
+#[test]
+#[should_panic(expected = "INV-ORD-03 violated")]
+fn miri_advance_wrapping_n_panics() {
+    let mut ring = Ring::<Box<u64>>::new(Config::new(2, 1, false));
+    assert!(ring.push(Box::new(1)));
+    assert_eq!(ring.consume_batch_owned(drop), 1); // head = 1
+    assert!(ring.push(Box::new(2)));               // tail = 2
+    ring.advance(usize::MAX);                      // 1 + MAX wraps to 0
+}
+
+/// Advancing by exactly what is available is fine, and skips without reading.
+#[test]
+fn miri_advance_up_to_available() {
+    let mut ring = Ring::<u64>::new(Config::new(2, 1, false));
+    assert!(ring.push(1));
+    assert!(ring.push(2));
+    ring.advance(2);
+    assert!(ring.is_empty());
+    assert!(ring.readable().is_none());
+}

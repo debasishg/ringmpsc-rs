@@ -91,6 +91,10 @@ buffer[i] is initialized  ⟺  head ≤ sequence(i) < tail
 ```
 Slots in range `[head, tail)` contain valid `T` values written by the producer.
 
+**Enforced by**: only a commit moves `tail`, so every commit must publish written slots only.
+- `Ring`: commits go through `Reservation`, which can't commit more slots than it reserved.
+- `StackRing` / `StackProducer`: `commit` is an `unsafe fn` whose contract requires the first `n` reserved slots to have been written (#15). It can't be checked, so it can't be safe.
+
 ### INV-INIT-02: Uninitialized Range  
 ```
 buffer[i] is uninitialized  ⟺  sequence(i) < head ∨ sequence(i) ≥ tail
@@ -168,6 +172,10 @@ producer.write(data) → producer.tail.store(Release)
     ↓ (synchronizes-with)
 consumer.tail.load(Acquire) → consumer.read(data)
 ```
+
+Head never passes tail: `advance(n)` requires `n ≤ tail - head`.
+
+**Enforced by**: `assert_head_not_past_tail!` in `Ring::advance` and `StackRing::advance`. Unlike the other invariant macros, it is on in every build profile, because a head past tail makes the next consume read unwritten slots (#14). It compares `n` with the available count, so an `n` that would wrap `head + n` around is rejected too.
 
 ## 6. Reservation Invariants
 

@@ -1,6 +1,6 @@
 use crate::allocator::{BufferAllocator, HeapAllocator};
 use crate::invariants::{
-    debug_assert_bounded_count, debug_assert_head_not_past_tail, debug_assert_initialized_read,
+    assert_head_not_past_tail, debug_assert_bounded_count, debug_assert_initialized_read,
     debug_assert_monotonic, debug_assert_no_wrap,
 };
 use crate::{Backoff, Config, Metrics, Reservation};
@@ -474,6 +474,15 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
     /// Advance head after reading n items.
     ///
+    /// Advancing past items without reading them is allowed: they are
+    /// skipped and never dropped (a leak, not UB).
+    ///
+    /// # Panics
+    ///
+    /// If `n` is more than the number of published items, in every build
+    /// profile. Moving head past tail would make the next consume read
+    /// unwritten slots.
+    ///
     /// # TLA+ Action: `ConsumerAdvance`
     /// Pre:  `head < tail` (items available)
     /// Post: `head' = head + n`, consumption published via Release store
@@ -495,11 +504,14 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     #[inline]
     unsafe fn advance_shared(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
-        let new_head = head.wrapping_add(n as u64);
         let tail = self.tail.load(Ordering::Relaxed);
 
-        // INV-SEQ-01: Bounded Count - can't consume more than available
-        debug_assert_head_not_past_tail!(new_head, tail);
+        // INV-SEQ-01: Bounded Count - can't consume more than available.
+        // Checked in release builds too (#14). A Relaxed load of tail is
+        // enough: tail only grows, so a stale value only makes this stricter,
+        // and advance never reads the slots it moves past.
+        assert_head_not_past_tail!(head, n, tail);
+        let new_head = head.wrapping_add(n as u64);
 
         // INV-SEQ-02: Monotonic Progress - head only increases
         debug_assert_monotonic!("head", head, new_head);
