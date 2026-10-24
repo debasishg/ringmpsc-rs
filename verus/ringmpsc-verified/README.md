@@ -126,14 +126,29 @@ So the proofs hold under **every interleaving** of the two threads:
 
 **Orderings:** `vstd` atomics are sequentially consistent, and Verus reasons about them that way. The proof shows the protocol is race-free. It does not show that the production code's `Relaxed`/`Acquire`/`Release` are enough; that stays with loom and Miri. Measuring what SeqCst costs is part of phase 7 ([#26](https://github.com/debasishg/ringmpsc-rs/issues/26)).
 
+### `src/channel.rs`: a verified MPSC channel (phase 6, [#25](https://github.com/debasishg/ringmpsc-rs/issues/25))
+
+`Channel::new(ring_bits, max_producers)` builds one verified `spsc` ring per producer, as the production `Channel` does. Handles are shared with `clone_handle` and can be used from any thread. The verified part is the **handout**, which moves exec values out of shared memory through `PCell`s whose permissions live in atomic invariants:
+
+| Operation | Mechanism | Proven |
+|---|---|---|
+| `register()` | Each ring's `Producer` half sits in a `PCell`. The `producer_count` atomic's invariant holds the permissions for the unclaimed ones, `[count, N)`. A compare-and-swap from `c` to `c + 1` withdraws permission `c`. | each ring is handed out **at most once**, in order, and never past `max_producers`; the producer returned is well-formed and belongs to ring `id` |
+| `consumer()` | All N `Consumer` halves sit in one `PCell`. The `consumer_taken` flag's invariant holds its permission while the flag is `false`. Claiming swaps in `true` and withdraws it. | **at most one** `ChannelConsumer` exists at a time: #12's claim, with its exclusivity proven |
+| releasing (dropping the `ChannelConsumer`) | puts the halves back, then stores `false` along with the permission | the claim can be taken again, on any thread |
+| `consume_all(max_per_ring)` | drains each ring through its `Consumer` half, ring 0 first | each producer's items come out in the order it sent them (INV-CH-03): every ring's `consumed` only grows by appending |
+
+`ChannelConsumer::ring(i)` exposes ring `i`'s consumer half, so `spsc::fifo_holds` states per-producer FIFO against that producer.
+
+When the last handle goes away, the channel drops what it still owns: the unregistered producer halves, and, if unclaimed, the consumer halves (which drop the items left in their rings). The verified `drain` does this by registering and claiming through the same protocol. Without it, those halves would stay in their `PCell`s and leak. Miri caught that during development.
+
 ### Trusted code
 
-Everything above is verified, except two small pieces outside `vstd` that Verus takes on trust:
+Everything above is verified, except these small pieces outside `vstd` that Verus takes on trust:
 
 | What | Why it is trusted | Why it is sound |
 |---|---|---|
 | `arc_clone` in `spsc.rs`, one line, `#[verifier::external_body]` | `vstd` has no spec for `Arc::clone` | its spec says only that the clone points at the same value |
-| `impl Drop` for `Consumer` and `Ring`, plain Rust outside `verus!` | Verus has no way to let `Drop::drop` assume `wf()` short of converting the types to type invariants | each calls the verified `consume_up_to`, whose precondition `wf()` holds for every value safe code can obtain: fields are private, constructors establish it, and every method preserves it |
+| `impl Drop` for `Consumer`, `Ring`, `ChannelConsumer` and `ChannelShared`, plain Rust outside `verus!` | Verus has no way to let `Drop::drop` assume `wf()` short of converting the types to type invariants | each is one call to a verified function (`consume_up_to`, `release`, `drain`) whose precondition `wf()` holds for every value safe code can obtain: fields are private, constructors establish it, and every method preserves it |
 
 `Consumer`'s `Drop` drops the items published so far. Items the producer publishes after that are leaked (safely).
 
@@ -161,6 +176,11 @@ Each of these deliberate breakages makes verification fail, with the error shown
 | C4: the consumer uses the pre-#17 check | precondition not satisfied, and a possible underflow |
 | C5: the producer's space check is off by one (`>` for `>=`) | precondition not satisfied (`produce_start` needs room) |
 | C6: `consume_start` doesn't record the item in `consumed` | invariant `cursors` fails |
+| H1: `register` withdraws the next ring's permission | precondition not satisfied; the atomic's invariant can't be restored |
+| H2: `register` uses `store` and not compare-and-swap (two threads could get one ring) | precondition not satisfied; the atomic's invariant can't be restored |
+| H3: the consumer claim ignores the flag's previous value | precondition not satisfied (no permission while claimed) |
+| H4: `release` doesn't put the consumer halves back | the atomic's invariant can't be restored |
+| H5: the producer bound is off by one (`>` for `>=`) | precondition not satisfied, and a possible overflow |
 
 ## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
 
@@ -186,7 +206,7 @@ Natively this returned garbage values. Under Miri it was `Undefined Behavior: ..
 - **The production ring.** `ring.rs` and `spsc.rs` are verified rings with the production design, not the production code. Whether it replaces `crates/ringmpsc`'s `Ring` is decided in [#26](https://github.com/debasishg/ringmpsc-rs/issues/26).
 - **Memory orderings.** Verus treats atomics as sequentially consistent, so it can't show `Relaxed`/`Acquire`/`Release` suffice. That stays with loom and Miri.
 - **Liveness.** That stays in `RingSPSCLiveness.qnt`.
-- `Channel` ([#25](https://github.com/debasishg/ringmpsc-rs/issues/25)), `StackRing`, allocators, NUMA.
+- `Channel::close`/`is_closed`, metrics, `StackRing`, allocators, NUMA.
 
 ## Running
 
@@ -203,14 +223,15 @@ cargo verus focus     # verify this crate only (vstd is trusted)
 cargo verus verify    # verify vstd too, then this crate
 ```
 
-Expected output: `verification results:: 67 verified, 0 errors`.
+Expected output: `verification results:: 81 verified, 0 errors`.
 
 The verified rings also compile as ordinary Rust, with the ghost code erased.
 
 - `tests/fifo.rs` runs `Ring`, including a 20,000-operation comparison against a `VecDeque`.
 - `tests/spsc.rs` runs `channel` on two real threads: 100,000 items in order, batches with `consume_up_to`, and drop counting.
+- `tests/channel.rs` runs `Channel`: concurrent registration (distinct ids, none past the limit), per-producer FIFO with 4 producer threads, the exclusive consumer claim released across threads, and teardown dropping every remaining item (under Miri, also a leak check).
 
-Both pass natively and under Miri. For the threaded tests, use preemption so Miri explores interleavings:
+All pass natively and under Miri. For the threaded tests, use preemption so Miri explores interleavings:
 
 ```sh
 CARGO_TARGET_DIR=target/plain cargo test
