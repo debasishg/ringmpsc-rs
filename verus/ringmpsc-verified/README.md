@@ -19,7 +19,7 @@ Each function has the same body as the corresponding expression in `crates/ringm
 | `lemma_stale_head_underestimates_space` | the `reserve` fast path | space computed from a stale `cached_head` never exceeds the real space, so a fast-path "yes" is always right |
 | `contiguous` | `n.min(capacity - idx)` | never past the buffer end, never more than asked, non-empty if anything was asked |
 | `lemma_contiguous_slots_do_not_wrap` | `make_reservation`'s slice | sequence number `tail + k` lands on slot `idx + k`, so the slice covers exactly the reserved sequence numbers |
-| `readable_avail` | `readable`'s fast-path decision: refresh if `cached_tail <= head`, else `cached_tail - head` | correct for every pair of values, including `cached_tail < head`. See [A bug this found](#a-bug-this-found-17-fixed). |
+| `readable_avail` | `readable`'s fast-path decision: refresh if `cached_tail <= head`, else `cached_tail - head` | correct for every pair of values, including `cached_tail < head`. See [Bugs this found](#readable-after-consume_batch-17-fixed). |
 
 ### `src/protocol.rs`: the SPSC protocol, as a VerusSync state machine
 
@@ -60,10 +60,10 @@ The models are maintained by hand. If they ever disagree on safety, this proof i
 
 | Transition | Code | Token movement |
 |---|---|---|
-| `produce_start` | `push`, before the write | withdraw the uninitialized token for `tail`, if `tail < cached_head + cap` |
-| `produce_end` | `tail.store(tail + 1)` | deposit it back initialized; append the value to the producer's ghost history `produced` |
-| `consume_start` | `pop`, before the read | withdraw the initialized token for `head`, if `head < cached_tail`; append its value to the consumer's ghost history `consumed` |
-| `consume_end` | `head.store(head + 1)` | deposit it back uninitialized under `head + cap`, the next sequence number for that cell |
+| `produce_start(n)` | `reserve(n)` | withdraw the uninitialized tokens for `[tail, tail + n)`, if `tail + n <= cached_head + cap` |
+| `produce_end(k)` | `commit_up_to(k)`: `tail.store(tail + k)` | deposit them back, the first `k` initialized and the rest empty; append the `k` values to the producer's ghost history `produced` |
+| `consume_start(n)` | `readable` | withdraw the initialized tokens for `[head, head + n)`, if `head + n <= cached_tail`; record their values as `held_values` |
+| `consume_end(k)` | `release(k)`: `head.store(head + k)` | deposit the first `k` back empty under `s + cap` (the next sequence number for that cell), the rest untouched under `s`; append the `k` values to `consumed` |
 | `refresh_head`, `refresh_tail` | the slow paths | update the caches |
 
 The invariant `window` says every sequence number in the window has its token either in storage (initialized with `produced[s]` if published, uninitialized if not) or with the side that withdrew it, never both. The invariant `fifo` says `consumed` is always a prefix of `produced`. Both are proven inductive for every capacity.
@@ -82,7 +82,7 @@ The contents are two histories, not one queue, so that each side owns the one it
 
 `pop` mirrors `readable`'s fast path as fixed in #17: it reads by the cached tail only when `cached_tail > head`. With the old `wrapping_sub` check it fails verification (mutation M7 below).
 
-`Ring` holds every token itself, so it is single-threaded. `spsc.rs` (below) splits them between two threads. Batches (`reserve(n)`/`commit(k)`) and slice access (`readable`) come with the zero-copy `Reservation` in phase 5 ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)).
+`Ring` holds every token itself, so it is single-threaded; its `push` and `pop` are batches of one. `spsc.rs` (below) splits the tokens between two threads and exposes the batches.
 
 Dropping a `Ring` drops the items still in it, as the production ring does (see [Trusted code](#trusted-code)).
 
@@ -123,6 +123,30 @@ So the proofs hold under **every interleaving** of the two threads:
 | **One producer, one consumer** | each side's tokens exist once |
 
 `Consumer::consume_up_to(max)` returns items in order and extends `consumed` by exactly them.
+
+#### Batches (phase 5, [#24](https://github.com/debasishg/ringmpsc-rs/issues/24))
+
+| Producer | Proven |
+|---|---|
+| `reserve(n)` | grants up to `n` slots, never more than the free space (by `cached_head`, reloading `head` when the cache says full) |
+| `write_next(v)` | fills the next reserved slot; `pending()` grows by `v` |
+| `commit_up_to(k)`, `commit()` | publishes the first `min(k, filled)` written items with one `tail.store`; `produced` grows by exactly those; written items past `k` are dropped |
+| `abandon()` | publishes nothing and drops what was written (a `Reservation` dropped without committing) |
+| `push(v)` | a reservation of one |
+
+| Consumer | Proven |
+|---|---|
+| `readable()` | holds every published item (#17's `cached_tail > head` fast path) |
+| `get(i)` | borrows held item `i` **in place**, no copy: `*get(i) == held_view()[i]` |
+| `release(k)` | moves the first `k` held items out, in order, with one `head.store`; the rest stay in the ring |
+| `advance(k)` | `release(k)`, dropping them |
+| `recv(out, max)` | copies up to `max` items out (`T: Copy`) through `get`, then consumes them |
+| `pop()`, `consume_up_to(max)` | built on the above |
+
+What #24 planned and this deliberately does **not** provide:
+
+- **A writable `&mut [MaybeUninit<T>]` slice.** Nothing could show which slots the caller wrote through it, and committing an unwritten slot is undefined behavior. The production `Reservation::commit` has exactly that hole (see [Bugs this found](#bugs-this-found)). The verified API writes through `write_next`, which tracks it.
+- **A `&[T]` spanning several slots.** `vstd`'s `PCell` is not `#[repr(transparent)]` and exposes no pointer, so building one would rest on a layout Rust doesn't guarantee. `get(i)` gives the same zero-copy access per element.
 
 **Orderings:** `vstd` atomics are sequentially consistent, and Verus reasons about them that way. The proof shows the protocol is race-free. It does not show that the production code's `Relaxed`/`Acquire`/`Release` are enough; that stays with loom and Miri. Measuring what SeqCst costs is part of phase 7 ([#26](https://github.com/debasishg/ringmpsc-rs/issues/26)).
 
@@ -181,8 +205,29 @@ Each of these deliberate breakages makes verification fail, with the error shown
 | H3: the consumer claim ignores the flag's previous value | precondition not satisfied (no permission while claimed) |
 | H4: `release` doesn't put the consumer halves back | the atomic's invariant can't be restored |
 | H5: the producer bound is off by one (`>` for `>=`) | precondition not satisfied, and a possible overflow |
+| B1: `commit_up_to` ignores `k` and publishes everything written | postcondition not satisfied |
+| B2: commit keeps the written items past `k` in their slots | loop invariant not satisfied |
+| B3: `reserve` grants `n` regardless of free space | precondition not satisfied (`produce_start` needs room) |
+| B4: `release` returns a consumed slot under `s`, not `s + cap` | assertion failed |
+| B5: `write_next` writes the slot after the next one | assertion failed (the token belongs to another cell) |
+| B6: `produce_end` doesn't require the published slots to be written (the production bug) | the state machine's `window` invariant can't be proven |
 
-## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
+## Bugs this found
+
+### `Reservation::commit` publishes unwritten slots (production; not yet filed)
+
+The production `Reservation::as_mut_slice()` hands out `&mut [MaybeUninit<T>]`, and `commit()` is safe and publishes every reserved slot. Nothing makes the caller write them first:
+
+```rust
+let channel = Channel::<Box<u64>>::new(Config::new(2, 1, false));
+let mut producer = channel.register().unwrap();
+producer.reserve(1).unwrap().commit();          // nothing written
+channel.consumer().unwrap().consume_all_owned(drop); // reads an uninitialized Box
+```
+
+Miri: `Undefined Behavior: ... memory is uninitialized`. It is reachable from safe code on the main heap ring, the same class as #15 (fixed for `StackRing`). Phase 5 surfaced it: the verified `produce_end` requires an initialized token for every slot it publishes, and mutation B6 shows the invariant fails without that requirement.
+
+### `readable()` after `consume_batch*` ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
 
 The state machine's fast-path read needs `head < cached_tail`, and `cached_tail <= tail` alone doesn't give it. The code didn't maintain `head <= cached_tail` either:
 
@@ -202,7 +247,7 @@ Natively this returned garbage values. Under Miri it was `Undefined Behavior: ..
 
 ## Not covered (yet)
 
-- **Batches and slices** ([#24](https://github.com/debasishg/ringmpsc-rs/issues/24)). `reserve(n)`/`commit(k)` and `readable`'s `&[T]`.
+- **Slices.** A writable `&mut [MaybeUninit<T>]` reservation and a multi-slot `&[T]`; see phase 5 above for why.
 - **The production ring.** `ring.rs` and `spsc.rs` are verified rings with the production design, not the production code. Whether it replaces `crates/ringmpsc`'s `Ring` is decided in [#26](https://github.com/debasishg/ringmpsc-rs/issues/26).
 - **Memory orderings.** Verus treats atomics as sequentially consistent, so it can't show `Relaxed`/`Acquire`/`Release` suffice. That stays with loom and Miri.
 - **Liveness.** That stays in `RingSPSCLiveness.qnt`.
@@ -223,12 +268,13 @@ cargo verus focus     # verify this crate only (vstd is trusted)
 cargo verus verify    # verify vstd too, then this crate
 ```
 
-Expected output: `verification results:: 81 verified, 0 errors`.
+Expected output: `verification results:: 94 verified, 0 errors`.
 
 The verified rings also compile as ordinary Rust, with the ghost code erased.
 
 - `tests/fifo.rs` runs `Ring`, including a 20,000-operation comparison against a `VecDeque`.
 - `tests/spsc.rs` runs `channel` on two real threads: 100,000 items in order, batches with `consume_up_to`, and drop counting.
+- `tests/batches.rs` runs the batch API: reserve capped by free space, partial commits and abandon (with drop counting), in-place `get` and `release`, `recv`, and random batch sizes on both sides across two threads.
 - `tests/channel.rs` runs `Channel`: concurrent registration (distinct ids, none past the limit), per-producer FIFO with 4 producer threads, the exclusive consumer claim released across threads, and teardown dropping every remaining item (under Miri, also a leak check).
 
 All pass natively and under Miri. For the threaded tests, use preemption so Miri explores interleavings:

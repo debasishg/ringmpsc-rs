@@ -37,8 +37,9 @@ pub tracked struct Tokens<T> {
     pub tail: SpscSlots::tail<T>,
     pub cached_head: SpscSlots::cached_head<T>,
     pub cached_tail: SpscSlots::cached_tail<T>,
-    pub producing: SpscSlots::producing<T>,
-    pub consuming: SpscSlots::consuming<T>,
+    pub reserved: SpscSlots::reserved<T>,
+    pub held: SpscSlots::held<T>,
+    pub held_values: SpscSlots::held_values<T>,
     pub produced: SpscSlots::produced<T>,
     pub consumed: SpscSlots::consumed<T>,
 }
@@ -85,16 +86,17 @@ impl<T> Ring<T> {
         &&& t.tail.instance_id() == t.inst.id()
         &&& t.cached_head.instance_id() == t.inst.id()
         &&& t.cached_tail.instance_id() == t.inst.id()
-        &&& t.producing.instance_id() == t.inst.id()
-        &&& t.consuming.instance_id() == t.inst.id()
+        &&& t.reserved.instance_id() == t.inst.id()
+        &&& t.held.instance_id() == t.inst.id()
+        &&& t.held_values.instance_id() == t.inst.id()
         &&& t.produced.instance_id() == t.inst.id()
         &&& t.consumed.instance_id() == t.inst.id()
         &&& t.head.value() == self.head as nat
         &&& t.tail.value() == self.tail as nat
         &&& t.cached_head.value() == self.cached_head as nat
         &&& t.cached_tail.value() == self.cached_tail as nat
-        &&& !t.producing.value()
-        &&& !t.consuming.value()
+        &&& t.reserved.value() == 0
+        &&& t.held.value() == 0
     }
 
     /// Learn the protocol's cursor invariants from the tokens.
@@ -112,7 +114,7 @@ impl<T> Ring<T> {
             self@.len() == self.tail - self.head,
     {
         let tracked t = self.toks.borrow();
-        t.inst.cursor_facts(&t.head, &t.tail, &t.cached_head, &t.cached_tail, &t.consuming, &t.produced, &t.consumed);
+        t.inst.cursor_facts(&t.head, &t.tail, &t.cached_head, &t.cached_tail, &t.reserved, &t.held, &t.held_values, &t.produced, &t.consumed);
     }
 
     /// An empty ring with `2^ring_bits` slots (`Config::new`'s range).
@@ -154,8 +156,9 @@ impl<T> Ring<T> {
             Tracked(tail),
             Tracked(cached_head),
             Tracked(cached_tail),
-            Tracked(producing),
-            Tracked(consuming),
+            Tracked(reserved),
+            Tracked(held),
+            Tracked(held_values),
             Tracked(produced),
             Tracked(consumed),
         ) = SpscSlots::Instance::initialize(cap as nat, ids, perms, perms);
@@ -167,7 +170,7 @@ impl<T> Ring<T> {
             tail: 0,
             cached_head: 0,
             cached_tail: 0,
-            toks: Tracked(Tokens { inst, head, tail, cached_head, cached_tail, producing, consuming, produced, consumed }),
+            toks: Tracked(Tokens { inst, head, tail, cached_head, cached_tail, reserved, held, held_values, produced, consumed }),
         }
     }
 
@@ -231,15 +234,24 @@ impl<T> Ring<T> {
             }
         }
         let idx = slot_index(self.tail, self.ring_bits);
-        let tracked mut perm: PointsTo<T>;
+        // Reserve one slot, write it, publish it: a batch of one.
+        let tracked mut slot: Map<nat, PointsTo<T>>;
         proof {
             let tracked t = self.toks.borrow_mut();
-            perm = t.inst.produce_start(&t.cached_head, &mut t.producing, &t.produced);
+            let tracked (_, Tracked(m)) = t.inst.produce_start(1, &t.cached_head, &mut t.reserved, &t.produced);
+            slot = m;
+        }
+        let tracked mut perm: PointsTo<T>;
+        proof {
+            perm = slot.tracked_remove(self.tail as nat);
         }
         self.cells[idx].put(Tracked(&mut perm), v);
         proof {
+            slot.tracked_insert(self.tail as nat, perm);
+            assert(slot.dom() =~= crate::slots::range(self.tail as nat, self.tail as nat + 1));
             let tracked t = self.toks.borrow_mut();
-            t.inst.produce_end(perm, perm, &mut t.tail, &mut t.producing, &mut t.produced);
+            t.inst.produce_end(1, slot, slot, &mut t.tail, &mut t.reserved, &mut t.produced);
+            assert(Seq::new(1, |i: int| slot[(old(self).tail + i) as nat].value()) =~= seq![v]);
         }
         self.tail = self.tail + 1;
         proof {
@@ -274,15 +286,25 @@ impl<T> Ring<T> {
             }
         }
         let idx = slot_index(self.head, self.ring_bits);
-        let tracked mut perm: PointsTo<T>;
+        // Hold one published slot, take its item, release it: a batch of one.
+        let tracked mut slot: Map<nat, PointsTo<T>>;
         proof {
             let tracked t = self.toks.borrow_mut();
-            perm = t.inst.consume_start(&t.cached_tail, &mut t.consuming, &mut t.consumed);
+            let tracked (_, Tracked(m)) = t.inst.consume_start(1, &t.cached_tail, &mut t.held, &mut t.held_values, &t.consumed);
+            slot = m;
+        }
+        let tracked mut perm: PointsTo<T>;
+        proof {
+            perm = slot.tracked_remove(self.head as nat);
         }
         let v = self.cells[idx].take(Tracked(&mut perm));
         proof {
+            let cap = self.cap as nat;
+            crate::slots::lemma_next_lap_same_cell(self.head as nat, cap);
+            slot.tracked_insert(self.head as nat + cap, perm);
+            assert(slot.dom() =~= crate::slots::release_keys(self.head as nat, 1, 1, cap));
             let tracked t = self.toks.borrow_mut();
-            t.inst.consume_end(perm, perm, &mut t.head, &mut t.consuming);
+            t.inst.consume_end(1, slot, slot, &mut t.head, &mut t.held, &mut t.held_values, &mut t.consumed);
         }
         self.head = self.head + 1;
         proof {

@@ -314,6 +314,9 @@ impl<T> Channel<T> {
 
     /// Claim the consumer: every ring's consumer half, or `None` while
     /// another `ChannelConsumer` exists. Dropping it releases the claim.
+    // The claim's permission is used only by ghost code, which plain builds
+    // erase.
+    #[allow(unused_variables)]
     pub fn consumer(&self) -> (r: Option<ChannelConsumer<T>>)
         requires
             self.wf(),
