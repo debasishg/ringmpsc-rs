@@ -145,8 +145,8 @@ pub proof fn lemma_stale_head_underestimates_space(
 /// `head` from a fresh load of `tail` without updating `cached_tail`, so a
 /// later `readable` can see `cached_tail < head`. The subtraction then wraps
 /// to a huge count, `readable` skips its refresh, and it returns a slice over
-/// unwritten slots. Drop the `head <= cached_tail` precondition and this
-/// function no longer verifies: that failure is the bug.
+/// unwritten slots (issue #17). Drop the `head <= cached_tail` precondition
+/// and this function no longer verifies: that failure is the bug.
 pub fn readable_avail(head: u64, cached_tail: u64) -> (avail: usize)
     requires
         head <= cached_tail,

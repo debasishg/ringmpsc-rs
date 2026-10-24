@@ -19,7 +19,7 @@ Each function has the same body as the corresponding expression in `crates/ringm
 | `lemma_stale_head_underestimates_space` | the `reserve` fast path | space computed from a stale `cached_head` never exceeds the real space, so a fast-path "yes" is always right |
 | `contiguous` | `n.min(capacity - idx)` | never past the buffer end, never more than asked, non-empty if anything was asked |
 | `lemma_contiguous_slots_do_not_wrap` | `make_reservation`'s slice | sequence number `tail + k` lands on slot `idx + k`, so the slice covers exactly the reserved sequence numbers |
-| `readable_avail` | `readable`'s fast path: `cached_tail.wrapping_sub(head)` | the item count, **only if `head <= cached_tail`**. See [A bug this found](#a-bug-this-found). |
+| `readable_avail` | `readable`'s fast path: `cached_tail.wrapping_sub(head)` | the item count, **only if `head <= cached_tail`**. See [A bug this found](#a-bug-this-found-17). |
 
 ### `src/protocol.rs`: the SPSC protocol, as a VerusSync state machine
 
@@ -68,7 +68,7 @@ Each of these deliberate breakages makes verification fail, with the error shown
 | `slot_index` masks with `cap` and not `cap - 1` | postcondition not satisfied |
 | `refresh_tail` overshoots: `cached_tail = tail + 1` | invariant `caches_lag` fails |
 
-## A bug this found
+## A bug this found ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17))
 
 The state machine's fast-path read needs `head < cached_tail`, and `cached_tail <= tail` alone doesn't give it. The code doesn't maintain `head <= cached_tail` either:
 
