@@ -9,7 +9,7 @@
 //!
 //! Tokens are keyed by **sequence number**, over the window
 //! `[head, head + cap)`. Sequence number `s` uses cell `cells[s % cap]`. When
-//! the consumer releases `head`, the token goes back under `head + cap`, the
+//! the consumer releases a slot, its token goes back under `s + cap`, the
 //! next sequence number that will use the same cell.
 //!
 //! The ring's contents are tracked as two ghost histories: `produced`, owned
@@ -19,14 +19,10 @@
 //! (one shared queue would be updated by both sides) is what lets each side
 //! run on its own thread holding only its own tokens (#23).
 //!
-//! Each side's transitions need only tokens that side owns, except the
-//! cursor it publishes (`tail` for the producer, `head` for the consumer) and
-//! the one it refreshes from. Those tokens live inside the `head` and `tail`
-//! atomics, so the exec code touches them only within an atomic load or
-//! store.
-//!
-//! This is the single-slot form: one item per produce or consume. Batches
-//! (`reserve(n)`, `commit(k)`) come with the zero-copy `Reservation` (#24).
+//! **Batches** (#24): the producer reserves `n` slots at once and publishes
+//! the first `k <= n` of them (`commit_up_to`; `k = 0` abandons the
+//! reservation). The consumer holds the `n` published slots it is reading and
+//! releases the first `k` of them. A single push or pop is the `n = 1` case.
 
 // `tokenized_state_machine!` names its generated module after the machine.
 #![allow(non_snake_case)]
@@ -38,8 +34,8 @@ use verus_state_machines_macros::tokenized_state_machine;
 
 verus! {
 
-/// `(s + cap) % cap == s % cap`: the token for `head` goes back under
-/// `head + cap`, and still belongs to the same cell.
+/// `(s + cap) % cap == s % cap`: a released slot's token goes back under
+/// `s + cap`, and still belongs to the same cell.
 pub proof fn lemma_next_lap_same_cell(s: nat, cap: nat)
     requires
         cap > 0,
@@ -53,6 +49,21 @@ pub proof fn lemma_next_lap_same_cell(s: nat, cap: nat)
 pub open spec fn is_prefix<T>(a: Seq<T>, b: Seq<T>) -> bool {
     &&& a.len() <= b.len()
     &&& forall |i: int| 0 <= i < a.len() ==> #[trigger] a[i] == b[i]
+}
+
+/// The sequence numbers `[lo, hi)`.
+pub open spec fn range(lo: nat, hi: nat) -> Set<nat> {
+    Set::<nat>::range(lo, hi)
+}
+
+// Membership in `Set::range`: `lo <= s < hi`.
+broadcast use vstd::set_lib::range_set_properties;
+
+/// What a consumer that held `[head, head + held)` and consumed the first
+/// `k` deposits back: the unconsumed slots under their own numbers, and the
+/// consumed ones under `s + cap`, their cells' next sequence numbers.
+pub open spec fn release_keys(head: nat, held: nat, k: nat, cap: nat) -> Set<nat> {
+    range(head + k, head + held).union(range(head + cap, head + cap + k))
 }
 
 } // verus!
@@ -87,19 +98,23 @@ tokenized_state_machine!{
             #[sharding(variable)]
             pub cached_tail: nat,
 
-            /// Producer-owned: it holds the token for `tail`.
+            /// Producer-owned: it holds the tokens for `[tail, tail + reserved)`.
             #[sharding(variable)]
-            pub producing: bool,
+            pub reserved: nat,
 
-            /// Consumer-owned: it holds the token for `head`.
+            /// Consumer-owned: it holds the tokens for `[head, head + held)`.
             #[sharding(variable)]
-            pub consuming: bool,
+            pub held: nat,
 
-            /// Producer-owned: every item ever pushed, in order.
+            /// Consumer-owned: the items in the slots it holds.
+            #[sharding(variable)]
+            pub held_values: Seq<T>,
+
+            /// Producer-owned: every item ever published, in order.
             #[sharding(variable)]
             pub produced: Seq<T>,
 
-            /// Consumer-owned: every item ever taken, in order.
+            /// Consumer-owned: every item ever consumed, in order.
             #[sharding(variable)]
             pub consumed: Seq<T>,
         }
@@ -109,8 +124,7 @@ tokenized_state_machine!{
         // ---------------------------------------------------------------
 
         /// INV-SEQ-01, INV-ORD-03, and both caches lag. The histories'
-        /// lengths are the cursors (the consumer's runs one ahead while it
-        /// holds a slot).
+        /// lengths are the cursors.
         #[invariant]
         pub fn cursors(&self) -> bool {
             &&& self.cap > 0
@@ -120,20 +134,24 @@ tokenized_state_machine!{
             &&& self.cached_head <= self.head
             &&& self.cached_tail <= self.tail
             &&& self.produced.len() == self.tail
-            &&& self.consumed.len() == if self.consuming { self.head + 1 } else { self.head }
+            &&& self.consumed.len() == self.head
         }
 
-        /// FIFO: the consumer got exactly what the producer sent, in order.
-        #[invariant]
-        pub fn fifo(&self) -> bool {
-            is_prefix(self.consumed, self.produced)
-        }
-
-        /// The producer only holds a free slot; the consumer only a full one.
+        /// The producer only holds free slots; the consumer only published ones.
         #[invariant]
         pub fn holders(&self) -> bool {
-            &&& self.producing ==> self.tail < self.head + self.cap
-            &&& self.consuming ==> self.head < self.tail
+            &&& self.tail + self.reserved <= self.head + self.cap
+            &&& self.head + self.held <= self.tail
+            &&& self.held_values.len() == self.held
+        }
+
+        /// FIFO: the consumer got exactly what the producer sent, in order,
+        /// and what it holds now is what comes next.
+        #[invariant]
+        pub fn fifo(&self) -> bool {
+            &&& is_prefix(self.consumed, self.produced)
+            &&& forall |i: int| 0 <= i < self.held ==>
+                    #[trigger] self.held_values[i] == self.produced[self.head + i]
         }
 
         /// Every sequence number in the window has its token either in
@@ -141,15 +159,15 @@ tokenized_state_machine!{
         #[invariant]
         pub fn window(&self) -> bool {
             &&& forall |s: nat| #[trigger] self.slots.dom().contains(s) ==>
-                    self.head <= s < self.head + self.cap && !self.held(s)
-            &&& forall |s: nat| self.head <= s < self.head + self.cap && !self.held(s) ==>
+                    self.head <= s < self.head + self.cap && !self.withdrawn(s)
+            &&& forall |s: nat| self.head <= s < self.head + self.cap && !self.withdrawn(s) ==>
                     #[trigger] self.slot_ok(s)
         }
 
-        /// The slot for `s` is withdrawn by the producer or the consumer.
-        pub open spec fn held(&self, s: nat) -> bool {
-            ||| (self.producing && s == self.tail)
-            ||| (self.consuming && s == self.head)
+        /// The slot for `s` is held by the producer or the consumer.
+        pub open spec fn withdrawn(&self, s: nat) -> bool {
+            ||| (self.tail <= s < self.tail + self.reserved)
+            ||| (self.head <= s < self.head + self.held)
         }
 
         /// INV-INIT-01/02 for one sequence number: its token is in storage,
@@ -185,8 +203,9 @@ tokenized_state_machine!{
                 init tail = 0;
                 init cached_head = 0;
                 init cached_tail = 0;
-                init producing = false;
-                init consuming = false;
+                init reserved = 0;
+                init held = 0;
+                init held_values = Seq::empty();
                 init produced = Seq::empty();
                 init consumed = Seq::empty();
             }
@@ -203,35 +222,71 @@ tokenized_state_machine!{
             }
         }
 
-        /// Take the free slot for `tail` (`produced.len()`, which the
-        /// producer owns), if the cache says there is room.
+        /// `reserve(n)`: take the free slots `[tail, tail + n)` (`tail` is
+        /// `produced.len()`, which the producer owns), if the cache says
+        /// there is room.
         transition!{
-            produce_start() {
-                require !pre.producing;
-                require pre.produced.len() < pre.cached_head + pre.cap;
-                update producing = true;
-                withdraw slots -= [pre.produced.len() => let perm] by {
-                    assert(pre.slot_ok(pre.produced.len()));
+            produce_start(n: nat) {
+                require pre.reserved == 0;
+                require n > 0;
+                require pre.produced.len() + n <= pre.cached_head + pre.cap;
+                update reserved = n;
+                birds_eye let lo = pre.produced.len();
+                birds_eye let m = pre.slots.restrict(range(lo, lo + n));
+                withdraw slots -= (m) by {
+                    assert forall |s: nat| #[trigger] m.dom().contains(s) implies
+                        pre.slots.dom().contains(s) && pre.slots[s] == m[s] by {
+                        assert(pre.slot_ok(s));
+                    }
                 };
-                assert({
-                    &&& perm.id() == pre.cells[(pre.produced.len() % pre.cap) as int]
-                    &&& perm.is_uninit()
-                }) by {
-                    assert(pre.slot_ok(pre.produced.len()));
+                assert(m.dom() == range(lo, lo + n)) by {
+                    assert forall |s: nat| #[trigger] m.dom().contains(s) <==> range(lo, lo + n).contains(s) by {
+                        if lo <= s < lo + n {
+                            assert(!pre.withdrawn(s));
+                            assert(pre.slot_ok(s));
+                        }
+                    }
+                    assert(m.dom() =~= range(lo, lo + n));
+                };
+                assert(forall |s: nat| lo <= s < lo + n ==>
+                    #[trigger] m[s].id() == pre.cells[(s % pre.cap) as int]) by {
+                    assert forall |s: nat| lo <= s < lo + n implies
+                        #[trigger] m[s].id() == pre.cells[(s % pre.cap) as int] by {
+                        assert(!pre.withdrawn(s));
+                        assert(pre.slot_ok(s));
+                        assert(m.dom().contains(s));
+                        assert(m[s] == pre.slots[s]);
+                    }
+                };
+                assert(forall |s: nat| lo <= s < lo + n ==> #[trigger] m[s].is_uninit()) by {
+                    assert forall |s: nat| lo <= s < lo + n implies #[trigger] m[s].is_uninit() by {
+                        assert(!pre.withdrawn(s));
+                        assert(pre.slot_ok(s));
+                        assert(m.dom().contains(s));
+                        assert(m[s] == pre.slots[s]);
+                    }
                 };
             }
         }
 
-        /// Publish the written slot: `tail.store(tail + 1, Release)`.
+        /// `commit_up_to(k)`: publish the first `k` reserved slots with
+        /// `tail.store(tail + k, Release)`, and return all of them. `k = 0`
+        /// abandons the reservation.
         transition!{
-            produce_end(perm: PointsTo<T>) {
-                require pre.producing;
-                require perm.id() == pre.cells[(pre.tail % pre.cap) as int];
-                require perm.is_init();
-                update producing = false;
-                update tail = pre.tail + 1;
-                update produced = pre.produced.push(perm.value());
-                deposit slots += [pre.tail => perm];
+            produce_end(k: nat, perms: Map<nat, PointsTo<T>>) {
+                require pre.reserved > 0;
+                require k <= pre.reserved;
+                require perms.dom() == range(pre.tail, pre.tail + pre.reserved);
+                require forall |s: nat| pre.tail <= s < pre.tail + pre.reserved ==>
+                    #[trigger] perms[s].id() == pre.cells[(s % pre.cap) as int];
+                require forall |s: nat| pre.tail <= s < pre.tail + k ==> #[trigger] perms[s].is_init();
+                require forall |s: nat| pre.tail + k <= s < pre.tail + pre.reserved ==> #[trigger] perms[s].is_uninit();
+                update reserved = 0;
+                update tail = pre.tail + k;
+                update produced = pre.produced + Seq::new(k, |i: int| perms[(pre.tail + i) as nat].value());
+                deposit slots += (perms) by {
+                    assert forall |s: nat| #[trigger] perms.dom().contains(s) implies !pre.slots.dom().contains(s) by {}
+                };
             }
         }
 
@@ -246,39 +301,81 @@ tokenized_state_machine!{
             }
         }
 
-        /// Take the full slot for `head` (`consumed.len()`, which the
-        /// consumer owns), if the cache says it was published. The guard is
-        /// `head < cached_tail`, as in `readable` since #17. The item joins
-        /// the consumer's history.
+        /// `readable`: take the published slots `[head, head + n)` (`head` is
+        /// `consumed.len()`, which the consumer owns), if the cache says they
+        /// were published. The guard is `head + n <= cached_tail`, so
+        /// `head < cached_tail` as in `readable` since #17.
         transition!{
-            consume_start() {
-                require !pre.consuming;
-                require pre.consumed.len() < pre.cached_tail;
-                update consuming = true;
-                withdraw slots -= [pre.consumed.len() => let perm] by {
-                    assert(pre.slot_ok(pre.consumed.len()));
+            consume_start(n: nat) {
+                require pre.held == 0;
+                require n > 0;
+                require pre.consumed.len() + n <= pre.cached_tail;
+                // The consumer never holds more than the ring has slots, so the
+                // ranges it deposits back in `consume_end` don't overlap.
+                assert(n <= pre.cap);
+                update held = n;
+                birds_eye let lo = pre.consumed.len();
+                birds_eye let m = pre.slots.restrict(range(lo, lo + n));
+                withdraw slots -= (m) by {
+                    assert forall |s: nat| #[trigger] m.dom().contains(s) implies
+                        pre.slots.dom().contains(s) && pre.slots[s] == m[s] by {
+                        assert(pre.slot_ok(s));
+                    }
                 };
-                assert({
-                    &&& perm.id() == pre.cells[(pre.consumed.len() % pre.cap) as int]
-                    &&& perm.is_init()
-                }) by {
-                    assert(pre.slot_ok(pre.consumed.len()));
+                update held_values = Seq::new(n, |i: int| m[(lo + i) as nat].value());
+                assert(m.dom() == range(lo, lo + n)) by {
+                    assert forall |s: nat| #[trigger] m.dom().contains(s) <==> range(lo, lo + n).contains(s) by {
+                        if lo <= s < lo + n {
+                            assert(!pre.withdrawn(s));
+                            assert(pre.slot_ok(s));
+                        }
+                    }
+                    assert(m.dom() =~= range(lo, lo + n));
                 };
-                update consumed = pre.consumed.push(perm.value());
+                assert(forall |s: nat| lo <= s < lo + n ==>
+                    #[trigger] m[s].id() == pre.cells[(s % pre.cap) as int]) by {
+                    assert forall |s: nat| lo <= s < lo + n implies
+                        #[trigger] m[s].id() == pre.cells[(s % pre.cap) as int] by {
+                        assert(!pre.withdrawn(s));
+                        assert(pre.slot_ok(s));
+                        assert(m.dom().contains(s));
+                        assert(m[s] == pre.slots[s]);
+                    }
+                };
+                assert(forall |s: nat| lo <= s < lo + n ==> #[trigger] m[s].is_init()) by {
+                    assert forall |s: nat| lo <= s < lo + n implies #[trigger] m[s].is_init() by {
+                        assert(!pre.withdrawn(s));
+                        assert(pre.slot_ok(s));
+                        assert(m.dom().contains(s));
+                        assert(m[s] == pre.slots[s]);
+                    }
+                };
             }
         }
 
-        /// Release the emptied slot: `head.store(head + 1, Release)`. Its
-        /// token goes back under `head + cap`, the slot's next sequence number.
+        /// `release(k)`: consume the first `k` held slots with
+        /// `head.store(head + k, Release)`. They come back empty, under
+        /// `s + cap`; the rest come back untouched, under their own numbers.
         transition!{
-            consume_end(perm: PointsTo<T>) {
-                require pre.consuming;
-                require perm.id() == pre.cells[(pre.head % pre.cap) as int];
-                require perm.is_uninit();
-                update consuming = false;
-                update head = pre.head + 1;
-                deposit slots += [pre.head + pre.cap => perm] by {
-                    assert(!pre.slots.dom().contains(pre.head + pre.cap));
+            consume_end(k: nat, perms: Map<nat, PointsTo<T>>) {
+                require pre.held > 0;
+                require k <= pre.held;
+                require perms.dom() == release_keys(pre.head, pre.held, k, pre.cap);
+                require forall |s: nat| pre.head + k <= s < pre.head + pre.held ==> {
+                    &&& #[trigger] perms[s].id() == pre.cells[(s % pre.cap) as int]
+                    &&& perms[s].is_init()
+                    &&& perms[s].value() == pre.held_values[s - pre.head]
+                };
+                require forall |s: nat| pre.head + pre.cap <= s < pre.head + pre.cap + k ==> {
+                    &&& #[trigger] perms[s].id() == pre.cells[(s % pre.cap) as int]
+                    &&& perms[s].is_uninit()
+                };
+                update held = 0;
+                update head = pre.head + k;
+                update consumed = pre.consumed + pre.held_values.take(k as int);
+                update held_values = Seq::empty();
+                deposit slots += (perms) by {
+                    assert forall |s: nat| #[trigger] perms.dom().contains(s) implies !pre.slots.dom().contains(s) by {}
                 };
             }
         }
@@ -311,10 +408,18 @@ tokenized_state_machine!{
         }
 
         /// Inside the `head` atomic: the published `head` is the consumer's
-        /// history length (one less while it holds a slot).
+        /// history length.
         property!{
             head_is_consumed_len() {
-                assert(pre.consumed.len() == if pre.consuming { pre.head + 1 } else { pre.head });
+                assert(pre.head == pre.consumed.len());
+            }
+        }
+
+        /// Inside the `head` atomic, for the producer: what it reserved is
+        /// still free space. (Used to show `tail + k` can't overflow.)
+        property!{
+            reserved_in_window() {
+                assert(pre.produced.len() + pre.reserved <= pre.head + pre.cap);
             }
         }
 
@@ -328,8 +433,12 @@ tokenized_state_machine!{
                     &&& pre.cached_head <= pre.head
                     &&& pre.cached_tail <= pre.tail
                     &&& pre.produced.len() == pre.tail
-                    &&& pre.consumed.len() == if pre.consuming { pre.head + 1 } else { pre.head }
+                    &&& pre.consumed.len() == pre.head
+                    &&& pre.head + pre.held <= pre.tail
+                    &&& pre.tail + pre.reserved <= pre.head + pre.cap
                     &&& is_prefix(pre.consumed, pre.produced)
+                    &&& forall |i: int| 0 <= i < pre.held ==>
+                            #[trigger] pre.held_values[i] == pre.produced[pre.head + i]
                 });
             }
         }
@@ -340,7 +449,7 @@ tokenized_state_machine!{
 
         #[inductive(initialize)]
         fn initialize_inductive(post: Self, cap: nat, cells: Seq<CellId>, perms: Map<nat, PointsTo<T>>) {
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
                 implies #[trigger] post.slot_ok(s) by {
                 vstd::arithmetic::div_mod::lemma_small_mod(s, cap);
             }
@@ -348,64 +457,87 @@ tokenized_state_machine!{
 
         #[inductive(refresh_head)]
         fn refresh_head_inductive(pre: Self, post: Self) {
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
                 implies #[trigger] post.slot_ok(s) by {
                 assert(pre.slot_ok(s));
             }
         }
 
         #[inductive(produce_start)]
-        fn produce_start_inductive(pre: Self, post: Self) {
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
+        fn produce_start_inductive(pre: Self, post: Self, n: nat) {
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
                 implies #[trigger] post.slot_ok(s) by {
                 assert(pre.slot_ok(s));
             }
         }
 
         #[inductive(produce_end)]
-        fn produce_end_inductive(pre: Self, post: Self, perm: PointsTo<T>) {
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
+        fn produce_end_inductive(pre: Self, post: Self, k: nat, perms: Map<nat, PointsTo<T>>) {
+            let added = Seq::new(k, |i: int| perms[(pre.tail + i) as nat].value());
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
                 implies #[trigger] post.slot_ok(s) by {
-                if s != pre.tail {
+                if pre.tail <= s < pre.tail + pre.reserved {
+                    assert(perms.dom().contains(s));
+                    if s < post.tail {
+                        assert(post.produced[s as int] == added[s - pre.tail]);
+                    }
+                } else {
                     assert(pre.slot_ok(s));
+                    if s < pre.tail {
+                        assert(post.produced[s as int] == pre.produced[s as int]);
+                    }
                 }
             }
             assert forall |i: int| 0 <= i < post.consumed.len()
                 implies #[trigger] post.consumed[i] == post.produced[i] by {
                 assert(pre.consumed[i] == pre.produced[i]);
             }
+            assert forall |i: int| 0 <= i < post.held
+                implies #[trigger] post.held_values[i] == post.produced[post.head + i] by {
+                assert(pre.held_values[i] == pre.produced[pre.head + i]);
+            }
         }
 
         #[inductive(refresh_tail)]
         fn refresh_tail_inductive(pre: Self, post: Self) {
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
                 implies #[trigger] post.slot_ok(s) by {
                 assert(pre.slot_ok(s));
             }
         }
 
         #[inductive(consume_start)]
-        fn consume_start_inductive(pre: Self, post: Self) {
-            assert(pre.slot_ok(pre.head));
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
+        fn consume_start_inductive(pre: Self, post: Self, n: nat) {
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
                 implies #[trigger] post.slot_ok(s) by {
                 assert(pre.slot_ok(s));
+            }
+            assert forall |i: int| 0 <= i < post.held
+                implies #[trigger] post.held_values[i] == post.produced[post.head + i] by {
+                assert(pre.slot_ok((pre.head + i) as nat));
+            }
+        }
+
+        #[inductive(consume_end)]
+        fn consume_end_inductive(pre: Self, post: Self, k: nat, perms: Map<nat, PointsTo<T>>) {
+            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.withdrawn(s)
+                implies #[trigger] post.slot_ok(s) by {
+                if pre.head + k <= s < pre.head + pre.held {
+                    assert(perms.dom().contains(s));
+                    assert(pre.held_values[s - pre.head] == pre.produced[s as int]);
+                } else if s >= pre.head + pre.cap {
+                    assert(perms.dom().contains(s));
+                    lemma_next_lap_same_cell((s - pre.cap) as nat, pre.cap);
+                } else {
+                    assert(pre.slot_ok(s));
+                }
             }
             assert forall |i: int| 0 <= i < post.consumed.len()
                 implies #[trigger] post.consumed[i] == post.produced[i] by {
                 if i < pre.consumed.len() {
                     assert(pre.consumed[i] == pre.produced[i]);
-                }
-            }
-        }
-
-        #[inductive(consume_end)]
-        fn consume_end_inductive(pre: Self, post: Self, perm: PointsTo<T>) {
-            lemma_next_lap_same_cell(pre.head, pre.cap);
-            assert forall |s: nat| post.head <= s < post.head + post.cap && !post.held(s)
-                implies #[trigger] post.slot_ok(s) by {
-                if s != pre.head + pre.cap {
-                    assert(pre.slot_ok(s));
+                } else {
+                    assert(pre.held_values[i - pre.head] == pre.produced[i]);
                 }
             }
         }
