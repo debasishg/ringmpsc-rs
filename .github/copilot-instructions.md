@@ -56,9 +56,10 @@ unsafe { buffer[idx].assume_init_read() }
 ```rust
 while remaining > 0 {
     if let Some(mut r) = ring.reserve(remaining) {
-        remaining -= r.len();  // MAY BE < remaining
-        r.as_mut_slice()[0] = MaybeUninit::new(item);
-        r.commit();
+        // The reservation may hold fewer than `remaining` slots, and a commit
+        // publishes only what was written into it.
+        r.extend(items.by_ref());
+        remaining -= r.commit();
     }
 }
 ```

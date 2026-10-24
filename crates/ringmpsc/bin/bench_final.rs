@@ -70,22 +70,10 @@ fn run_benchmark(num_producers: usize) {
                 
                 loop {
                     if let Some(mut r) = producer.reserve(want) {
-                        let slice = r.as_mut_slice();
-                        let n = slice.len();
+                        let n = r.len();
                         
-                        // Write data (4-way unroll like Zig)
-                        let mut i = 0;
-                        while i + 4 <= n {
-                            slice[i].write((sent + i as u64) as u32);
-                            slice[i + 1].write((sent + i as u64 + 1) as u32);
-                            slice[i + 2].write((sent + i as u64 + 2) as u32);
-                            slice[i + 3].write((sent + i as u64 + 3) as u32);
-                            i += 4;
-                        }
-                        while i < n {
-                            slice[i].write((sent + i as u64) as u32);
-                            i += 1;
-                        }
+                        // Write straight into the ring's slots
+                        r.extend((0..n).map(|i| (sent + i as u64) as u32));
                         
                         sent += n as u64;
                         r.commit();

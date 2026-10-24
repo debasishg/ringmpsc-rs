@@ -132,10 +132,8 @@ fn test_batch_operations() {
 
     for batch in 0..N_BATCHES {
         if let Some(mut r) = producer.reserve(BATCH_SIZE) {
-            let slice = r.as_mut_slice();
-            for (i, slot) in slice.iter_mut().enumerate() {
-                slot.write((batch * BATCH_SIZE + i) as u64);
-            }
+            let len = r.len();
+            r.extend((0..len).map(|i| (batch * BATCH_SIZE + i) as u64));
             r.commit();
         }
     }
@@ -167,7 +165,7 @@ fn test_wrap_around() {
     // Interleaved send/receive to force wrapping
     for i in 0..N {
         if let Some(mut r) = producer.reserve(1) {
-            r.as_mut_slice()[0].write(i as u64);
+            assert!(r.push(i as u64).is_ok());
             r.commit();
         }
 
@@ -191,7 +189,7 @@ fn test_consume_up_to_limit() {
     // Send 1000 items
     for i in 0..1000 {
         if let Some(mut r) = producer.reserve(1) {
-            r.as_mut_slice()[0].write(i);
+            assert!(r.push(i).is_ok());
             r.commit();
         }
     }

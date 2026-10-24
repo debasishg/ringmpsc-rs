@@ -92,7 +92,7 @@ buffer[i] is initialized  ⟺  head ≤ sequence(i) < tail
 Slots in range `[head, tail)` contain valid `T` values written by the producer.
 
 **Enforced by**: only a commit moves `tail`, so every commit must publish written slots only.
-- `Ring`: commits go through `Reservation`, which can't commit more slots than it reserved.
+- `Ring`: commits go through `Reservation`, which counts the slots written into it (`push`, `extend`, `extend_from_slice`) and publishes only that prefix. There is no safe access to the raw slots, so an unwritten slot can't be published (#32).
 - `StackRing` / `StackProducer`: `commit` is an `unsafe fn` whose contract requires the first `n` reserved slots to have been written (#15). It can't be checked, so it can't be safe.
 
 ### INV-INIT-02: Uninitialized Range  

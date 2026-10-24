@@ -517,8 +517,8 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     /// let mut producer = channel.register().unwrap();
     ///
     /// let mut r = producer.reserve(2).unwrap();
-    /// r.as_mut_slice()[0] = MaybeUninit::new(7);
-    /// r.as_mut_slice()[1] = MaybeUninit::new(8);
+    /// assert!(r.push(7).is_ok());
+    /// assert!(r.push(8).is_ok());
     /// r.commit();
     ///
     /// let mut seen = Vec::new();

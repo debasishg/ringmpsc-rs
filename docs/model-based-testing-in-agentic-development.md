@@ -67,7 +67,7 @@ fn execute_action(sut: &mut RingSUT, action: QuintAction) {
     match action {
         ProducerWrite => {
             if let Some(mut r) = sut.ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(sut.produced);
+                assert!(r.push(sut.produced).is_ok());
                 r.commit();
                 sut.produced += 1;
             }

@@ -65,11 +65,8 @@ fn test_numa_ring_reserve_commit() {
     let mut ring = Ring::<u64, NumaAllocator>::new_in(Config::default(), alloc);
 
     if let Some(mut reservation) = ring.reserve(3) {
-        let slice = reservation.as_mut_slice();
-        let n = slice.len();
-        for (i, slot) in slice.iter_mut().enumerate() {
-            *slot = MaybeUninit::new(i as u64 + 10);
-        }
+        let n = reservation.len();
+        reservation.extend((0..n).map(|i| i as u64 + 10));
         reservation.commit();
 
         let mut values = Vec::new();

@@ -25,11 +25,9 @@ fn bench_spsc(c: &mut Criterion) {
                     let want = BATCH_SIZE.min((MSG_PER_PRODUCER - sent) as usize);
                     if let Some(mut r) = producer.reserve(want) {
                         let len = {
-                            let slice = r.as_mut_slice();
-                            for (i, item) in slice.iter_mut().enumerate() {
-                                item.write((sent + i as u64) as u32);
-                            }
-                            slice.len()
+                            let len = r.len();
+                            r.extend((0..len).map(|i| (sent + i as u64) as u32));
+                            len
                         };
                         r.commit();
                         sent += len as u64;
@@ -86,11 +84,9 @@ fn bench_mpsc(c: &mut Criterion) {
                                 let want = BATCH_SIZE.min((MSG_PER_PRODUCER - sent) as usize);
                                 if let Some(mut r) = producer.reserve(want) {
                                     let len = {
-                                        let slice = r.as_mut_slice();
-                                        for (i, item) in slice.iter_mut().enumerate() {
-                                            item.write((sent + i as u64) as u32);
-                                        }
-                                        slice.len()
+                                        let len = r.len();
+                                        r.extend((0..len).map(|i| (sent + i as u64) as u32));
+                                        len
                                     };
                                     r.commit();
                                     sent += len as u64;
@@ -157,11 +153,9 @@ fn bench_batch_sizes(c: &mut Criterion) {
                             let want = batch.min((MSG_PER_PRODUCER - sent) as usize);
                             if let Some(mut r) = producer.reserve(want) {
                                 let len = {
-                                    let slice = r.as_mut_slice();
-                                    for (i, item) in slice.iter_mut().enumerate() {
-                                        item.write((sent + i as u64) as u32);
-                                    }
-                                    slice.len()
+                                    let len = r.len();
+                                    r.extend((0..len).map(|i| (sent + i as u64) as u32));
+                                    len
                                 };
                                 r.commit();
                                 sent += len as u64;
@@ -211,11 +205,9 @@ fn bench_zero_copy(c: &mut Criterion) {
                     let want = 1024.min((msgs - sent) as usize);
                     if let Some(mut r) = producer.reserve(want) {
                         let len = {
-                            let slice = r.as_mut_slice();
-                            for (i, item) in slice.iter_mut().enumerate() {
-                                item.write([(sent + i as u64); 8]);
-                            }
-                            slice.len()
+                            let len = r.len();
+                            r.extend((0..len).map(|i| [(sent + i as u64); 8]));
+                            len
                         };
                         r.commit();
                         sent += len as u64;
@@ -273,7 +265,7 @@ fn bench_contention(c: &mut Criterion) {
                             
                             while sent < msgs {
                                 if let Some(mut r) = producer.reserve(1) {
-                                    r.as_mut_slice()[0].write(sent as u32);
+                                    assert!(r.push(sent as u32).is_ok());
                                     r.commit();
                                     sent += 1;
                                 } else {

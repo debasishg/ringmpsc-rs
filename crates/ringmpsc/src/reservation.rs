@@ -5,9 +5,9 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use thiserror::Error;
 
-/// Error returned when trying to commit more items than reserved.
+/// Error returned when trying to commit more items than were written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("cannot commit {attempted} items, only {available} reserved")]
+#[error("cannot commit {attempted} items, only {available} written")]
 pub struct CommitError {
     /// Number of items attempted to commit.
     pub attempted: usize,
@@ -17,28 +17,66 @@ pub struct CommitError {
 
 /// Zero-copy reservation for writing directly into the ring buffer.
 ///
-/// The producer obtains a reservation, writes data into the provided slice,
-/// then commits to make the data visible to the consumer.
+/// The producer obtains a reservation, writes items into it in order with
+/// [`push`](Self::push), [`extend`](Self::extend) or
+/// [`extend_from_slice`](Self::extend_from_slice), then commits to make them
+/// visible to the consumer. Writes go straight into the ring's slots; nothing
+/// is copied again on commit.
 ///
-/// **Important:** A `Reservation` may contain fewer items than requested from
-/// `reserve(n)` if the reservation wraps around the ring buffer boundary. Always
-/// check `as_mut_slice().len()` to determine how many items were actually reserved.
+/// The reservation **counts what was written**, and a commit publishes only
+/// that prefix. Publishing a slot that was never written would hand the
+/// consumer uninitialized memory (#32), so there is no way to do it.
+///
+/// Written items that a partial commit ([`commit_up_to`](Self::commit_up_to),
+/// [`try_commit_n`](Self::try_commit_n)) does not publish are dropped. A
+/// reservation dropped without committing publishes nothing; items written
+/// into it are leaked, as before (safe, but not dropped).
+///
+/// **Important:** A `Reservation` may hold fewer slots than requested from
+/// `reserve(n)` if the reservation wraps around the ring buffer boundary.
+/// Check [`len`](Self::len) to see how many were actually reserved.
 ///
 /// # Example
 ///
-/// ```ignore
-/// // Request 100 items but might get fewer
-/// if let Some(mut reservation) = producer.reserve(100) {
-///     let slice = reservation.as_mut_slice();
-///     let actual = slice.len(); // May be < 100!
+/// ```
+/// use ringmpsc_rs::{Channel, Config};
 ///
-///     // Write data to slice...
-///     for item in slice.iter_mut() {
-///         *item = some_value;
-///     }
+/// let channel = Channel::<u64>::new(Config::default());
+/// let mut producer = channel.register().unwrap();
 ///
-///     reservation.commit(); // Commits `actual` items
-/// }
+/// // Request 100 slots; a wrap-around can grant fewer.
+/// let mut reservation = producer.reserve(100).unwrap();
+/// let granted = reservation.len();
+/// let written = reservation.extend(0..);
+/// assert_eq!(written, granted);
+/// reservation.commit();
+///
+/// let mut seen = 0;
+/// channel.consumer().unwrap().consume_all(|_| seen += 1);
+/// assert_eq!(seen, granted);
+/// ```
+///
+/// Committing without writing publishes nothing:
+///
+/// ```
+/// use ringmpsc_rs::{Channel, Config};
+///
+/// let channel = Channel::<Box<u64>>::new(Config::default());
+/// let mut producer = channel.register().unwrap();
+/// producer.reserve(1).unwrap().commit();
+/// assert_eq!(channel.consumer().unwrap().consume_all_owned(drop), 0);
+/// ```
+///
+/// There is no safe access to the raw slots, because writes through it could
+/// not be counted:
+///
+/// ```compile_fail,E0599
+/// use ringmpsc_rs::{Channel, Config};
+///
+/// let channel = Channel::<u64>::new(Config::default());
+/// let mut producer = channel.register().unwrap();
+/// let mut reservation = producer.reserve(1).unwrap();
+/// let _ = reservation.as_mut_slice(); // ERROR: no method `as_mut_slice`
 /// ```
 pub struct Reservation<'a, T, A: BufferAllocator = HeapAllocator> {
     /// Mutable slice into the ring buffer for writing data.
@@ -69,7 +107,7 @@ pub struct Reservation<'a, T, A: BufferAllocator = HeapAllocator> {
     /// reference in `make_reservation`, so non-null is an invariant the type
     /// should state rather than leave to a comment. Making it structural
     /// deleted the `debug_assert_valid_ring_ptr!` null check that used to run
-    /// in `commit_n_unchecked` on every commit in debug builds.
+    /// on every commit in debug builds.
     ///
     /// Note this buys no size win: `Option<Reservation<..>>` was already
     /// niche-optimized on the `slice` reference, and stays 32 bytes either way
@@ -78,6 +116,10 @@ pub struct Reservation<'a, T, A: BufferAllocator = HeapAllocator> {
 
     /// Number of slots reserved (cached from `slice.len()`).
     len: usize,
+
+    /// Number of slots written, from the front: `slice[..filled]` are
+    /// initialized. Only this prefix can be committed.
+    filled: usize,
 
     /// Records the logical `&'a mut` borrow of the ring.
     ///
@@ -110,89 +152,150 @@ impl<'a, T, A: BufferAllocator> Reservation<'a, T, A> {
             slice,
             ring,
             len,
+            filled: 0,
             _borrow: PhantomData,
         }
     }
 
-    /// Returns a mutable slice for writing data.
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [MaybeUninit<T>] {
-        self.slice
-    }
-
     /// Returns the number of reserved slots.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns true if the reservation is empty.
+    /// Returns true if no slots were reserved.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Commits the reservation, making data visible to the consumer.
-    ///
-    /// This commits all reserved slots. Use `try_commit_n` if you want to
-    /// commit fewer items than reserved.
-    pub fn commit(self) {
-        let len = self.len;
-        // SAFETY: len is always <= self.len by construction
-        unsafe { self.commit_n_unchecked(len) };
+    /// Returns how many slots have been written.
+    #[inline]
+    #[must_use]
+    pub fn filled(&self) -> usize {
+        self.filled
     }
 
-    /// Commits exactly n items (where n <= `len()`).
+    /// Returns how many reserved slots are still unwritten.
+    #[inline]
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.len - self.filled
+    }
+
+    /// Writes `value` into the next slot.
     ///
-    /// Returns `Ok(())` on success, or `Err(CommitError)` if `n > len()`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let mut reservation = producer.reserve(10).unwrap();
-    /// // Only write 5 items...
-    /// reservation.try_commit_n(5)?; // Commits only 5
-    /// ```
-    pub fn try_commit_n(self, n: usize) -> Result<(), CommitError> {
-        if n > self.len {
-            return Err(CommitError {
-                attempted: n,
-                available: self.len,
-            });
+    /// Returns `Err(value)` if every reserved slot is already written.
+    #[inline]
+    pub fn push(&mut self, value: T) -> Result<(), T> {
+        if self.filled == self.len {
+            return Err(value);
         }
-        // SAFETY: We just verified n <= self.len
-        unsafe { self.commit_n_unchecked(n) };
+        self.slice[self.filled].write(value);
+        self.filled += 1;
         Ok(())
     }
 
-    /// Commits n items without bounds checking.
+    /// Writes items from `iter` into the next slots, until the reservation
+    /// is full or the iterator ends. Returns how many were written.
     ///
-    /// # Safety
+    /// Takes no more items from `iter` than there is room for.
+    pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> usize {
+        let start = self.filled;
+        for value in iter.into_iter().take(self.len - self.filled) {
+            self.slice[self.filled].write(value);
+            self.filled += 1;
+        }
+        self.filled - start
+    }
+
+    /// Copies as many of `items` as fit into the next slots. Returns how many
+    /// were written.
+    pub fn extend_from_slice(&mut self, items: &[T]) -> usize
+    where
+        T: Copy,
+    {
+        let n = items.len().min(self.len - self.filled);
+        for (slot, item) in self.slice[self.filled..self.filled + n].iter_mut().zip(items) {
+            slot.write(*item);
+        }
+        self.filled += n;
+        n
+    }
+
+    /// Commits every written item, making it visible to the consumer.
+    /// Returns how many were committed.
     ///
-    /// Caller must ensure `n <= self.len()`.
-    #[inline]
-    unsafe fn commit_n_unchecked(self, n: usize) {
+    /// Unwritten slots are not published.
+    pub fn commit(self) -> usize {
+        let n = self.filled;
+        self.commit_prefix(n);
+        n
+    }
+
+    /// Commits exactly the first `n` written items.
+    ///
+    /// Returns `Ok(())` on success, or `Err(CommitError)` if fewer than `n`
+    /// items were written. Written items past `n` are dropped.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ringmpsc_rs::{Channel, Config};
+    ///
+    /// let channel = Channel::<u64>::new(Config::default());
+    /// let mut producer = channel.register().unwrap();
+    /// let mut reservation = producer.reserve(10).unwrap();
+    /// reservation.extend(0..5);
+    /// assert!(reservation.try_commit_n(3).is_ok()); // items 3 and 4 are dropped
+    /// ```
+    pub fn try_commit_n(self, n: usize) -> Result<(), CommitError> {
+        if n > self.filled {
+            return Err(CommitError {
+                attempted: n,
+                available: self.filled,
+            });
+        }
+        self.commit_prefix(n);
+        Ok(())
+    }
+
+    /// Commits up to `n` written items, saturating at [`filled`](Self::filled).
+    /// Written items past `n` are dropped.
+    ///
+    /// Returns the number of items actually committed.
+    #[must_use]
+    pub fn commit_up_to(self, n: usize) -> usize {
+        let to_commit = n.min(self.filled);
+        self.commit_prefix(to_commit);
+        to_commit
+    }
+
+    /// Publishes `slice[..n]`, which must be written (`n <= filled`), and
+    /// drops the written items past it.
+    fn commit_prefix(self, n: usize) {
+        debug_assert!(n <= self.filled);
+        let this = self;
+        let filled = this.filled;
+        for slot in &mut this.slice[n..filled] {
+            // SAFETY: `slice[..filled]` is initialized (every write goes
+            // through `push`/`extend`/`extend_from_slice`, which bump
+            // `filled` after writing), and these slots are not published,
+            // so this is the only owner of the items in them.
+            unsafe { slot.assume_init_drop() };
+        }
+        if n == 0 {
+            // Nothing to publish: no tail store, no metrics batch.
+            return;
+        }
         // INV-RES-03: pointer validity is enforced by the `NonNull` field type.
         // SAFETY: `ring` is non-null by construction and valid for `'a`, which
         // outlives `self`.
-        let ring = unsafe { self.ring.as_ref() };
+        let ring = unsafe { this.ring.as_ref() };
+        // `slice[..n]` is initialized, so publishing it upholds INV-INIT-01.
         ring.commit_internal(n);
-    }
-
-    /// Commits n items, saturating at `len()` if n is too large.
-    ///
-    /// This never fails - if you request more than available, it commits
-    /// all available items.
-    ///
-    /// Returns the number of items actually committed.
-    #[must_use] 
-    pub fn commit_up_to(self, n: usize) -> usize {
-        let to_commit = n.min(self.len);
-        // SAFETY: to_commit <= self.len by construction
-        unsafe { self.commit_n_unchecked(to_commit) };
-        to_commit
     }
 }
 

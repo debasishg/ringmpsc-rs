@@ -248,16 +248,16 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// **Important:** The returned `Reservation` may contain **fewer than n items**
     /// if the reservation wraps around the ring buffer. The ring buffer is circular,
     /// and reservations only provide contiguous memory regions. Always check
-    /// `reservation.as_mut_slice().len()` to see how many items were actually reserved.
+    /// `reservation.len()` to see how many items were actually reserved.
     ///
     /// To send exactly n items, you may need to call `reserve()` multiple times:
     /// ```ignore
     /// let mut sent = 0;
     /// while sent < n {
     ///     if let Some(mut r) = ring.reserve(n - sent) {
-    ///         sent += r.as_mut_slice().len();
-    ///         // ... write to slice ...
-    ///         r.commit();
+    ///         // Writes items[sent..] up to the slots granted.
+    ///         r.extend_from_slice(&items[sent..]);
+    ///         sent += r.commit();
     ///     }
     /// }
     /// ```
@@ -905,7 +905,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     pub(crate) unsafe fn push_shared(&self, item: T) -> bool {
         // SAFETY: forwarded from this function's own precondition.
         unsafe { self.reserve_shared(1) }.is_some_and(|mut r| {
-            r.as_mut_slice()[0] = std::mem::MaybeUninit::new(item);
+            // A one-slot reservation always has room, so `push` can't fail.
+            let pushed = r.push(item).is_ok();
+            debug_assert!(pushed);
             r.commit();
             true
         })
@@ -931,13 +933,8 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     {
         // SAFETY: forwarded from this function's own precondition.
         unsafe { self.reserve_shared(items.len()) }.map_or(0, |mut reservation| {
-            let slice = reservation.as_mut_slice();
-            let n = slice.len();
-            for i in 0..n {
-                slice[i].write(items[i]);
-            }
-            reservation.commit();
-            n
+            reservation.extend_from_slice(items);
+            reservation.commit()
         })
     }
 
@@ -1053,11 +1050,10 @@ mod tests {
 
         // Write
         if let Some(mut r) = ring.reserve(4) {
-            let slice = r.as_mut_slice();
-            slice[0].write(100);
-            slice[1].write(200);
-            slice[2].write(300);
-            slice[3].write(400);
+            assert!(r.push(100).is_ok());
+            assert!(r.push(200).is_ok());
+            assert!(r.push(300).is_ok());
+            assert!(r.push(400).is_ok());
             r.commit();
         }
 
@@ -1080,7 +1076,7 @@ mod tests {
         // Write 10 items
         for i in 0..10 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0].write(i * 10);
+                assert!(r.push(i * 10).is_ok());
                 r.commit();
             }
         }
@@ -1101,7 +1097,7 @@ mod tests {
         // Write 10 items
         for i in 0..10 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0].write(i * 10);
+                assert!(r.push(i * 10).is_ok());
                 r.commit();
             }
         }
@@ -1130,7 +1126,7 @@ mod tests {
         // Fill it
         for i in 0..16 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0].write(i);
+                assert!(r.push(i).is_ok());
                 r.commit();
             }
         }
@@ -1164,7 +1160,7 @@ mod tests {
         // Write 5 items
         for i in 0..5 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0].write(DropTracker { _id: i });
+                assert!(r.push(DropTracker { _id: i }).is_ok());
                 r.commit();
             }
         }
@@ -1204,7 +1200,7 @@ mod tests {
         // Write 10 items
         for i in 0..10 {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0].write(DropTracker { _id: i });
+                assert!(r.push(DropTracker { _id: i }).is_ok());
                 r.commit();
             }
         }

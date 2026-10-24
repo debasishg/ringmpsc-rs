@@ -6,7 +6,6 @@
 //! Single-threaded, so Miri runs it in well under a second.
 
 use ringmpsc_rs::{Channel, Config};
-use std::mem::MaybeUninit;
 
 #[test]
 fn producer_cannot_hold_two_overlapping_reservations() {
@@ -14,18 +13,16 @@ fn producer_cannot_hold_two_overlapping_reservations() {
     let mut producer = channel.register().unwrap();
 
     let mut r1 = producer.reserve(2).unwrap();
-    let s1 = r1.as_mut_slice();
-    assert_eq!(s1.len(), 2);
-    s1[0] = MaybeUninit::new(1);
-    s1[1] = MaybeUninit::new(2);
+    assert_eq!(r1.len(), 2);
+    assert!(r1.push(1).is_ok());
+    assert!(r1.push(2).is_ok());
     r1.commit();
 
     // Only valid because the first reservation was committed and released.
     let mut r2 = producer.reserve(2).unwrap();
-    let s2 = r2.as_mut_slice();
-    assert_eq!(s2.len(), 2);
-    s2[0] = MaybeUninit::new(3);
-    s2[1] = MaybeUninit::new(4);
+    assert_eq!(r2.len(), 2);
+    assert!(r2.push(3).is_ok());
+    assert!(r2.push(4).is_ok());
     r2.commit();
 
     let mut seen = Vec::new();

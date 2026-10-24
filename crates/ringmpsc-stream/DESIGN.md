@@ -196,7 +196,7 @@ let tx2 = factory.register()?;  // Gets Ring 1
 │   1. Try reserve(1)                                             │
 │      ┌────────────────────────────────────────────────────────┐ │
 │      │ if let Some(reservation) = producer.reserve(1) {       │ │
-│      │     reservation.as_mut_slice()[0] = MaybeUninit::new();│ │
+│      │     reservation.push(item);  // writes the one slot    │ │
 │      │     reservation.commit();  // Item now in ring         │ │
 │      │ }                                                      │ │
 │      └────────────────────────────────────────────────────────┘ │

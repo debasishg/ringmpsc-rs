@@ -12,7 +12,7 @@
 //! These tests are designed to exercise the unsafe code paths in ringmpsc-rs.
 
 use ringmpsc_rs::{Channel, Config, Ring};
-use std::mem::MaybeUninit;
+
 
 /// Test basic ring buffer operations for UB.
 #[test]
@@ -22,9 +22,8 @@ fn miri_ring_basic_operations() {
 
     // Reserve and commit
     if let Some(mut reservation) = ring.reserve(2) {
-        let slice = reservation.as_mut_slice();
-        slice[0] = MaybeUninit::new(100);
-        slice[1] = MaybeUninit::new(200);
+        assert!(reservation.push(100).is_ok());
+        assert!(reservation.push(200).is_ok());
         reservation.commit();
     }
 
@@ -76,12 +75,11 @@ fn miri_ring_partial_reservation() {
 
     // Now head=2, tail=3. Reserving 3 should give us partial (only 1 slot contiguous before wrap)
     if let Some(mut res) = ring.reserve(3) {
-        let len = res.as_mut_slice().len();
+        let len = res.len();
         // Should get 1 or 2, not 3 (depends on internal state)
         assert!(len <= 2, "Expected partial reservation, got {len}");
-        for slot in res.as_mut_slice().iter_mut() {
-            *slot = MaybeUninit::new(999);
-        }
+        let len = res.len();
+        res.extend((0..len).map(|_| 999));
         res.commit();
     }
 }
@@ -118,9 +116,8 @@ fn miri_ring_drop_with_items() {
         
         // Push some Strings (have Drop impl)
         if let Some(mut res) = ring.reserve(2) {
-            let slice = res.as_mut_slice();
-            slice[0] = MaybeUninit::new(String::from("hello"));
-            slice[1] = MaybeUninit::new(String::from("world"));
+            assert!(res.push(String::from("hello")).is_ok());
+            assert!(res.push(String::from("world")).is_ok());
             res.commit();
         }
         
@@ -300,4 +297,93 @@ fn miri_advance_up_to_available() {
     ring.advance(2);
     assert!(ring.is_empty());
     assert!(ring.readable().is_none());
+}
+
+// =============================================================================
+// #32: a commit publishes only the slots that were written
+//
+// `Reservation::as_mut_slice()` used to hand out `&mut [MaybeUninit<T>]`,
+// and `commit()` published every reserved slot whether or not it was
+// written, so the consumer could read uninitialized memory from safe code.
+// The reservation now counts writes (`push`, `extend`, `extend_from_slice`)
+// and a commit publishes only that prefix.
+// =============================================================================
+
+/// The #32 repro: commit without writing. It used to be UB; now nothing is
+/// published.
+#[test]
+fn miri_commit_without_writing_publishes_nothing() {
+    let channel = Channel::<Box<u64>>::new(Config::new(2, 1, false));
+    let mut producer = channel.register().unwrap();
+    assert_eq!(producer.reserve(1).unwrap().commit(), 0);
+    let mut consumer = channel.consumer().unwrap();
+    assert_eq!(consumer.consume_all_owned(drop), 0);
+
+    // The slot is still usable afterwards.
+    let mut r = producer.reserve(1).unwrap();
+    assert!(r.push(Box::new(7)).is_ok());
+    assert_eq!(r.commit(), 1);
+    let mut got = Vec::new();
+    consumer.consume_all_owned(|b| got.push(*b));
+    assert_eq!(got, vec![7]);
+}
+
+/// Counts drops.
+struct Counted(u64, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A partial commit publishes the written prefix and drops the written
+/// items past it, exactly once each.
+#[test]
+fn miri_partial_commit_drops_unpublished_writes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let drops = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut ring = Ring::<Counted>::new(Config::new(3, 1, false));
+
+    let mut r = ring.reserve(4).unwrap();
+    for v in 0..3 {
+        assert!(r.push(Counted(v, drops.clone())).is_ok());
+    }
+    assert_eq!(r.filled(), 3);
+    assert_eq!(r.remaining(), 1);
+    assert_eq!(r.commit_up_to(2), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "the third write is dropped");
+
+    let mut seen = Vec::new();
+    ring.consume_batch_owned(|c| seen.push(c.0));
+    assert_eq!(seen, vec![0, 1]);
+    assert_eq!(drops.load(Ordering::SeqCst), 3, "each item dropped exactly once");
+}
+
+/// `try_commit_n` can't publish more than was written.
+#[test]
+fn miri_try_commit_n_past_the_written_prefix_fails() {
+    let mut ring = Ring::<u64>::new(Config::new(3, 1, false));
+    let mut r = ring.reserve(4).unwrap();
+    assert_eq!(r.extend_from_slice(&[1, 2]), 2);
+    let err = r.try_commit_n(3).unwrap_err();
+    assert_eq!((err.attempted, err.available), (3, 2));
+    // Nothing was published.
+    assert!(ring.is_empty());
+}
+
+/// `push` hands the value back once the reservation is full, and `extend`
+/// takes no more items from the iterator than fit.
+#[test]
+fn miri_writes_stop_at_the_reservation() {
+    let mut ring = Ring::<u64>::new(Config::new(2, 1, false)); // capacity 4
+    let mut r = ring.reserve(2).unwrap();
+    let mut source = 10..;
+    assert_eq!(r.extend(&mut source), 2);
+    assert_eq!(source.next(), Some(12), "extend took only what fit");
+    assert_eq!(r.push(99), Err(99));
+    assert_eq!(r.commit(), 2);
+    let mut seen = Vec::new();
+    ring.consume_batch(|v| seen.push(*v));
+    assert_eq!(seen, vec![10, 11]);
 }

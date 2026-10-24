@@ -29,7 +29,8 @@
 //! The producer writes through `write_next`, not through a raw
 //! `&mut [MaybeUninit<T>]` slice: with a slice, nothing could show which
 //! slots were written, and committing an unwritten slot is undefined
-//! behavior (the production `Reservation::commit` has exactly that hole).
+//! behavior. The production `Reservation::commit` had exactly that hole
+//! (#32), and now counts writes the same way.
 //!
 //! **Orderings:** `vstd` atomics are sequentially consistent, and Verus
 //! reasons about them that way. The proof shows the protocol is race-free.
