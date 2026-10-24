@@ -43,15 +43,10 @@ fn main() {
                 while batch_sent < BATCH_SIZE {
                     let remaining = BATCH_SIZE - batch_sent;
                     if let Some(mut reservation) = producer.reserve(remaining) {
-                        let slice = reservation.as_mut_slice();
-                        
-                        // Write directly into the ring buffer
-                        for (i, item) in slice.iter_mut().enumerate() {
-                            let value = (sent + i) as u64;
-                            item.write([value; 8]); // 64 bytes per item
-                        }
-                        
-                        let n = slice.len();
+                        // Write directly into the ring buffer, 64 bytes per item
+                        let n = reservation.extend(
+                            (0..reservation.len()).map(|i| [(sent + i) as u64; 8]),
+                        );
                         sent += n;
                         batch_sent += n;
                         reservation.commit();

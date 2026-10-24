@@ -11,7 +11,7 @@
 
 use proptest::prelude::*;
 use ringmpsc_rs::{Config, Ring};
-use std::mem::MaybeUninit;
+
 
 #[cfg(feature = "stack-ring")]
 use ringmpsc_rs::StackRing;
@@ -37,7 +37,7 @@ proptest! {
         let actual_writes = writes.min(capacity);
         for i in 0..actual_writes {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(i as u64);
+                assert!(r.push(i as u64).is_ok());
                 r.commit();
             }
         }
@@ -118,7 +118,7 @@ proptest! {
             if write_op {
                 // Write operation: len should increase or stay same (if full)
                 if let Some(mut r) = ring.reserve(1) {
-                    r.as_mut_slice()[0] = MaybeUninit::new(42);
+                    assert!(r.push(42).is_ok());
                     r.commit();
                     let len_after = ring.len();
                     prop_assert!(len_after == len_before + 1,
@@ -195,7 +195,7 @@ proptest! {
         let mut produced = 0;
         for i in 0..writes {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(i as u64);
+                assert!(r.push(i as u64).is_ok());
                 r.commit();
                 produced += 1;
             }
@@ -272,7 +272,7 @@ proptest! {
         let actual_fill = pre_fill.min(capacity);
         for i in 0..actual_fill {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(i as u64);
+                assert!(r.push(i as u64).is_ok());
                 r.commit();
             }
         }

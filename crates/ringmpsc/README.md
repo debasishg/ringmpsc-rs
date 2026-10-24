@@ -28,7 +28,7 @@ let producer = channel.register().unwrap();
 
 // Send (zero-copy)
 if let Some(mut reservation) = producer.reserve(1) {
-    reservation.as_mut_slice()[0] = 42;
+    assert!(reservation.push(42).is_ok());
     reservation.commit();
 }
 
@@ -60,7 +60,7 @@ let producer = channel.register().unwrap();
 // Send multiple items
 for i in 0..1000 {
     if let Some(mut r) = producer.reserve(1) {
-        r.as_mut_slice()[0] = i;
+        assert!(r.push(i).is_ok());
         r.commit();
     }
 }
@@ -98,7 +98,7 @@ let p1 = channel.register().unwrap();
 thread::spawn(move || {
     for i in 0..1000 {
         if let Some(mut r) = p1.reserve(1) {
-            r.as_mut_slice()[0] = i;
+            assert!(r.push(i).is_ok());
             r.commit();
         }
     }
@@ -109,7 +109,7 @@ let p2 = channel2.register().unwrap();
 thread::spawn(move || {
     for i in 1000..2000 {
         if let Some(mut r) = p2.reserve(1) {
-            r.as_mut_slice()[0] = i;
+            assert!(r.push(i).is_ok());
             r.commit();
         }
     }

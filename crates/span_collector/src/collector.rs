@@ -234,8 +234,9 @@ impl SpanProducer {
         // Try to reserve with backoff
         if let Some(mut reservation) = self.producer.reserve_with_backoff(1) {
             // Write span to reservation
-            let slice = reservation.as_mut_slice();
-            slice[0].write(span);
+            if reservation.push(span).is_err() {
+                unreachable!("a one-slot reservation has room for one item");
+            }
             reservation.commit();
             
             self.metrics
@@ -252,8 +253,9 @@ impl SpanProducer {
     /// Tries to submit a span without blocking
     pub fn try_submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         if let Some(mut reservation) = self.producer.reserve(1) {
-            let slice = reservation.as_mut_slice();
-            slice[0].write(span);
+            if reservation.push(span).is_err() {
+                unreachable!("a one-slot reservation has room for one item");
+            }
             reservation.commit();
             
             self.metrics

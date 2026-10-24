@@ -102,11 +102,10 @@ fn test_custom_allocator_ring_reserve_commit() {
     let mut ring = Ring::new_in(Config::default(), VecAllocator);
 
     if let Some(mut r) = ring.reserve(4) {
-        let slice = r.as_mut_slice();
-        slice[0].write(10u64);
-        slice[1].write(20u64);
-        slice[2].write(30u64);
-        slice[3].write(40u64);
+        assert!(r.push(10u64).is_ok());
+        assert!(r.push(20u64).is_ok());
+        assert!(r.push(30u64).is_ok());
+        assert!(r.push(40u64).is_ok());
         r.commit();
     }
 
@@ -166,9 +165,8 @@ fn test_custom_allocator_drop_behavior() {
 
     let mut ring = Ring::new_in(Config::new(2, 4, false), VecAllocator);
     if let Some(mut r) = ring.reserve(3) {
-        for (i, slot) in r.as_mut_slice().iter_mut().enumerate() {
-            slot.write(DropTracker(i as u64));
-        }
+        let len = r.len();
+        r.extend((0..len).map(|i| DropTracker(i as u64)));
         r.commit();
     }
 
@@ -295,11 +293,10 @@ fn test_aligned_allocator_reserve_commit() {
     let mut ring = Ring::<u64, AlignedAllocator<128>>::new_in(Config::default(), AlignedAllocator::<128>);
 
     if let Some(mut r) = ring.reserve(4) {
-        let slice = r.as_mut_slice();
-        slice[0].write(10);
-        slice[1].write(20);
-        slice[2].write(30);
-        slice[3].write(40);
+        assert!(r.push(10).is_ok());
+        assert!(r.push(20).is_ok());
+        assert!(r.push(30).is_ok());
+        assert!(r.push(40).is_ok());
         r.commit();
     }
 
@@ -358,9 +355,8 @@ fn test_aligned_allocator_drop_behavior() {
 
     let mut ring = Ring::new_in(Config::new(2, 4, false), AlignedAllocator::<128>);
     if let Some(mut r) = ring.reserve(3) {
-        for slot in r.as_mut_slice().iter_mut() {
-            slot.write(DropTracker);
-        }
+        let len = r.len();
+        r.extend((0..len).map(|_| DropTracker));
         r.commit();
     }
 
@@ -508,11 +504,10 @@ mod bumpalo_tests {
         let mut ring = Ring::<u64, BumpAllocator>::new_in(Config::default(), alloc);
 
         if let Some(mut r) = ring.reserve(4) {
-            let s = r.as_mut_slice();
-            s[0].write(1);
-            s[1].write(2);
-            s[2].write(3);
-            s[3].write(4);
+            assert!(r.push(1).is_ok());
+            assert!(r.push(2).is_ok());
+            assert!(r.push(3).is_ok());
+            assert!(r.push(4).is_ok());
             r.commit();
         }
 

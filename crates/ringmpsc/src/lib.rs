@@ -30,7 +30,7 @@
 //!
 //! // Zero-copy API: reserve() + MaybeUninit for maximum performance
 //! if let Some(mut reservation) = producer.reserve(1) {
-//!     reservation.as_mut_slice()[0] = MaybeUninit::new(43);
+//!     assert!(reservation.push(43).is_ok());
 //!     reservation.commit();
 //! }
 //!

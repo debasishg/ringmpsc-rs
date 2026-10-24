@@ -410,7 +410,7 @@ proptest! {
         for i in 0..writes {
             // Attempt to write
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(i as u64);
+                assert!(r.push(i as u64).is_ok());
                 r.commit();
             }
 

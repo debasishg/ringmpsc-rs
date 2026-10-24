@@ -138,11 +138,8 @@ The `Reservation<'a, T, A>` type is the core zero-copy primitive. Instead of cop
 ```rust
 // Producer writes directly into ring buffer slots — no intermediate copy
 if let Some(mut reservation) = ring.reserve(batch_size) {
-    let slice: &mut [MaybeUninit<T>] = reservation.as_mut_slice();
-    for slot in slice.iter_mut() {
-        slot.write(value);  // Write directly into ring memory
-    }
-    reservation.commit();   // Publish via Release store (no copy)
+    reservation.extend(values);  // Write directly into ring memory, in order
+    reservation.commit();        // Publish the written prefix via Release store (no copy)
 }
 ```
 

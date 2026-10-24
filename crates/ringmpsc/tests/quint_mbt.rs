@@ -79,7 +79,6 @@ use quint_connect::*;
 use ringmpsc_rs::{Config, Ring};
 use serde::Deserialize;
 use std::collections::BTreeSet;
-use std::mem::MaybeUninit;
 use std::sync::OnceLock;
 
 /// Returns true when `QUINT_VERBOSE` is set to a non-zero value **at runtime**.
@@ -287,7 +286,7 @@ impl Driver for RingSPSCDriver {
                 let mut reserved = self.ring.reserve(1)
                     .expect("reserve(1) should succeed: the Quint guard ensures (tail - cached_head) < CAPACITY, and cachesLag gives cached_head <= head");
                 // Safety-note: write value then commit (zero-copy reservation pattern)
-                reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
+                assert!(reserved.push(self.produced).is_ok());
                 reserved.commit();
                 self.produced += 1;
                 self.items_produced += 1;

@@ -70,10 +70,8 @@ fn bench_ring<A: BufferAllocator>(name: &str, ring: &mut Ring<u64, A>) {
         while sent < ITEMS && sent - received < 60_000 {
             let want = BATCH.min(ITEMS - sent);
             if let Some(mut r) = ring.reserve(want) {
-                let len = r.as_mut_slice().len();
-                for (i, slot) in r.as_mut_slice().iter_mut().enumerate() {
-                    slot.write((sent + i) as u64);
-                }
+                let len = r.len();
+                r.extend((0..len).map(|i| (sent + i) as u64));
                 r.commit();
                 sent += len;
             } else {
@@ -107,10 +105,8 @@ fn bench_channel_mpsc<A: BufferAllocator + Clone + 'static>(name: &str, config: 
             while sent < per_producer {
                 let want = BATCH.min(per_producer - sent);
                 if let Some(mut r) = producer.reserve(want) {
-                    let len = r.as_mut_slice().len();
-                    for (i, slot) in r.as_mut_slice().iter_mut().enumerate() {
-                        slot.write((sent + i) as u64);
-                    }
+                    let len = r.len();
+                    r.extend((0..len).map(|i| (sent + i) as u64));
                     r.commit();
                     sent += len;
                 } else {

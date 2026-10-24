@@ -145,7 +145,7 @@ So the proofs hold under **every interleaving** of the two threads:
 
 What #24 planned and this deliberately does **not** provide:
 
-- **A writable `&mut [MaybeUninit<T>]` slice.** Nothing could show which slots the caller wrote through it, and committing an unwritten slot is undefined behavior. The production `Reservation::commit` has exactly that hole (see [Bugs this found](#bugs-this-found)). The verified API writes through `write_next`, which tracks it.
+- **A writable `&mut [MaybeUninit<T>]` slice.** Nothing could show which slots the caller wrote through it, and committing an unwritten slot is undefined behavior. The production `Reservation::commit` had exactly that hole, now fixed the same way (see [Bugs this found](#bugs-this-found)). The verified API writes through `write_next`, which tracks it.
 - **A `&[T]` spanning several slots.** `vstd`'s `PCell` is not `#[repr(transparent)]` and exposes no pointer, so building one would rest on a layout Rust doesn't guarantee. `get(i)` gives the same zero-copy access per element.
 
 **Orderings:** `vstd` atomics are sequentially consistent, and Verus reasons about them that way. The proof shows the protocol is race-free. It does not show that the production code's `Relaxed`/`Acquire`/`Release` are enough; that stays with loom and Miri. Measuring what SeqCst costs is part of phase 7 ([#26](https://github.com/debasishg/ringmpsc-rs/issues/26)).
@@ -214,9 +214,9 @@ Each of these deliberate breakages makes verification fail, with the error shown
 
 ## Bugs this found
 
-### `Reservation::commit` publishes unwritten slots (production; not yet filed)
+### `Reservation::commit` published unwritten slots ([#32](https://github.com/debasishg/ringmpsc-rs/issues/32), fixed)
 
-The production `Reservation::as_mut_slice()` hands out `&mut [MaybeUninit<T>]`, and `commit()` is safe and publishes every reserved slot. Nothing makes the caller write them first:
+The production `Reservation::as_mut_slice()` handed out `&mut [MaybeUninit<T>]`, and `commit()` was safe and published every reserved slot. Nothing made the caller write them first:
 
 ```rust
 let channel = Channel::<Box<u64>>::new(Config::new(2, 1, false));
@@ -225,7 +225,9 @@ producer.reserve(1).unwrap().commit();          // nothing written
 channel.consumer().unwrap().consume_all_owned(drop); // reads an uninitialized Box
 ```
 
-Miri: `Undefined Behavior: ... memory is uninitialized`. It is reachable from safe code on the main heap ring, the same class as #15 (fixed for `StackRing`). Phase 5 surfaced it: the verified `produce_end` requires an initialized token for every slot it publishes, and mutation B6 shows the invariant fails without that requirement.
+Miri: `Undefined Behavior: ... memory is uninitialized`. It was reachable from safe code on the main heap ring, the same class as #15 (fixed for `StackRing`). Phase 5 surfaced it: the verified `produce_end` requires an initialized token for every slot it publishes, and mutation B6 shows the invariant fails without that requirement.
+
+**The fix** follows the verified design: the production `Reservation` now counts writes (`push`, `extend`, `extend_from_slice`) and a commit publishes only that prefix, the same as `write_next` + `commit_up_to` here. The safe `as_mut_slice()` is gone.
 
 ### `readable()` after `consume_batch*` ([#17](https://github.com/debasishg/ringmpsc-rs/issues/17), fixed)
 

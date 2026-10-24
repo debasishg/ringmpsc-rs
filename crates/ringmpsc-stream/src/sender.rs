@@ -57,7 +57,6 @@ impl<T: Send + 'static> RingSender<T> {
     /// Returns `Ok(())` if the item was sent, or `Err(item)` if the
     /// ring is full or closed. The item is returned on failure.
     pub fn try_send(&mut self, item: T) -> Result<(), T> {
-        use std::mem::MaybeUninit;
 
         if self.shutdown_state.is_closed() || self.producer.is_closed() {
             // INV-SINK-01: Item preserved on closed channel
@@ -67,7 +66,9 @@ impl<T: Send + 'static> RingSender<T> {
         }
 
         if let Some(mut reservation) = self.producer.reserve(1) {
-            reservation.as_mut_slice()[0] = MaybeUninit::new(item);
+            if reservation.push(item).is_err() {
+                unreachable!("a one-slot reservation has room for one item");
+            }
             reservation.commit();
             self.data_notify.notify_one();
             // INV-SINK-03: Verify data notification sent
@@ -88,7 +89,6 @@ impl<T: Send + 'static> RingSender<T> {
     /// This is a convenience method for simple async sending.
     /// Uses reserve/commit internally to ensure no item loss.
     pub async fn send(&mut self, item: T) -> Result<(), StreamError> {
-        use std::mem::MaybeUninit;
 
         let mut item = Some(item);
 
@@ -100,7 +100,9 @@ impl<T: Send + 'static> RingSender<T> {
             // Try to reserve space
             if let Some(mut reservation) = self.producer.reserve(1) {
                 // Safety: item is Some here
-                reservation.as_mut_slice()[0] = MaybeUninit::new(item.take().unwrap());
+                if reservation.push(item.take().unwrap()).is_err() {
+                    unreachable!("a one-slot reservation has room for one item");
+                }
                 reservation.commit();
                 self.data_notify.notify_one();
                 // INV-SINK-03: Verify data notification sent
@@ -191,10 +193,11 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
 
         // If we have a pending item, try to send it first
         if let Some(item) = this.pending_item.take() {
-            use std::mem::MaybeUninit;
 
             if let Some(mut reservation) = this.producer.reserve(1) {
-                reservation.as_mut_slice()[0] = MaybeUninit::new(item);
+                if reservation.push(item).is_err() {
+                    unreachable!("a one-slot reservation has room for one item");
+                }
                 reservation.commit();
                 this.data_notify.notify_one();
                 return Poll::Ready(Ok(()));
@@ -250,10 +253,11 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
             return Err(StreamError::Closed);
         }
 
-        use std::mem::MaybeUninit;
 
         if let Some(mut reservation) = this.producer.reserve(1) {
-            reservation.as_mut_slice()[0] = MaybeUninit::new(item);
+            if reservation.push(item).is_err() {
+                unreachable!("a one-slot reservation has room for one item");
+            }
             reservation.commit();
             this.data_notify.notify_one();
             Ok(())
@@ -301,10 +305,11 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
 
         // If we have a pending item, need to flush it
         if let Some(item) = this.pending_item.take() {
-            use std::mem::MaybeUninit;
 
             if let Some(mut reservation) = this.producer.reserve(1) {
-                reservation.as_mut_slice()[0] = MaybeUninit::new(item);
+                if reservation.push(item).is_err() {
+                    unreachable!("a one-slot reservation has room for one item");
+                }
                 reservation.commit();
                 this.data_notify.notify_one();
                 return Poll::Ready(Ok(()));
@@ -372,7 +377,6 @@ impl<T: Send + Clone + 'static> RingSender<T> {
     /// This version uses clone for compatibility with the simpler push API.
     /// For zero-copy sending, use `send()` which uses reserve/commit internally.
     pub async fn send_cloned(&mut self, item: T) -> Result<(), StreamError> {
-        use std::mem::MaybeUninit;
 
         loop {
             if self.shutdown_state.is_closed() || self.producer.is_closed() {
@@ -380,7 +384,9 @@ impl<T: Send + Clone + 'static> RingSender<T> {
             }
 
             if let Some(mut reservation) = self.producer.reserve(1) {
-                reservation.as_mut_slice()[0] = MaybeUninit::new(item);
+                if reservation.push(item).is_err() {
+                    unreachable!("a one-slot reservation has room for one item");
+                }
                 reservation.commit();
                 self.data_notify.notify_one();
                 return Ok(());

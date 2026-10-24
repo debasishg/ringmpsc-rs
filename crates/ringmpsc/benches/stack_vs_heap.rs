@@ -38,10 +38,8 @@ fn bench_heap_single_thread(c: &mut Criterion) {
                 while sent < MSG_COUNT && sent - received < 60000 {
                     let want = BATCH_SIZE.min((MSG_COUNT - sent) as usize);
                     if let Some(mut r) = ring.reserve(want) {
-                        let len = r.as_mut_slice().len();
-                        for (i, item) in r.as_mut_slice().iter_mut().enumerate() {
-                            item.write(black_box((sent + i as u64) as u32));
-                        }
+                        let len = r.len();
+                        r.extend((0..len).map(|i| black_box((sent + i as u64) as u32)));
                         r.commit();
                         sent += len as u64;
                     } else {
@@ -127,10 +125,8 @@ fn bench_heap_spsc(c: &mut Criterion) {
                 while sent < MSG_COUNT {
                     let want = BATCH_SIZE.min((MSG_COUNT - sent) as usize);
                     if let Some(mut r) = ring_p.reserve(want) {
-                        let len = r.as_mut_slice().len();
-                        for (i, item) in r.as_mut_slice().iter_mut().enumerate() {
-                            item.write((sent + i as u64) as u32);
-                        }
+                        let len = r.len();
+                        r.extend((0..len).map(|i| (sent + i as u64) as u32));
                         r.commit();
                         sent += len as u64;
                     } else {
@@ -306,10 +302,8 @@ fn bench_heap_mpsc(c: &mut Criterion) {
                             while sent < msg_per_producer {
                                 let want = MPSC_BATCH.min((msg_per_producer - sent) as usize);
                                 if let Some(mut r) = producer.reserve(want) {
-                                    let len = r.as_mut_slice().len();
-                                    for (i, item) in r.as_mut_slice().iter_mut().enumerate() {
-                                        item.write((sent + i as u64) as u32);
-                                    }
+                                    let len = r.len();
+                                    r.extend((0..len).map(|i| (sent + i as u64) as u32));
                                     r.commit();
                                     sent += len as u64;
                                 } else {

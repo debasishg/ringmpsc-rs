@@ -28,11 +28,9 @@ fn benchmark_config(num_producers: usize) {
                 
                 loop {
                     if let Some(mut r) = producer.reserve(want) {
-                        let slice = r.as_mut_slice();
-                        for (i, item) in slice.iter_mut().enumerate() {
-                            item.write((sent + i as u64) as u32);
-                        }
-                        sent += slice.len() as u64;
+                        let len = r.len();
+                        r.extend((0..len).map(|i| (sent + i as u64) as u32));
+                        sent += len as u64;
                         r.commit();
                         break;
                     }

@@ -236,7 +236,7 @@ impl Driver for RingSPSCDriver {
                 // Quint: tl' = tl + 1, items_produced' = items_produced + 1
                 let mut reserved = self.ring.reserve(1)
                     .expect("Quint guard ensures capacity available");
-                reserved.as_mut_slice()[0] = MaybeUninit::new(self.produced);
+                assert!(reserved.push(self.produced).is_ok());
                 reserved.commit();
                 self.produced += 1;
                 self.items_produced += 1;
@@ -301,7 +301,7 @@ proptest! {
 
         for i in 0..writes {
             if let Some(mut r) = ring.reserve(1) {
-                r.as_mut_slice()[0] = MaybeUninit::new(i as u64);
+                assert!(r.push(i as u64).is_ok());
                 r.commit();
             }
         }
