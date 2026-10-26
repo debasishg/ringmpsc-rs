@@ -2,9 +2,10 @@
 
 use ringwal::{
     recover, read_checkpoint, write_checkpoint,
-    RealIo, RecoveryAction, SyncMode, Transaction, Wal, WalConfig, WalEntry,
+    RealIo, RecoveredTransaction, RecoveryAction, SyncMode, Transaction, Wal, WalConfig,
+    WalEntry,
 };
-use ringwal_store::{recover_into_store, InMemoryStore};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -15,6 +16,20 @@ fn test_config(dir: &std::path::Path) -> WalConfig {
         .with_max_segment_size(1024 * 1024) // 1MB
         .with_flush_interval(std::time::Duration::from_millis(5))
         .with_batch_hint(64)
+}
+
+/// Distinct keys inserted by committed transactions — the state a store
+/// would hold after replaying recovery.
+fn committed_insert_keys(recovered: &[RecoveredTransaction<String, Vec<u8>>]) -> HashSet<String> {
+    recovered
+        .iter()
+        .filter(|r| r.action == RecoveryAction::Commit)
+        .flat_map(|r| r.entries.iter())
+        .filter_map(|e| match e {
+            WalEntry::Insert { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -299,37 +314,6 @@ async fn checkpoint_scheduler_truncates_segments() {
     assert!(lsn > 0, "scheduler should have advanced the checkpoint");
 }
 
-#[tokio::test]
-async fn recover_into_store_replays_committed() {
-    let tmp = TempDir::new().unwrap();
-    let config = test_config(tmp.path());
-    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).unwrap();
-    let mut writer = factory.register().unwrap();
-
-    // Committed transaction
-    let mut tx = Transaction::new();
-    tx.insert("alive".to_string(), b"yes".to_vec());
-    tx.commit(&mut writer).await.unwrap();
-
-    // Aborted transaction
-    let mut tx2 = Transaction::new();
-    tx2.insert("dead".to_string(), b"no".to_vec());
-    tx2.abort(&mut writer).await.unwrap();
-
-    wal.shutdown().await.unwrap();
-
-    // Recover into InMemoryStore
-    let mut store = InMemoryStore::<String, Vec<u8>>::new();
-    let stats =
-        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
-
-    assert_eq!(stats.committed, 1);
-    assert_eq!(stats.aborted, 1);
-    assert_eq!(store.len(), 1);
-    assert_eq!(store.get(&"alive".to_string()), Some(b"yes".to_vec()));
-    assert!(store.get(&"dead".to_string()).is_none());
-}
-
 // ── Pipelined fsync tests ────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -357,13 +341,11 @@ async fn pipelined_multi_writer_commits() {
     wal.shutdown().await.unwrap();
 
     // Recover and verify all 200 committed transactions
-    let mut store = InMemoryStore::<String, Vec<u8>>::new();
-    let stats =
-        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
 
     assert_eq!(stats.committed, 200);
     assert_eq!(stats.aborted, 0);
-    assert_eq!(store.len(), 200);
+    assert_eq!(committed_insert_keys(&recovered).len(), 200);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -418,13 +400,11 @@ async fn pipelined_data_only_multi_writer_commits() {
     }
     wal.shutdown().await.unwrap();
 
-    let mut store = InMemoryStore::<String, Vec<u8>>::new();
-    let stats =
-        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
 
     assert_eq!(stats.committed, 200);
     assert_eq!(stats.aborted, 0);
-    assert_eq!(store.len(), 200);
+    assert_eq!(committed_insert_keys(&recovered).len(), 200);
 }
 
 // ── PipelinedDedicated fsync tests ───────────────────────────────────────────
@@ -453,11 +433,9 @@ async fn pipelined_dedicated_multi_writer_commits() {
     }
     wal.shutdown().await.unwrap();
 
-    let mut store = InMemoryStore::<String, Vec<u8>>::new();
-    let stats =
-        recover_into_store::<String, Vec<u8>, _, _>(tmp.path(), &mut store, &RealIo).unwrap();
+    let (recovered, stats) = recover::<String, Vec<u8>, _>(tmp.path(), &RealIo).unwrap();
 
     assert_eq!(stats.committed, 200);
     assert_eq!(stats.aborted, 0);
-    assert_eq!(store.len(), 200);
+    assert_eq!(committed_insert_keys(&recovered).len(), 200);
 }

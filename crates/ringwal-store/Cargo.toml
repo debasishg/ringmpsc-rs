@@ -14,6 +14,10 @@ ringwal = { path = "../ringwal" }
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tempfile = "3"
+
 [[bin]]
 name = "ringwal-demo"
 path = "bin/demo.rs"

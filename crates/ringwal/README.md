@@ -163,10 +163,10 @@ cargo bench -p ringwal
 
 ```bash
 # Minimal CLI demo
-cargo run -p ringwal --release --bin ringwal-demo
+cargo run -p ringwal-store --release --bin ringwal-demo
 
 # Full lifecycle example (4 writers, recovery, checkpointing)
-cargo run -p ringwal --release --example demo
+cargo run -p ringwal-store --release --example demo
 ```
 
 ## Architecture

@@ -5,7 +5,7 @@
 //! 2. Crash recovery replayed into an in-memory store
 //! 3. Checkpoint + segment truncation (cleaning up old WAL data)
 //!
-//! Usage: `cargo run -p ringwal --release --example demo`
+//! Usage: `cargo run -p ringwal-store --release --example demo`
 
 use ringwal::{RealIo, Transaction, Wal, WalConfig};
 use ringwal_store::{recover_into_store, InMemoryStore};
