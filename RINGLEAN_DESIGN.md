@@ -174,6 +174,27 @@ pub(crate) fn free_space(tail: u64, head: u64, cap: usize) -> usize { ... }
 **Cost:** days. The tools already exist, and the pure functions are short.
 **Gap left:** proof that the unsafe functions use the window results correctly, for example passing `len` and not `n` to `from_raw_parts_mut`, is still done by review and Miri. Phase 1 closes this gap.
 
+### When proofs run
+
+Phase 0 proofs are **not checked by `cargo build` or `cargo test`**. They run as a separate step, like the Quint model checks:
+
+```
+charon (on crates/ringmpsc) → aeneas → lean/Generated/Window.lean → lake build
+```
+
+- **Where it runs:** in `/verify` and in CI, on changes to `window.rs` or its callers.
+- **Proofs can't go stale.** The Lean code is regenerated from the source on every run. If a change to `window.rs` breaks a property, that run fails.
+- **What a pass means:** every theorem is proved, and `#print axioms` shows no `sorryAx`.
+- **What a failure looks like:** Lean names the goal it couldn't prove, and `omega` prints the inequalities it couldn't satisfy.
+
+Running the proofs inside `cargo build`, for example from `build.rs`, is possible but not recommended. Every build of the crate, including downstream users' builds, would need a nightly toolchain, Charon, Aeneas and Lean, and would be slower. cuda-oxide checks proofs at compile time because it owns the compiler and its users already accept that toolchain. Phase 1 keeps the same separate-step model: `cargo ringlean` is a separate command, not part of the normal build.
+
+### What Phase 0 delivers
+
+- **Proved, for all inputs:** the pure window functions return in-bounds, correctly sized windows. This covers every `tail`, `head` and `n`, every power-of-two capacity, and real `u64` wrap-around. The proofs are about the production source, translated from it, not about a separate model or reimplementation.
+- **Cited, not proved:** that the `unsafe` code uses the results correctly. `// Safety:` comments cite the theorems, and `/audit-unsafe` checks that each cited theorem exists and is proved.
+- **Assumed:** the protocol premises (Verus, Quint, MBT) and that the memory orderings are strong enough (loom, Miri).
+
 ---
 
 ## 5. Phase 1: custom MIR-to-Lean driver (only if Phase 0 shows value)
