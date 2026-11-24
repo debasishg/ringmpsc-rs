@@ -34,6 +34,7 @@ cargo test -p ringwal --release
 # Concurrency verification — mandatory before merge when touching atomics/ordering/unsafe
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
 cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
+MIRIFLAGS="-Zmiri-preemption-rate=0.1" cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_stack_overlap_test
 
 # Model-based testing (Quint spec → ITF traces → Rust assertions)
 cargo test -p ringmpsc-rs --features quint-mbt --release
@@ -51,7 +52,7 @@ cd crates/ringmpsc/tla && quint verify RingSPSCLiveness.qnt --main=RingSPSCLiven
 ## Critical Rules
 
 ### `--release` is Required for Correctness
-Lock-free algorithms rely on optimized codegen. Never run correctness or concurrency tests in debug mode.
+Lock-free algorithms rely on optimized codegen. Never run correctness or concurrency tests in debug mode. Exception: Miri, which interprets MIR instead of running compiled code, so `--release` does not apply to it.
 
 ### Unsafe — Mandatory `// Safety:` Comment
 Every `unsafe` block must cite which invariant (`INV-*`) makes it sound:

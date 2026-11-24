@@ -274,7 +274,7 @@ Messages from a single producer are received in send order. No global ordering a
 | INV-DROP-03 | `DropTracker` unit tests in `ring.rs`, `stack_ring.rs` | N/A (tested) |
 | INV-CH-01 | Config validation | `config.rs` assertions |
 | INV-CH-02 | Structural (single consumer API) | N/A (structural) |
-| INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |
+| INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs), [tests/miri_stack_overlap_test.rs](tests/miri_stack_overlap_test.rs) (concurrent, under Miri) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |
 | INV-MEM-04 | `unsafe trait` contract, [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`allocatorCapacityCorrect`) | N/A (proof obligation on implementor) |
 | INV-NUMA-02 | Non-Linux fallback path | `invariants.rs` → `numa.rs` non-Linux `allocate()` |
 | INV-ALLOC-01 | [tests/allocator_tests.rs](tests/allocator_tests.rs), [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`alignmentGuarantee`) | `allocator.rs` → `AlignedAllocator::allocate()` |
