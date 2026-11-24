@@ -22,6 +22,8 @@ fn set_direct_io(file: &std::fs::File) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+// Same signature as the macOS version, which can fail.
+#[allow(clippy::unnecessary_wraps)]
 fn set_direct_io(_file: &std::fs::File) -> io::Result<()> {
     // O_DIRECT requires block-aligned writes — not yet implemented.
     // See docs/DIRECT_IO.md for the follow-up plan.
@@ -29,6 +31,8 @@ fn set_direct_io(_file: &std::fs::File) -> io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+// Same signature as the macOS version, which can fail.
+#[allow(clippy::unnecessary_wraps)]
 fn set_direct_io(_file: &std::fs::File) -> io::Result<()> {
     Ok(())
 }
