@@ -42,7 +42,7 @@ crates/ringmpsc/lean/scripts/check.sh                     # regenerate + prove +
 crates/ringmpsc/lean/scripts/check.sh --check-generated   # also fail if RingmpscRs/ is stale (CI)
 ```
 
-`/verify` runs it (step 4). `cargo build` and `cargo test` do not; see the design doc, "When proofs run". There is no CI job yet.
+`/verify` runs it (step 4). `cargo build` and `cargo test` do not; see the design doc, "When proofs run". CI runs it in `.github/workflows/lean.yml` on pushes that touch `window.rs`, `ring.rs`, `stack_ring.rs`, `lib.rs`, the crate manifest, or this directory. When upgrading Aeneas, also update `AENEAS_TAG` and `CHARON_TOOLCHAIN` there.
 
 ### One-time setup
 

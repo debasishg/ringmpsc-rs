@@ -182,7 +182,7 @@ Phase 0 proofs are **not checked by `cargo build` or `cargo test`**. They run as
 charon (on crates/ringmpsc) → aeneas → lean/Generated/Window.lean → lake build
 ```
 
-- **Where it runs:** in `/verify` (step 4, `check.sh --check-generated`). The repository has no CI yet. Until a CI job runs the same command, nothing enforces the proofs on a change that skips `/verify`.
+- **Where it runs:** in `/verify` (step 4, `check.sh --check-generated`). CI runs the same command in `.github/workflows/lean.yml` on pushes that touch the proved code, the code citing it, or the Lean project. It is path-filtered, so it is not a required check.
 - **Proofs can't go stale when the check runs.** The Lean code is regenerated from the source on every run, and `--check-generated` fails if the committed `RingmpscRs/` differs from what `window.rs` generates, including newly generated files. If a change to `window.rs` breaks a property, that run fails.
 - **What a pass means:** every theorem is proved and depends only on `propext`, `Classical.choice` and `Quot.sound`. That rules out `sorry`, user-declared axioms and `native_decide` (`scripts/Audit.lean`).
 - **What a failure looks like:** Lean names the goal it couldn't prove, and `omega` prints the inequalities it couldn't satisfy.

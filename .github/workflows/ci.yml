@@ -1,0 +1,39 @@
+# Every push: build, lint and test all crates (release mode, per CLAUDE.md).
+# Miri, loom, Quint and the Lean proofs run elsewhere (/verify, lean.yml).
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Not `-D warnings` yet: the workspace has ~47 pre-existing warnings.
+      # This still fails on clippy errors and on anything that doesn't compile.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --release
+
+      # Plain `cargo test` only runs the default member (ringmpsc).
+      - name: test workspace
+        run: cargo test --workspace --release
+
+      - name: test ringmpsc with stack-ring
+        run: cargo test -p ringmpsc-rs --features stack-ring --release

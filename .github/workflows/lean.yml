@@ -1,0 +1,84 @@
+# Lean 4 proofs of crates/ringmpsc/src/window.rs (RINGLEAN_DESIGN.md, Phase 0).
+#
+# Runs only when the proved code, the code that cites the proofs, or the Lean
+# project changes. Do not make this a required check: path-filtered workflows
+# don't run on other pushes, so a required check would never report.
+name: lean
+
+on:
+  push:
+    paths:
+      - crates/ringmpsc/src/window.rs
+      - crates/ringmpsc/src/ring.rs
+      - crates/ringmpsc/src/stack_ring.rs
+      - crates/ringmpsc/src/lib.rs
+      - crates/ringmpsc/Cargo.toml
+      - crates/ringmpsc/lean/**
+      - .github/workflows/lean.yml
+  workflow_dispatch:
+
+concurrency:
+  group: lean-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with `rev` in crates/ringmpsc/lean/lakefile.toml and with
+  # crates/ringmpsc/lean/README.md.
+  AENEAS_TAG: nightly-2026.11.24-fb44cb4
+  # Charon's toolchain: `channel` in the release's rust-toolchain file.
+  CHARON_TOOLCHAIN: nightly-2026-09-17
+  AENEAS_DIR: ${{ github.workspace }}/.aeneas
+
+jobs:
+  proofs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Aeneas release
+        id: aeneas-cache
+        uses: actions/cache@v4
+        with:
+          path: .aeneas
+          key: aeneas-linux-x86_64-${{ env.AENEAS_TAG }}
+
+      - name: Download Aeneas release (bundles aeneas, charon, charon-driver)
+        if: steps.aeneas-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$AENEAS_DIR"
+          gh release download "$AENEAS_TAG" -R AeneasVerif/aeneas \
+            -p 'aeneas-linux-x86_64.tar.gz' -D "$AENEAS_DIR"
+          tar xzf "$AENEAS_DIR/aeneas-linux-x86_64.tar.gz" -C "$AENEAS_DIR"
+          rm "$AENEAS_DIR/aeneas-linux-x86_64.tar.gz"
+
+      - name: Check Charon toolchain pin
+        run: grep -q "\"$CHARON_TOOLCHAIN\"" "$AENEAS_DIR/rust-toolchain"
+
+      - name: Install Charon's Rust toolchain
+        run: |
+          rustup toolchain install "$CHARON_TOOLCHAIN" --profile minimal \
+            -c rustc-dev -c llvm-tools -c rust-src -c miri
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lean toolchain and packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan/toolchains
+            crates/ringmpsc/lean/.lake
+          key: lean-${{ hashFiles('crates/ringmpsc/lean/lean-toolchain', 'crates/ringmpsc/lean/lake-manifest.json') }}
+
+      - name: Fetch Lean dependencies (Aeneas library, Mathlib cache)
+        working-directory: crates/ringmpsc/lean
+        run: lake exe cache get
+
+      - name: Regenerate, prove, audit axioms, check citations
+        run: crates/ringmpsc/lean/scripts/check.sh --check-generated
