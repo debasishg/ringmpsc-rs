@@ -86,7 +86,7 @@ cargo test -p span_collector --release
 
 # Concurrency verification (ringmpsc only)
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
-cargo +nightly miri test -p ringmpsc-rs --test miri_tests
+cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
 
 # Benchmarks
 cargo bench -p ringmpsc-rs

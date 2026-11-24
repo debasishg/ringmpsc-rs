@@ -1,7 +1,7 @@
 use crate::allocator::{BufferAllocator, HeapAllocator};
 use crate::invariants::{
     assert_head_not_past_tail, debug_assert_bounded_count, debug_assert_initialized_read,
-    debug_assert_monotonic, debug_assert_no_wrap,
+    debug_assert_monotonic, debug_assert_no_wrap, debug_assert_slot_in_bounds,
 };
 use crate::{Backoff, Config, Metrics, Reservation};
 use std::cell::UnsafeCell;
@@ -196,7 +196,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// consumer: `[head, tail)`) before reading or writing through the result.
     #[inline]
     unsafe fn slot(&self, idx: usize) -> *mut MaybeUninit<T> {
-        debug_assert!(idx < self.capacity(), "slot index {idx} out of bounds");
+        debug_assert_slot_in_bounds!(idx, self.capacity());
         // SAFETY: `base` points at `capacity()` contiguous slots and `idx` is
         // in bounds per the precondition.
         unsafe { self.base.add(idx) }

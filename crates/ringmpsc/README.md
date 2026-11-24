@@ -190,7 +190,7 @@ cargo test -p ringmpsc-rs --release --test property_tests
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
 
 # Undefined behavior detection (miri)
-cargo +nightly miri test -p ringmpsc-rs --test miri_tests
+cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
 
 # Model-based testing (Quint spec traces replayed against Ring<T>)
 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
@@ -347,7 +347,7 @@ unsafe {
     // Producer
     if let Some((ptr, len)) = ring.reserve(10) {
         for i in 0..len {
-            *ptr.add(i) = i as u64;
+            ptr.add(i).write(i as u64);
         }
         ring.commit(len);
     }

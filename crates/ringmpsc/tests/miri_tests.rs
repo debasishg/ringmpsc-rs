@@ -1,6 +1,7 @@
 //! Miri-compatible tests for detecting undefined behavior.
 //!
-//! Run with: `cargo +nightly miri test --test miri_tests`
+//! Run with: `cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests`
+//! (`stack-ring` enables the `StackRing` / `StackChannel` tests at the end of the file.)
 //!
 //! Miri is an interpreter for Rust's MIR that detects undefined behavior:
 //! - Use of uninitialized memory
@@ -386,4 +387,122 @@ fn miri_writes_stop_at_the_reservation() {
     let mut seen = Vec::new();
     ring.consume_batch(|v| seen.push(*v));
     assert_eq!(seen, vec![10, 11]);
+}
+
+// =============================================================================
+// StackRing: multi-slot windows (run with `--features stack-ring`)
+// =============================================================================
+
+/// `StackRing::reserve` returns one pointer for a window of several slots.
+/// Writing past the first slot must stay inside the pointer's provenance:
+/// the pointer must be derived from the whole buffer, not from a reference
+/// to the first slot.
+#[cfg(feature = "stack-ring")]
+#[test]
+fn miri_stack_ring_reserve_writes_whole_window() {
+    use ringmpsc_rs::StackRing;
+    let ring: StackRing<u64, 8> = StackRing::new();
+    // Safety: single thread, so this is the ring's only producer and consumer;
+    // writes stay within the returned `len` (INV-RES-01).
+    unsafe {
+        let (ptr, len) = ring.reserve(4).expect("empty ring has room");
+        assert_eq!(len, 4);
+        for i in 0..len {
+            ptr.add(i).write(i as u64 + 1);
+        }
+        ring.commit(len);
+    }
+    let mut seen = Vec::new();
+    // Safety: as above; consume reads only committed slots (INV-INIT-01).
+    unsafe { ring.consume_batch(|v| seen.push(*v)) };
+    assert_eq!(seen, vec![1, 2, 3, 4]);
+}
+
+/// `StackRing::peek` returns one pointer for several readable slots; reading
+/// past the first slot must stay inside the pointer's provenance.
+#[cfg(feature = "stack-ring")]
+#[test]
+fn miri_stack_ring_peek_reads_whole_window() {
+    use ringmpsc_rs::StackRing;
+    let ring: StackRing<u64, 8> = StackRing::new();
+    // Safety: single thread; writes stay within `len` (INV-RES-01), and peek
+    // reads only committed slots (INV-INIT-01).
+    unsafe {
+        let (ptr, len) = ring.reserve(3).expect("empty ring has room");
+        for i in 0..len {
+            ptr.add(i).write(10 + i as u64);
+        }
+        ring.commit(len);
+
+        let (ptr, len) = ring.peek().expect("three items committed");
+        assert_eq!(len, 3);
+        let read: Vec<u64> = (0..len).map(|i| ptr.add(i).read()).collect();
+        assert_eq!(read, vec![10, 11, 12]);
+        ring.advance(len);
+    }
+}
+
+/// A window that starts mid-buffer and is cut short by the end of the buffer,
+/// then the wrapped remainder from slot 0: both the reserve pointer and the
+/// peek pointer must reach every slot of their window.
+#[cfg(feature = "stack-ring")]
+#[test]
+fn miri_stack_ring_windows_at_offset_and_after_wrap() {
+    use ringmpsc_rs::StackRing;
+    let ring: StackRing<u64, 8> = StackRing::new();
+    // Safety: single thread, so this is the ring's only producer and consumer.
+    // Writes stay within each returned `len` (INV-RES-01); reads stay within
+    // the committed, published window returned by `peek` (INV-INIT-01).
+    unsafe {
+        // Move head and tail to 5, so the next window starts mid-buffer.
+        let (ptr, len) = ring.reserve(5).expect("empty ring has room");
+        for i in 0..len {
+            ptr.add(i).write(0);
+        }
+        ring.commit(len);
+        ring.advance(5);
+
+        // Ask for 6: only slots 5..8 are contiguous, so `len` is 3.
+        let (ptr, len) = ring.reserve(6).expect("ring has room");
+        assert_eq!(len, 3, "window is cut at the end of the buffer");
+        for i in 0..len {
+            ptr.add(i).write(100 + i as u64);
+        }
+        ring.commit(len);
+
+        // The wrapped remainder starts at slot 0.
+        let (ptr, len) = ring.reserve(3).expect("ring has room");
+        assert_eq!(len, 3);
+        for i in 0..len {
+            ptr.add(i).write(103 + i as u64);
+        }
+        ring.commit(len);
+
+        // peek returns the window up to the end of the buffer, then the rest.
+        let mut seen = Vec::new();
+        while let Some((ptr, len)) = ring.peek() {
+            seen.extend((0..len).map(|i| ptr.add(i).read()));
+            ring.advance(len);
+        }
+        assert_eq!(seen, vec![100, 101, 102, 103, 104, 105]);
+    }
+}
+
+/// `StackProducer::send` copies several items through one reserve pointer
+/// with `copy_nonoverlapping`, including across the wrap point.
+#[cfg(feature = "stack-ring")]
+#[test]
+fn miri_stack_channel_send_copies_whole_window() {
+    use ringmpsc_rs::StackChannel;
+    let channel: StackChannel<u64, 8, 2> = StackChannel::new();
+    let producer = channel.register().expect("a producer slot is free");
+    let mut consumer = channel.consumer().expect("first consumer");
+
+    assert_eq!(producer.send(&[1, 2, 3, 4, 5, 6]), 6);
+    let mut seen = Vec::new();
+    consumer.consume_all(|v| seen.push(*v));
+    // The next send wraps: slots 6..8, then 0..3.
+    assert_eq!(producer.send(&[7, 8, 9, 10, 11]), 5);
+    consumer.consume_all(|v| seen.push(*v));
+    assert_eq!(seen, (1..=11).collect::<Vec<u64>>());
 }

@@ -531,7 +531,7 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// unsafe {
     ///     if let Some((ptr, len)) = producer.reserve(10) {
     ///         for i in 0..len {
-    ///             *ptr.add(i) = i as u64;
+    ///             ptr.add(i).write(i as u64);
     ///         }
     ///         producer.commit(len);
     ///     }

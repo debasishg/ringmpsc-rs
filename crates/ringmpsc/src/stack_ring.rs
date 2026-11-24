@@ -25,7 +25,7 @@
 //! unsafe {
 //!     if let Some((ptr, len)) = ring.reserve(10) {
 //!         for i in 0..len {
-//!             *ptr.add(i) = i as u64;
+//!             ptr.add(i).write(i as u64);
 //!         }
 //!         ring.commit(len);
 //!     }
@@ -50,7 +50,7 @@
 
 use crate::invariants::{
     assert_head_not_past_tail, debug_assert_bounded_count, debug_assert_initialized_read,
-    debug_assert_monotonic, debug_assert_no_wrap,
+    debug_assert_monotonic, debug_assert_no_wrap, debug_assert_slot_in_bounds,
 };
 
 use std::cell::UnsafeCell;
@@ -205,6 +205,34 @@ impl<T, const N: usize> StackRing<T, N> {
         }
     }
 
+    /// Raw pointer to slot `idx`, with provenance over the whole buffer.
+    ///
+    /// Forms no reference at all: `&raw const self.buffer` takes the buffer's
+    /// address without borrowing it, and `UnsafeCell::raw_get` reaches the
+    /// slot's contents without borrowing the cell.
+    /// - `(*ptr).get()` would create a reference to the one slot, and a
+    ///   pointer derived from it may not reach the slots after it (Stacked
+    ///   Borrows). `reserve` and `peek` hand out one pointer for a window of
+    ///   several slots, so that is undefined behavior.
+    /// - `self.buffer.as_ptr()` would borrow the whole array as a slice on
+    ///   every call, so Miri retags all `N` slots per access (once per item in
+    ///   the consume loops). See `Ring::base` for why `Ring` avoids the same.
+    ///
+    /// # Safety
+    ///
+    /// `idx` must be less than `N`. The caller must additionally hold the SPSC
+    /// protocol's claim to slot `idx` (producer: `[tail, head + N)`, consumer:
+    /// `[head, tail)`) before reading or writing through the result, and must
+    /// read only slots the producer has written and published (INV-INIT-01).
+    #[inline]
+    unsafe fn slot_ptr(&self, idx: usize) -> *mut T {
+        debug_assert_slot_in_bounds!(idx, N);
+        let buffer = (&raw const self.buffer).cast::<UnsafeCell<MaybeUninit<T>>>();
+        // Safety: `idx < N` per the precondition, so `add` stays inside the
+        // `N`-element buffer array (INV-MEM-02: indices are masked by N - 1).
+        unsafe { UnsafeCell::raw_get(buffer.add(idx)).cast::<T>() }
+    }
+
     // =========================================================================
     // STATUS
     // =========================================================================
@@ -274,7 +302,7 @@ impl<T, const N: usize> StackRing<T, N> {
     /// unsafe {
     ///     if let Some((ptr, len)) = ring.reserve(10) {
     ///         for i in 0..len {
-    ///             *ptr.add(i) = i as u64;
+    ///             ptr.add(i).write(i as u64);
     ///         }
     ///         ring.commit(len);
     ///     }
@@ -319,7 +347,8 @@ impl<T, const N: usize> StackRing<T, N> {
         // Contiguous slots available before wrap-around
         let contiguous = n.min(N - idx);
 
-        let ptr = (*self.buffer.as_ptr().add(idx)).get() as *mut T;
+        // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
+        let ptr = self.slot_ptr(idx);
         (ptr, contiguous)
     }
 
@@ -406,7 +435,8 @@ impl<T, const N: usize> StackRing<T, N> {
         let idx = (head as usize) & Self::MASK;
         let contiguous = avail.min(N - idx);
 
-        let ptr = (*self.buffer.as_ptr().add(idx)).get() as *const T;
+        // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
+        let ptr = self.slot_ptr(idx).cast_const();
         Some((ptr, contiguous))
     }
 
@@ -483,8 +513,9 @@ impl<T, const N: usize> StackRing<T, N> {
 
             let idx = (pos as usize) & Self::MASK;
             // SAFETY: Item was written by producer and published via Release.
-            // The Acquire load on tail synchronizes with that Release.
-            let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
+            // The Acquire load on tail synchronizes with that Release
+            // (INV-INIT-01). idx is masked by N - 1, so idx < N (INV-MEM-02).
+            let item = self.slot_ptr(idx).read();
             handler(&item);
             // `item` is dropped here
             pos = pos.wrapping_add(1);
@@ -524,7 +555,11 @@ impl<T, const N: usize> StackRing<T, N> {
             debug_assert_initialized_read!(pos, head, tail);
 
             let idx = (pos as usize) & Self::MASK;
-            let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
+            // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02); pos is in
+            // [head, tail), so the slot was written and published by the producer
+            // and the Acquire load of tail synchronizes with it (INV-INIT-01).
+            // Reading moves the item out; head advances past it after the loop.
+            let item = self.slot_ptr(idx).read();
             handler(item);
             pos = pos.wrapping_add(1);
         }
@@ -563,7 +598,11 @@ impl<T, const N: usize> StackRing<T, N> {
             debug_assert_initialized_read!(pos, head, tail);
 
             let idx = (pos as usize) & Self::MASK;
-            let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
+            // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02); pos is in
+            // [head, tail), so the slot was written and published by the producer
+            // and the Acquire load of tail synchronizes with it (INV-INIT-01).
+            // Reading moves the item out; head advances past it after the loop.
+            let item = self.slot_ptr(idx).read();
             handler(&item);
             pos = pos.wrapping_add(1);
         }
@@ -643,7 +682,7 @@ mod tests {
             let (ptr, len) = ring.reserve(4).expect("reserve failed");
             assert_eq!(len, 4);
             for i in 0..len {
-                *ptr.add(i) = (i * 100) as u64;
+                ptr.add(i).write((i * 100) as u64);
             }
             ring.commit(len);
         }
@@ -756,7 +795,7 @@ mod tests {
             let (ptr, len) = ring.reserve(4).unwrap();
             assert_eq!(len, 2); // Only 2 contiguous slots before wrap
             *ptr = 100;
-            *ptr.add(1) = 101;
+            ptr.add(1).write(101);
             ring.commit(len);
         }
 
@@ -765,7 +804,7 @@ mod tests {
             let (ptr, len) = ring.reserve(2).unwrap();
             assert_eq!(len, 2);
             *ptr = 102;
-            *ptr.add(1) = 103;
+            ptr.add(1).write(103);
             ring.commit(len);
         }
 

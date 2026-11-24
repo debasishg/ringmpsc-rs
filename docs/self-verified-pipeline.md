@@ -623,7 +623,7 @@ cargo test -p ringmpsc-rs --features loom \
     --test loom_tests --release
 
 # Miri: undefined behavior detection  
-cargo +nightly miri test -p ringmpsc-rs --test miri_tests
+cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
 ```
 
 ---

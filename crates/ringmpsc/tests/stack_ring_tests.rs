@@ -131,7 +131,7 @@ fn test_stack_ring_batch_wrap() {
             unsafe {
                 if let Some((ptr, len)) = ring.reserve(batch_size - sent_this_batch) {
                     for i in 0..len {
-                        *ptr.add(i) = total_sent + i as u64;
+                        ptr.add(i).write(total_sent + i as u64);
                     }
                     ring.commit(len);
                     sent_this_batch += len;
@@ -164,7 +164,7 @@ fn test_stack_ring_stress() {
             unsafe {
                 if let Some((ptr, len)) = ring.reserve(batch) {
                     for i in 0..len {
-                        *ptr.add(i) = sent + i as u64;
+                        ptr.add(i).write(sent + i as u64);
                     }
                     ring.commit(len);
                     sent += len as u64;
