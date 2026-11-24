@@ -205,6 +205,25 @@ impl<T, const N: usize> StackRing<T, N> {
         }
     }
 
+    /// Raw pointer to slot `idx`, with provenance over the whole buffer.
+    ///
+    /// Uses `UnsafeCell::raw_get` instead of `(*ptr).get()`: the latter
+    /// creates a reference to the one slot, and a pointer derived from it may
+    /// not be used to reach the slots after it (Stacked Borrows). `reserve`
+    /// and `peek` hand out one pointer for a window of several slots, so the
+    /// pointer has to come from the buffer itself.
+    ///
+    /// # Safety
+    ///
+    /// `idx < N`.
+    #[inline]
+    unsafe fn slot_ptr(&self, idx: usize) -> *mut T {
+        debug_assert!(idx < N, "slot index {idx} out of bounds");
+        // Safety: `idx < N` per the precondition, so `add` stays inside the
+        // buffer array (INV-MEM-02: the index is masked by N - 1).
+        unsafe { UnsafeCell::raw_get(self.buffer.as_ptr().add(idx)).cast::<T>() }
+    }
+
     // =========================================================================
     // STATUS
     // =========================================================================
@@ -319,7 +338,8 @@ impl<T, const N: usize> StackRing<T, N> {
         // Contiguous slots available before wrap-around
         let contiguous = n.min(N - idx);
 
-        let ptr = (*self.buffer.as_ptr().add(idx)).get() as *mut T;
+        // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
+        let ptr = self.slot_ptr(idx);
         (ptr, contiguous)
     }
 
@@ -406,7 +426,8 @@ impl<T, const N: usize> StackRing<T, N> {
         let idx = (head as usize) & Self::MASK;
         let contiguous = avail.min(N - idx);
 
-        let ptr = (*self.buffer.as_ptr().add(idx)).get() as *const T;
+        // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
+        let ptr = self.slot_ptr(idx).cast_const();
         Some((ptr, contiguous))
     }
 
@@ -484,7 +505,7 @@ impl<T, const N: usize> StackRing<T, N> {
             let idx = (pos as usize) & Self::MASK;
             // SAFETY: Item was written by producer and published via Release.
             // The Acquire load on tail synchronizes with that Release.
-            let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
+            let item = self.slot_ptr(idx).read();
             handler(&item);
             // `item` is dropped here
             pos = pos.wrapping_add(1);
@@ -524,7 +545,7 @@ impl<T, const N: usize> StackRing<T, N> {
             debug_assert_initialized_read!(pos, head, tail);
 
             let idx = (pos as usize) & Self::MASK;
-            let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
+            let item = self.slot_ptr(idx).read();
             handler(item);
             pos = pos.wrapping_add(1);
         }
@@ -563,7 +584,7 @@ impl<T, const N: usize> StackRing<T, N> {
             debug_assert_initialized_read!(pos, head, tail);
 
             let idx = (pos as usize) & Self::MASK;
-            let item = (*self.buffer.as_ptr().add(idx)).get().cast::<T>().read();
+            let item = self.slot_ptr(idx).read();
             handler(&item);
             pos = pos.wrapping_add(1);
         }

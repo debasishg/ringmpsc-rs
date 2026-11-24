@@ -387,3 +387,56 @@ fn miri_writes_stop_at_the_reservation() {
     ring.consume_batch(|v| seen.push(*v));
     assert_eq!(seen, vec![10, 11]);
 }
+
+// =============================================================================
+// StackRing: multi-slot windows (run with `--features stack-ring`)
+// =============================================================================
+
+/// `StackRing::reserve` returns one pointer for a window of several slots.
+/// Writing past the first slot must stay inside the pointer's provenance:
+/// the pointer must be derived from the whole buffer, not from a reference
+/// to the first slot.
+#[cfg(feature = "stack-ring")]
+#[test]
+fn miri_stack_ring_reserve_writes_whole_window() {
+    use ringmpsc_rs::StackRing;
+    let ring: StackRing<u64, 8> = StackRing::new();
+    // Safety: single thread, so this is the ring's only producer and consumer;
+    // writes stay within the returned `len` (INV-RES-01).
+    unsafe {
+        let (ptr, len) = ring.reserve(4).expect("empty ring has room");
+        assert_eq!(len, 4);
+        for i in 0..len {
+            ptr.add(i).write(i as u64 + 1);
+        }
+        ring.commit(len);
+    }
+    let mut seen = Vec::new();
+    // Safety: as above; consume reads only committed slots (INV-INIT-01).
+    unsafe { ring.consume_batch(|v| seen.push(*v)) };
+    assert_eq!(seen, vec![1, 2, 3, 4]);
+}
+
+/// `StackRing::peek` returns one pointer for several readable slots; reading
+/// past the first slot must stay inside the pointer's provenance.
+#[cfg(feature = "stack-ring")]
+#[test]
+fn miri_stack_ring_peek_reads_whole_window() {
+    use ringmpsc_rs::StackRing;
+    let ring: StackRing<u64, 8> = StackRing::new();
+    // Safety: single thread; writes stay within `len` (INV-RES-01), and peek
+    // reads only committed slots (INV-INIT-01).
+    unsafe {
+        let (ptr, len) = ring.reserve(3).expect("empty ring has room");
+        for i in 0..len {
+            ptr.add(i).write(10 + i as u64);
+        }
+        ring.commit(len);
+
+        let (ptr, len) = ring.peek().expect("three items committed");
+        assert_eq!(len, 3);
+        let read: Vec<u64> = (0..len).map(|i| ptr.add(i).read()).collect();
+        assert_eq!(read, vec![10, 11, 12]);
+        ring.advance(len);
+    }
+}
