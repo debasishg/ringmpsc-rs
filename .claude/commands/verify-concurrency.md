@@ -9,7 +9,10 @@ Loom replaces std atomics with a model that explores every valid thread interlea
 **Step 2 — Miri (undefined behaviour detection)**
 ```
 cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
+MIRIFLAGS="-Zmiri-preemption-rate=0.1" \
+  cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_stack_overlap_test
 ```
+The second command runs a `StackRing` and a `StackChannel` producer concurrently with their consumer (about 12 s under Miri).
 Miri interprets Rust MIR to detect use-after-free, out-of-bounds reads, invalid `MaybeUninit` access, and data races. Requires nightly toolchain.
 
 Report each step's exit status. If either fails, show the full error output and identify which invariant (`INV-*`) the failure relates to if determinable.

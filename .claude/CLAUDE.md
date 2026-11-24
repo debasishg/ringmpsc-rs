@@ -34,6 +34,7 @@ cargo test -p ringwal --release
 # Concurrency verification — mandatory before merge when touching atomics/ordering/unsafe
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
 cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
+MIRIFLAGS="-Zmiri-preemption-rate=0.1" cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_stack_overlap_test
 
 # Model-based testing (Quint spec → ITF traces → Rust assertions)
 cargo test -p ringmpsc-rs --features quint-mbt --release
