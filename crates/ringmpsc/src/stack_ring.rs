@@ -420,7 +420,9 @@ impl<T, const N: usize> StackRing<T, N> {
     unsafe fn make_reservation(&self, tail: u64, n: usize) -> (*mut T, usize) {
         // Contiguous slots available before wrap-around. [idx, idx+contiguous)
         // is within the buffer and disjoint from the consumer's [head, tail)
-        // [lean: write_window_spec, reservation_disjoint].
+        // (INV-MEM-02, INV-SEQ-01). `reserve` sizes `n` against the cached head,
+        // which is conservative.
+        // [lean: write_window_spec, reservation_disjoint, free_space_stale_conservative]
         let (idx, contiguous) = crate::window::write_window(tail, n, N);
 
         // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
@@ -504,7 +506,7 @@ impl<T, const N: usize> StackRing<T, N> {
         }
         // `read_window` returns None when `cached_tail <= head`. Otherwise
         // head < cached_tail <= tail, and the window lies in [head, cached_tail)
-        // and within the buffer [lean: read_window_spec].
+        // and within the buffer (INV-MEM-02, INV-INIT-01) [lean: read_window_spec].
         let (idx, contiguous) = crate::window::read_window(head, cached_tail, N)?;
 
         // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
@@ -718,7 +720,8 @@ impl<T, const N: usize> Drop for StackRing<T, N> {
         let mut pos = head;
         while pos != tail {
             let idx = crate::window::slot_index(pos, Self::MASK);
-            // Safety: idx bounded by MASK; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01)
+            // Safety: idx bounded by MASK (INV-MEM-02) [lean: slot_index_spec]; slot in [head, tail)
+            // is initialized (INV-INIT-01, INV-DROP-01)
             crate::invariants::debug_assert_drop_bounds!(count, N, idx);
             unsafe {
                 let slot = self.buffer[idx].get_mut();

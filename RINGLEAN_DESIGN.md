@@ -169,7 +169,7 @@ pub(crate) fn free_space(tail: u64, head: u64, cap: usize) -> usize { ... }
    // disjoint from the consumer's window given INV-SEQ-01.
    ```
 
-   `/audit-unsafe` gets a check that every cited theorem exists in the Lean project and was proved with no `sorryAx`, using `#print axioms` in the generated build.
+   A check confirms that every cited theorem exists in the Lean project and depends only on Lean's standard axioms. (Implemented in `check.sh`, not `/audit-unsafe`.)
 
 **Cost:** days. The tools already exist, and the pure functions are short.
 **Gap left:** proof that the unsafe functions use the window results correctly, for example passing `len` and not `n` to `from_raw_parts_mut`, is still done by review and Miri. Phase 1 closes this gap.
@@ -182,16 +182,16 @@ Phase 0 proofs are **not checked by `cargo build` or `cargo test`**. They run as
 charon (on crates/ringmpsc) → aeneas → lean/Generated/Window.lean → lake build
 ```
 
-- **Where it runs:** in `/verify` and in CI, on changes to `window.rs` or its callers.
-- **Proofs can't go stale.** The Lean code is regenerated from the source on every run. If a change to `window.rs` breaks a property, that run fails.
-- **What a pass means:** every theorem is proved, and `#print axioms` shows no `sorryAx`.
+- **Where it runs:** in `/verify` (step 4, `check.sh --check-generated`). The repository has no CI yet. Until a CI job runs the same command, nothing enforces the proofs on a change that skips `/verify`.
+- **Proofs can't go stale when the check runs.** The Lean code is regenerated from the source on every run, and `--check-generated` fails if the committed `RingmpscRs/` differs from what `window.rs` generates, including newly generated files. If a change to `window.rs` breaks a property, that run fails.
+- **What a pass means:** every theorem is proved and depends only on `propext`, `Classical.choice` and `Quot.sound`. That rules out `sorry`, user-declared axioms and `native_decide` (`scripts/Audit.lean`).
 - **What a failure looks like:** Lean names the goal it couldn't prove, and `omega` prints the inequalities it couldn't satisfy.
 
 Running the proofs inside `cargo build`, for example from `build.rs`, is possible but not recommended. Every build of the crate, including downstream users' builds, would need a nightly toolchain, Charon, Aeneas and Lean, and would be slower. cuda-oxide checks proofs at compile time because it owns the compiler and its users already accept that toolchain. Phase 1 keeps the same separate-step model: `cargo ringlean` is a separate command, not part of the normal build.
 
 ### What Phase 0 delivers
 
-- **Proved, for all inputs:** the pure window functions return in-bounds, correctly sized windows. This covers every `tail`, `head` and `n`, every power-of-two capacity, and real `u64` wrap-around. The proofs are about the production source, translated from it, not about a separate model or reimplementation.
+- **Proved, for all inputs:** the pure window functions return in-bounds, correctly sized windows. This covers every `tail`, `head` and `n` and every power-of-two capacity, with real `u64` and `usize` arithmetic. It does **not** cover `u64` sequence-number wrap-around: `read_window` compares `tail <= head` without wrapping, as the code before it did, and `reservation_disjoint` assumes no wrap. INV-SEQ-03 rules wrap out: at 10⁹ messages per second, a `u64` takes about 584 years to wrap. The proofs are about the production source, translated from it, not about a separate model or reimplementation.
 - **Cited, not proved:** that the `unsafe` code uses the results correctly. `// Safety:` comments cite the theorems, and `check.sh` checks that each cited theorem exists and is proved.
 - **Assumed:** the protocol premises (Verus, Quint, MBT) and that the memory orderings are strong enough (loom, Miri).
 

@@ -7,6 +7,7 @@ Phase 0 of [`RINGLEAN_DESIGN.md`](../../../RINGLEAN_DESIGN.md). It proves, for a
 | `RingmpscRs/` | **Generated** by Aeneas from `window.rs`. Never edit; rerun `scripts/check.sh`. |
 | `RingLean/Window.lean` | Hand-written theorems about the generated definitions. |
 | `scripts/check.sh` | Regenerates `RingmpscRs/`, checks the proofs, audits axioms, checks citations. |
+| `scripts/Audit.lean` | Axiom audit: every theorem in `RingLean.*` may use only `propext`, `Classical.choice`, `Quot.sound`. |
 | `lakefile.toml`, `lake-manifest.json`, `lean-toolchain` | Lean project, pinned to the Aeneas release that generates `RingmpscRs/`. |
 
 ## What is proved
@@ -26,11 +27,13 @@ Every `_spec` theorem also proves the function **cannot panic**: Aeneas models o
 
 **`usize` width.** Aeneas leaves the width of `usize` abstract (32 or 64 bits), so `u64 as usize` is a truncating cast in the model, and every theorem holds on both widths. Two results depend on the premise `tail - head ≤ cap` (INV-SEQ-01) for exactly this reason: on a 32-bit target, without it, a distance of `2^32` would truncate to 0.
 
+**No `u64` wrap-around.** The theorems use real `u64` arithmetic but do not cover sequence numbers wrapping past `u64::MAX`. `read_window` compares `tail <= head` without wrapping, so after a wrap it would report the ring as empty, and `reservation_disjoint` assumes `head ≤ tail`. INV-SEQ-03 rules wrap out (about 584 years at 10⁹ messages per second).
+
 **Assumed, not proved here.** Premises named after `spec.md` invariants (INV-SEQ-01, INV-SEQ-03, INV-MEM-02) are maintained by the ring protocol and covered by Verus, Quint and MBT. Memory orderings are covered by loom and Miri.
 
 ## Citations
 
-`// Safety:` comments in `ring.rs` and `stack_ring.rs` cite theorems as `[lean: write_window_spec, ...]`. `check.sh` fails if a cited name is not a theorem in `RingLean/`.
+`// Safety:` comments in `ring.rs` and `stack_ring.rs` cite theorems as `[lean: write_window_spec, ...]`, next to the `INV-*` IDs they rely on. Keep each `[lean: ...]` list on one line. `check.sh` fails if a cited name is not an audited theorem, or if `src/` has no citations at all.
 
 ## Running
 
@@ -39,7 +42,7 @@ crates/ringmpsc/lean/scripts/check.sh                     # regenerate + prove +
 crates/ringmpsc/lean/scripts/check.sh --check-generated   # also fail if RingmpscRs/ is stale (CI)
 ```
 
-`cargo build` and `cargo test` do not run this; it is a separate verification step (see the design doc, "When proofs run").
+`/verify` runs it (step 4). `cargo build` and `cargo test` do not; see the design doc, "When proofs run". There is no CI job yet.
 
 ### One-time setup
 
@@ -69,6 +72,6 @@ Change the release tag above, `rev` in `lakefile.toml`, and `lean-toolchain` tog
 
 1. Write it in `window.rs`: safe, pure, no generics, `if`/`else` rather than `min`/`saturating_sub`.
 2. Run `check.sh` to regenerate `RingmpscRs/Funs.lean`.
-3. Add a `_spec` theorem to `RingLean/Window.lean`, stating the postcondition as `f args ⦃ r => ... ⦄`.
+3. Add a `_spec` theorem to `RingLean/Window.lean`, stating the postcondition as `f args ⦃ r => ... ⦄`. A new file in `RingLean/` also needs an `import` in `scripts/Audit.lean`.
 4. Cite it from the `// Safety:` comment that relies on it.
 5. Mutation-check it: break the function in `window.rs` and confirm `check.sh` fails.

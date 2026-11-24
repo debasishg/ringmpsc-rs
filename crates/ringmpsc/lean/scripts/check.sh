@@ -5,7 +5,8 @@
 #   1. Charon extracts ringmpsc_rs::window from the crate to LLBC.
 #   2. Aeneas translates the LLBC to Lean in RingmpscRs/ (never edit by hand).
 #   3. `lake build` checks the proofs in RingLean/ against it.
-#   4. Fails if any theorem depends on `sorryAx`.
+#   4. Fails if any theorem depends on an axiom beyond propext, Classical.choice
+#      and Quot.sound (scripts/Audit.lean).
 #   5. Fails if a `[lean: thm]` citation in src/ names no theorem in RingLean/.
 #
 # Needs the Aeneas release pinned in lakefile.toml, unpacked at $AENEAS_DIR
@@ -37,8 +38,11 @@ echo "==> aeneas: generating RingmpscRs/"
     "$tmp/ringmpsc_rs.llbc" > "$tmp/aeneas.log" 2>&1 || { cat "$tmp/aeneas.log"; exit 1; }
 
 if [[ "${1:-}" == "--check-generated" ]]; then
-    git -C "$lean_dir" diff --exit-code -- RingmpscRs \
-        || { echo "error: RingmpscRs/ is stale; rerun scripts/check.sh and commit it"; exit 1; }
+    # `git status`, not `git diff`: a newly generated, untracked file is also stale.
+    if [[ -n "$(git -C "$lean_dir" status --porcelain -- RingmpscRs)" ]]; then
+        git -C "$lean_dir" status --short -- RingmpscRs
+        echo "error: RingmpscRs/ is stale; rerun scripts/check.sh and commit it"; exit 1
+    fi
 fi
 
 echo "==> lake build"
@@ -49,30 +53,26 @@ if grep -q "declaration uses 'sorry'" "$tmp/build.log"; then
 fi
 
 echo "==> axioms"
-# Audit every theorem in RingLean/, generated from the sources so none is missed.
-{
-    echo "import RingLean"
-    for f in RingLean/*.lean; do
-        mod="RingLean.$(basename "$f" .lean)"
-        echo "import $mod" >> "$tmp/imports"
-        ns="$(grep -m1 -E '^namespace ' "$f" | awk '{print $2}')"
-        grep -oE '^theorem [A-Za-z_0-9]+' "$f" | awk -v ns="$ns" '{print "#print axioms " ns "." $2}'
-    done
-} > "$tmp/axioms_body"
-{ cat "$tmp/imports"; grep -v '^import' "$tmp/axioms_body"; } > "$tmp/Axioms.lean"
-lake env lean "$tmp/Axioms.lean" 2>&1 | tee "$tmp/axioms.log"
-if grep -q sorryAx "$tmp/axioms.log"; then
-    echo "error: a theorem depends on sorryAx"; exit 1
-fi
+# scripts/Audit.lean walks every theorem in RingLean.* and fails on any axiom
+# other than propext, Classical.choice and Quot.sound (sorry, user axioms,
+# native_decide). It prints `THEOREM <name>` for each one it audited.
+lake env lean scripts/Audit.lean > "$tmp/audit.log" 2>&1 || { cat "$tmp/audit.log"; exit 1; }
+theorems="$(sed -n 's/^THEOREM //p' "$tmp/audit.log")"
+echo "    $(echo "$theorems" | wc -l | tr -d ' ') theorems use only standard axioms"
 
 echo "==> citations"
-# Every `[lean: thm, ...]` cited in a // Safety: comment must name a proved theorem.
+# Every `[lean: thm, ...]` cited in src/ must name an audited theorem.
 cited="$(grep -rhoE '\[lean: [^]]+\]' "$crate_dir/src" | sed -E 's/\[lean: (.*)\]/\1/' \
-    | tr ',' '\n' | tr -d ' ' | sort -u)"
+    | tr ',' '\n' | tr -d ' ' | sort -u || true)"
+if [[ -z "$cited" ]]; then
+    echo "error: no [lean: ...] citations found in $crate_dir/src; the Safety comments should cite the theorems they rely on"
+    exit 1
+fi
 status=0
 for thm in $cited; do
-    if ! grep -qE "^theorem ${thm}( |$)" RingLean/*.lean; then
-        echo "error: src/ cites [lean: $thm], but RingLean/ has no such theorem"; status=1
+    # Match the full name or its last component (citations omit the namespace).
+    if ! grep -qxE "(.*\.)?${thm//./\\.}" <<< "$theorems"; then
+        echo "error: src/ cites [lean: $thm], but no audited theorem has that name"; status=1
     fi
 done
 [[ $status -eq 0 ]] || exit 1

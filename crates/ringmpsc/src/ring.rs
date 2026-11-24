@@ -451,7 +451,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
         // SAFETY: Buffer access is safe because:
         // 1. [idx, idx+contiguous) is within the buffer and disjoint from the
-        //    consumer's [head, tail) [lean: write_window_spec, reservation_disjoint]
+        //    consumer's [head, tail) (INV-MEM-02, INV-SEQ-01). `reserve` sizes `n`
+        //    against the cached head, which is conservative.
+        //    [lean: write_window_spec, reservation_disjoint, free_space_stale_conservative]
         // 2. These slots are not being read by consumer (they're beyond current tail)
         // 3. Only the producer writes to slots between tail and tail+n
         // 4. The Reservation's commit() will publish via Release store to tail
@@ -544,7 +546,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
         // SAFETY: Buffer access is safe because:
         // 1. [idx, idx+contiguous) is within the buffer and within
-        //    [head, cached_tail) [lean: read_window_spec]
+        //    [head, cached_tail) (INV-MEM-02, INV-INIT-01) [lean: read_window_spec]
         // 2. Items in [head, tail) were written by producer and published via Release
         // 3. The Acquire load on tail synchronizes with that Release
         // 4. Only consumer reads these slots; producer won't overwrite until head advances
@@ -696,7 +698,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
             let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds [lean: slot_index_spec]
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - item will be dropped after handler
@@ -787,7 +789,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
             let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds [lean: slot_index_spec]
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - handler takes ownership
@@ -860,7 +862,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
             let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds [lean: slot_index_spec]
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - item will be dropped after handler
@@ -937,7 +939,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
             let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds [lean: slot_index_spec]
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - handler takes ownership
@@ -1087,8 +1089,9 @@ impl<T, A: BufferAllocator> Drop for Ring<T, A> {
             let mask = self.mask();
 
             for i in 0..count {
-                let idx = ((head as usize).wrapping_add(i)) & mask;
-                // Safety: idx bounded by mask; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01).
+                let idx = crate::window::slot_index(head.wrapping_add(i as u64), mask);
+                // Safety: idx bounded by mask (INV-MEM-02) [lean: slot_index_spec]; slot in
+                // [head, tail) is initialized (INV-INIT-01, INV-DROP-01).
                 // We hold `&mut self`, so there is no concurrent access, but we still
                 // go through `slot()` rather than deref the buffer: a wide retag here
                 // would be pointless and `base` is exactly the right pointer.
