@@ -244,17 +244,31 @@ impl<T, const N: usize> StackRing<T, N> {
     }
 
     /// Returns the current number of items in the ring.
+    ///
+    /// Safe to call from any thread. Called from a thread other than the
+    /// producer or consumer, it is a snapshot that may already be stale, but
+    /// it is always in `0..=capacity()`.
     #[inline]
     pub fn len(&self) -> usize {
+        // Load head first. The consumer only stores a head `h` (Release) after
+        // reading a tail >= h, so once this Acquire load sees `h`, the tail
+        // load below can't return an older value than that: head <= tail.
+        // Loading tail first allowed an old tail with a newer head, and
+        // `tail - head` wrapped to about 2^64.
+        let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Relaxed);
-        tail.wrapping_sub(head) as usize
+        // Between the two loads the consumer and producer can both move on,
+        // so `tail - head` can exceed the capacity, and a stale `tail` can
+        // trail `head` if the consumer's tail read was itself Relaxed. Clamp:
+        // a snapshot only means something in 0..=capacity (INV-SEQ-01).
+        tail.saturating_sub(head).min(N as u64) as usize
     }
 
     /// Returns true if the ring is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.tail.load(Ordering::Relaxed) == self.head.load(Ordering::Relaxed)
+        // Uses `len()`'s load order and clamp.
+        self.len() == 0
     }
 
     /// Returns true if the ring is full.
