@@ -362,7 +362,7 @@ cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
 cargo test -p ringmpsc-rs --test property_tests --features stack-ring --release
 cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release
 cargo test -p ringmpsc-rs --features loom --test loom_tests --release
-cargo +nightly miri test -p ringmpsc-rs --test miri_tests
+cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests
 
 # Exhaustive safety checking (requires Quint ≥ 0.31.0 + JDK 21+)
 cd crates/ringmpsc/tla

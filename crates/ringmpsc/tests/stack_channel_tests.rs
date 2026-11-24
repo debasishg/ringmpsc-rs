@@ -254,7 +254,7 @@ fn test_stack_channel_batch_reserve_commit() {
         if let Some((ptr, len)) = producer.reserve(50) {
             assert!(len > 0 && len <= 50);
             for i in 0..len {
-                *ptr.add(i) = (i * 10) as u64;
+                ptr.add(i).write((i * 10) as u64);
             }
             producer.commit(len);
         }

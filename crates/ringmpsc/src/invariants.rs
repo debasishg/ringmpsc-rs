@@ -209,6 +209,27 @@ macro_rules! static_assert_zst {
 }
 
 // =============================================================================
+// INV-MEM-02: Power-of-Two Capacity (slot index in bounds)
+// =============================================================================
+
+/// Assert that a buffer slot index is in bounds.
+///
+/// **Invariant**: indices are `seq & (capacity - 1)` with `capacity` a power
+/// of two, so every index is `< capacity`.
+///
+/// Used in: `Ring::slot()`, `StackRing::slot_ptr()`
+macro_rules! debug_assert_slot_in_bounds {
+    ($idx:expr, $capacity:expr) => {
+        debug_assert!(
+            $idx < $capacity,
+            "INV-MEM-02 violated: slot index {} out of bounds for capacity {}",
+            $idx,
+            $capacity
+        )
+    };
+}
+
+// =============================================================================
 // Re-exports for crate-internal use
 // =============================================================================
 
@@ -219,6 +240,7 @@ pub(crate) use assert_head_not_past_tail;
 pub(crate) use debug_assert_initialized_read;
 pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;
+pub(crate) use debug_assert_slot_in_bounds;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_aligned;
 #[allow(unused_imports)]
