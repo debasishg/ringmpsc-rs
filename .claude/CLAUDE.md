@@ -52,7 +52,7 @@ cd crates/ringmpsc/tla && quint verify RingSPSCLiveness.qnt --main=RingSPSCLiven
 ## Critical Rules
 
 ### `--release` is Required for Correctness
-Lock-free algorithms rely on optimized codegen. Never run correctness or concurrency tests in debug mode.
+Lock-free algorithms rely on optimized codegen. Never run correctness or concurrency tests in debug mode. Exception: Miri, which interprets MIR instead of running compiled code, so `--release` does not apply to it.
 
 ### Unsafe — Mandatory `// Safety:` Comment
 Every `unsafe` block must cite which invariant (`INV-*`) makes it sound:

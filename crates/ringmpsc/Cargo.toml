@@ -41,6 +41,12 @@ criterion.workspace = true
 proptest = "1.4"
 # quint-connect is now a regular (optional) dependency, gated behind `quint-mbt` feature
 
+# StackRing/StackChannel threaded Miri test; without the feature it would
+# compile to zero tests and pass vacuously.
+[[test]]
+name = "miri_stack_overlap_test"
+required-features = ["stack-ring"]
+
 [[bench]]
 name = "throughput"
 harness = false

@@ -144,7 +144,7 @@ Every bug that reached code so far was UB that only Miri could *confirm*. But mo
 | Quint liveness | `quint verify crates/ringmpsc/tla/RingSPSCLiveness.qnt --main=RingSPSCLiveness --temporal=eventuallyConsumed --backend=tlc` |
 | Model-based testing | `cargo test -p ringmpsc-rs --test quint_mbt --features quint-mbt --release` |
 | proptest, stress, unit, doctests | `cargo test --workspace --release` |
-| Miri | `cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests` (also `miri_overlap_test`, `miri_double_consumer_test`, and with `--features stack-ring` `miri_stack_overlap_test`; add `MIRIFLAGS="-Zmiri-tree-borrows"` for Tree Borrows) |
+| Miri | `cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests` (also `miri_overlap_test`, `miri_double_consumer_test` and `miri_stack_overlap_test`, which need `MIRIFLAGS="-Zmiri-preemption-rate=0.1"`; for Tree Borrows add `-Zmiri-tree-borrows` to the same `MIRIFLAGS`) |
 | loom | `cargo test -p ringmpsc-rs --features loom --test loom_tests --release` |
 | Verus | `cd verus/ringmpsc-verified && cargo verus focus` (needs a Verus release on `PATH`; see its README) |
 | WAL simulation | `cargo test -p ringwal-sim` |
