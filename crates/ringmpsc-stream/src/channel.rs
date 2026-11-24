@@ -9,7 +9,6 @@ use ringmpsc_rs::{Channel, ChannelError, Config};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-#[cfg(debug_assertions)]
 use crate::invariants::debug_assert_explicit_registration;
 
 /// Creates a new async stream channel.
@@ -143,7 +142,6 @@ impl<T: Send + 'static> SenderFactory<T> {
         }
 
         // INV-CH-01: Explicit registration creates unique sender per ring
-        #[cfg(debug_assertions)]
         debug_assert_explicit_registration!(true);
 
         Ok(RingSender::new(

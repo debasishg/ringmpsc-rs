@@ -1,7 +1,6 @@
 //! Async sender implementing `futures::Sink`.
 
 use crate::error::StreamError;
-#[cfg(debug_assertions)]
 use crate::invariants::{debug_assert_data_notified, debug_assert_item_preserved};
 use crate::shutdown::ShutdownState;
 use ringmpsc_rs::Producer;

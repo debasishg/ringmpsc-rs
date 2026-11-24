@@ -26,10 +26,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Not `-D warnings` yet: the workspace has ~47 pre-existing warnings.
-      # This still fails on clippy errors and on anything that doesn't compile.
       - name: clippy
-        run: cargo clippy --workspace --all-targets --release
+        run: cargo clippy --workspace --all-targets --release -- -D warnings
+
+      - name: clippy ringmpsc with stack-ring
+        run: cargo clippy -p ringmpsc-rs --features stack-ring --all-targets --release -- -D warnings
 
       # Plain `cargo test` only runs the default member (ringmpsc).
       - name: test workspace

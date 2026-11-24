@@ -1,6 +1,5 @@
 //! Shutdown utilities for graceful termination.
 
-#[cfg(debug_assertions)]
 use crate::invariants::{debug_assert_senders_woken, debug_assert_shutdown_signaled};
 use ringmpsc_rs::{SendGates, SendSection};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -157,14 +156,12 @@ impl ShutdownHandle {
         };
 
         // INV-SHUT-01: Verify shutdown was signaled
-        #[cfg(debug_assertions)]
         debug_assert_shutdown_signaled!(true, signal_sent || self.shutdown_tx.is_none());
 
         // Wake blocked senders so they can observe closed state
         self.backpressure_notify.notify_waiters();
 
         // INV-SHUT-02: Verify senders were woken
-        #[cfg(debug_assertions)]
         debug_assert_senders_woken!(true, true);
     }
 }

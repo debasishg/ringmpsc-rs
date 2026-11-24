@@ -132,11 +132,9 @@ async fn main() -> Result<(), ringwal::WalError> {
 }
 
 fn count_segments(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .filter(|e| e.file_name().to_string_lossy().starts_with("wal-"))
-                .count()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with("wal-"))
+            .count()
+    })
 }

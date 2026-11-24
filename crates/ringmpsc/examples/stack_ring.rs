@@ -32,7 +32,7 @@ fn main() {
     example_mpsc_throughput();
 }
 
-/// Basic SPSC usage with StackRing
+/// Basic SPSC usage with `StackRing`
 #[cfg(feature = "stack-ring")]
 fn example_spsc_basic() {
     println!("1. Basic SPSC (StackRing)");
@@ -131,7 +131,7 @@ fn example_spsc_throughput() {
     println!();
 }
 
-/// Basic MPSC usage with StackChannel
+/// Basic MPSC usage with `StackChannel`
 #[cfg(feature = "stack-ring")]
 fn example_mpsc_basic() {
     println!("3. Basic MPSC (StackChannel)");

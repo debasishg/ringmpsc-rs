@@ -23,7 +23,6 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 tokio = { version = "1.35", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-async-trait = "0.1"
 rand = "0.8"
 
 # System interface (NUMA, mmap)
@@ -73,4 +72,8 @@ semicolon_if_nothing_returned = "allow"
 single_match_else = "allow"
 uninlined_format_args = "allow"
 unnested_or_patterns = "allow"
+# Native async trait impls keep `async fn` even when the body never awaits
+# (e.g. stdout exporters); the `impl Future` + `std::future::ready` rewrite
+# this lint suggests is harder to read.
+unused_async_trait_impl = "allow"
 

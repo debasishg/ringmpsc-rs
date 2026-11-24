@@ -405,6 +405,8 @@ impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
         let count = self.channel.registry.count();
         let mut total = 0;
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index, unused_variables))]
         for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
             // SAFETY: `&mut self` is exclusive and a channel has at most one
             // `StackConsumer`, so this is the ring's only consumer. Producer
@@ -444,6 +446,8 @@ impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
         let count = self.channel.registry.count();
         let mut total = 0;
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index, unused_variables))]
         for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
             // SAFETY: as in `consume_all`.
             let consumed = unsafe { ring.consume_batch_owned(&mut handler) };
@@ -484,6 +488,8 @@ impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
         let count = self.channel.registry.count();
         let mut total = 0;
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index, unused_variables))]
         for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
             if total >= max_total {
                 break;
@@ -565,7 +571,7 @@ pub struct StackProducer<'a, T, const N: usize, const P: usize> {
 // StackProducer is deliberately not Sync.
 unsafe impl<T: Send, const N: usize, const P: usize> Send for StackProducer<'_, T, N, P> {}
 
-impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
+impl<T, const N: usize, const P: usize> StackProducer<'_, T, N, P> {
     /// Returns this producer's ID (ring index).
     #[inline]
     pub fn id(&self) -> usize {

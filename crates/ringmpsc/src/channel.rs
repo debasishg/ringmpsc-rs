@@ -344,6 +344,8 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         let mut total = 0;
         let count = self.inner.registry.count();
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index))]
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             // SAFETY: `&mut self` is exclusive and a channel has at most one
             // `Consumer`, so no other consumer call on this ring can be running.
@@ -383,6 +385,8 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         let mut total = 0;
         let count = self.inner.registry.count();
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index))]
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             if total >= max_total {
                 break;
@@ -431,6 +435,8 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         let mut total = 0;
         let count = self.inner.registry.count();
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index))]
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             // SAFETY: `&mut self` is exclusive and a channel has at most one
             // `Consumer`, so no other consumer call on this ring can be running.
@@ -463,6 +469,8 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         let mut total = 0;
         let count = self.inner.registry.count();
 
+        // The index feeds only the debug-build FIFO check (INV-CH-03).
+        #[cfg_attr(not(debug_assertions), allow(clippy::unused_enumerate_index))]
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             if total >= max_total {
                 break;

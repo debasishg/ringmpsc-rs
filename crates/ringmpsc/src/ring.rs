@@ -462,7 +462,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         let slice = unsafe { std::slice::from_raw_parts_mut(self.slot(idx), contiguous) };
 
         // Create reservation with commit callback
-        let ring_ptr = self as *const Self;
+        let ring_ptr = std::ptr::from_ref::<Self>(self);
         Reservation::new(slice, ring_ptr)
     }
 

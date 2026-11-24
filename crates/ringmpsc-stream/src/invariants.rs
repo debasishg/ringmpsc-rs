@@ -1,8 +1,9 @@
 //! Debug assertion macros for stream pipeline invariants.
 //!
 //! These macros provide runtime checks for the invariants documented in `spec.md`.
-//! They are only active in debug builds (`#[cfg(debug_assertions)]`), so there is
-//! zero overhead in release builds.
+//! They expand to `debug_assert!`, which evaluates nothing in release builds, so
+//! call sites use them unconditionally (no `#[cfg(debug_assertions)]` gate).
+//! Zero overhead in release builds.
 
 // =============================================================================
 // INV-STREAM-03: Backpressure Relief Signaling

@@ -32,8 +32,8 @@ macro_rules! debug_assert_bounded_count {
 ///
 /// **Invariant**: `n ≤ tail - head`, so `head ≤ tail` after the advance
 ///
-/// This check enforces INV-ORD-03 (HappensBefore: `head ≤ tail`) which is also
-/// implied by INV-SEQ-01 (BoundedCount: `0 ≤ (tail - head) ≤ capacity`).
+/// This check enforces INV-ORD-03 (`HappensBefore`: `head ≤ tail`) which is also
+/// implied by INV-SEQ-01 (`BoundedCount`: `0 ≤ (tail - head) ≤ capacity`).
 ///
 /// Unlike the other macros here, this is a real `assert!` that stays on in
 /// release builds. A head past tail is not just a broken invariant: the next

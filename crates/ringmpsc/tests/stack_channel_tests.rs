@@ -156,7 +156,7 @@ fn test_stack_channel_stress() {
     unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
-/// Test consume_all_owned with String (verifies ownership transfer).
+/// Test `consume_all_owned` with String (verifies ownership transfer).
 #[test]
 fn test_stack_channel_owned_strings() {
     // A raw pointer from Box::into_raw, so the channel can be freed through it
@@ -287,7 +287,7 @@ fn test_stack_channel_batch_reserve_commit() {
     }
 }
 
-/// Test that consume_all_up_to respects the limit.
+/// Test that `consume_all_up_to` respects the limit.
 #[test]
 fn test_stack_channel_consume_up_to_limit() {
     let channel: StackChannel<u64, 128, 2> = StackChannel::new();
