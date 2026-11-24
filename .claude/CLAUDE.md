@@ -15,7 +15,7 @@ Lock-free Rust workspace built on **ring decomposition** (each producer owns a d
 
 `ringmpsc` is the **default workspace member** — `cargo test` without `-p` only runs ringmpsc tests.
 
-**Edition**: 2021 (most crates). **Resolver**: 2.
+**Edition**: 2021 (most crates). **Resolver**: 2. **Toolchain**: Rust 1.100.0, pinned in `rust-toolchain.toml` (Verus, Charon and Miri use their own).
 
 ### Key Source Files (ringmpsc)
 `ring.rs` (core SPSC), `channel.rs` (MPSC), `stack_ring.rs` / `stack_channel.rs` (stack variants), `numa.rs`, `allocator.rs`, `invariants.rs`, `reservation.rs`, `window.rs` (pure index/window arithmetic, proved in Lean; rerun `crates/ringmpsc/lean/scripts/check.sh` after changing it).
