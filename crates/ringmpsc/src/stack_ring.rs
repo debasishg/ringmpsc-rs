@@ -306,7 +306,7 @@ impl<T, const N: usize> StackRing<T, N> {
     /// retry, since it is the only thread that moves `head`.
     #[inline]
     pub fn len(&self) -> usize {
-        crate::ring::occupancy_snapshot(&self.head, &self.tail) as usize
+        crate::ring::occupancy_snapshot(&self.head, &self.tail)
     }
 
     /// Returns true if the ring is empty.
@@ -396,8 +396,7 @@ impl<T, const N: usize> StackRing<T, N> {
         // Fast path: check cached head
         // SAFETY: cached_head is only written by the producer (this code path).
         let cached_head = *self.cached_head.get();
-        let used = tail.wrapping_sub(cached_head) as usize;
-        let space = N.saturating_sub(used);
+        let space = crate::window::free_space(tail, cached_head, N);
 
         if space >= n {
             return Some(self.make_reservation(tail, n));
@@ -407,8 +406,7 @@ impl<T, const N: usize> StackRing<T, N> {
         let head = self.head.load(Ordering::Acquire);
         *self.cached_head.get() = head;
 
-        let used = tail.wrapping_sub(head) as usize;
-        let space = N.saturating_sub(used);
+        let space = crate::window::free_space(tail, head, N);
 
         if space < n {
             return None;
@@ -420,9 +418,10 @@ impl<T, const N: usize> StackRing<T, N> {
     /// Internal: Create reservation pointer and contiguous length.
     #[inline]
     unsafe fn make_reservation(&self, tail: u64, n: usize) -> (*mut T, usize) {
-        let idx = (tail as usize) & Self::MASK;
-        // Contiguous slots available before wrap-around
-        let contiguous = n.min(N - idx);
+        // Contiguous slots available before wrap-around. [idx, idx+contiguous)
+        // is within the buffer and disjoint from the consumer's [head, tail)
+        // [lean: write_window_spec, reservation_disjoint].
+        let (idx, contiguous) = crate::window::write_window(tail, n, N);
 
         // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
         let ptr = self.slot_ptr(idx);
@@ -502,16 +501,11 @@ impl<T, const N: usize> StackRing<T, N> {
             // Slow path: refresh cache from producer's tail
             cached_tail = self.tail.load(Ordering::Acquire);
             *self.cached_tail.get() = cached_tail;
-
-            if cached_tail <= head {
-                return None;
-            }
         }
-        // Now head < cached_tail <= tail.
-        let avail = (cached_tail - head) as usize;
-
-        let idx = (head as usize) & Self::MASK;
-        let contiguous = avail.min(N - idx);
+        // `read_window` returns None when `cached_tail <= head`. Otherwise
+        // head < cached_tail <= tail, and the window lies in [head, cached_tail)
+        // and within the buffer [lean: read_window_spec].
+        let (idx, contiguous) = crate::window::read_window(head, cached_tail, N)?;
 
         // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02).
         let ptr = self.slot_ptr(idx).cast_const();
@@ -594,7 +588,7 @@ impl<T, const N: usize> StackRing<T, N> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
@@ -606,7 +600,7 @@ impl<T, const N: usize> StackRing<T, N> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & Self::MASK;
+            let idx = crate::window::slot_index(pos, Self::MASK);
             // SAFETY: Item was written by producer and published via Release.
             // The Acquire load on tail synchronizes with that Release
             // (INV-INIT-01). idx is masked by N - 1, so idx < N (INV-MEM-02).
@@ -638,7 +632,7 @@ impl<T, const N: usize> StackRing<T, N> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
@@ -649,8 +643,8 @@ impl<T, const N: usize> StackRing<T, N> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & Self::MASK;
-            // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02); pos is in
+            let idx = crate::window::slot_index(pos, Self::MASK);
+            // Safety: idx < N (INV-MEM-02) [lean: slot_index_spec]; pos is in
             // [head, tail), so the slot was written and published by the producer
             // and the Acquire load of tail synchronizes with it (INV-INIT-01).
             // Reading moves the item out; head advances past it after the loop.
@@ -679,12 +673,12 @@ impl<T, const N: usize> StackRing<T, N> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
 
-        let to_consume = avail.min(max);
+        let to_consume = crate::window::consume_count(avail, max);
         let end = head.wrapping_add(to_consume as u64);
         let mut pos = head;
 
@@ -692,8 +686,8 @@ impl<T, const N: usize> StackRing<T, N> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & Self::MASK;
-            // Safety: idx is masked by N - 1, so idx < N (INV-MEM-02); pos is in
+            let idx = crate::window::slot_index(pos, Self::MASK);
+            // Safety: idx < N (INV-MEM-02) [lean: slot_index_spec]; pos is in
             // [head, tail), so the slot was written and published by the producer
             // and the Acquire load of tail synchronizes with it (INV-INIT-01).
             // Reading moves the item out; head advances past it after the loop.
@@ -720,10 +714,10 @@ impl<T, const N: usize> Drop for StackRing<T, N> {
         let head = *self.head.get_mut();
         let tail = *self.tail.get_mut();
 
-        let count = tail.wrapping_sub(head) as usize;
+        let count = crate::window::occupancy(tail, head);
         let mut pos = head;
         while pos != tail {
-            let idx = (pos as usize) & Self::MASK;
+            let idx = crate::window::slot_index(pos, Self::MASK);
             // Safety: idx bounded by MASK; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01)
             crate::invariants::debug_assert_drop_bounds!(count, N, idx);
             unsafe {

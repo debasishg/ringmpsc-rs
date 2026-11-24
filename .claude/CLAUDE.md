@@ -18,7 +18,7 @@ Lock-free Rust workspace built on **ring decomposition** (each producer owns a d
 **Edition**: 2021 (most crates). **Resolver**: 2.
 
 ### Key Source Files (ringmpsc)
-`ring.rs` (core SPSC), `channel.rs` (MPSC), `stack_ring.rs` / `stack_channel.rs` (stack variants), `numa.rs`, `allocator.rs`, `invariants.rs`, `reservation.rs`.
+`ring.rs` (core SPSC), `channel.rs` (MPSC), `stack_ring.rs` / `stack_channel.rs` (stack variants), `numa.rs`, `allocator.rs`, `invariants.rs`, `reservation.rs`, `window.rs` (pure index/window arithmetic, proved in Lean; rerun `crates/ringmpsc/lean/scripts/check.sh` after changing it).
 
 ## Development Commands
 
@@ -38,6 +38,9 @@ MIRIFLAGS="-Zmiri-preemption-rate=0.1" cargo +nightly miri test -p ringmpsc-rs -
 
 # Model-based testing (Quint spec → ITF traces → Rust assertions)
 cargo test -p ringmpsc-rs --features quint-mbt --release
+
+# Lean 4 proofs of window.rs (Charon + Aeneas; setup in crates/ringmpsc/lean/README.md)
+crates/ringmpsc/lean/scripts/check.sh
 
 # Benchmarks
 cargo bench -p ringmpsc-rs

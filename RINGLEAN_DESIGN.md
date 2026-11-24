@@ -1,6 +1,6 @@
 # ringlean: Lean 4 proofs over the production ring
 
-**Status:** proposal. No code has been written.
+**Status:** Phase 0 implemented on the `ringlean` branch (section 4, "Phase 0 status"). Phase 1 is a proposal.
 
 This document proposes adding Lean 4 proofs to `ringmpsc`. The idea comes from cuda-oxide's Lean verification of GPU kernels, described in [Provably safe GPU kernels](https://nihalpasham.github.io/posts/provably-safe-gpu-kernels/). It builds on the Verus-based verified ring on the main branch (`verus/ringmpsc-verified`) and targets the gap that work leaves open: **Verus proves a reimplementation of the ring, not the production `crates/ringmpsc` code**. Differential tests tie the two rings together, but the proofs don't carry over to production.
 
@@ -192,8 +192,23 @@ Running the proofs inside `cargo build`, for example from `build.rs`, is possibl
 ### What Phase 0 delivers
 
 - **Proved, for all inputs:** the pure window functions return in-bounds, correctly sized windows. This covers every `tail`, `head` and `n`, every power-of-two capacity, and real `u64` wrap-around. The proofs are about the production source, translated from it, not about a separate model or reimplementation.
-- **Cited, not proved:** that the `unsafe` code uses the results correctly. `// Safety:` comments cite the theorems, and `/audit-unsafe` checks that each cited theorem exists and is proved.
+- **Cited, not proved:** that the `unsafe` code uses the results correctly. `// Safety:` comments cite the theorems, and `check.sh` checks that each cited theorem exists and is proved.
 - **Assumed:** the protocol premises (Verus, Quint, MBT) and that the memory orderings are strong enough (loom, Miri).
+
+### Phase 0 status
+
+Implemented. Layout and setup are in `crates/ringmpsc/lean/README.md`.
+
+- **`crates/ringmpsc/src/window.rs`:** six pure functions: `slot_index`, `occupancy`, `free_space`, `write_window`, `read_window`, `consume_count`. Every index and slice length that `Ring` and `StackRing` pass to `unsafe` code now comes from one of them. Behavior is unchanged: release tests, Miri and loom pass.
+- **`crates/ringmpsc/lean/`:** Aeneas generates `RingmpscRs/Funs.lean` from `window.rs`. `RingLean/Window.lean` holds 13 theorems, including the specs for all six functions (each also proving the function can't panic), stale-cache conservativeness for `free_space`, and `reservation_disjoint`: a reservation that `free_space` allows never maps to a slot in the consumer's `[head, tail)`. All depend only on Lean's standard axioms.
+- **`scripts/check.sh`:** regenerates, proves, audits axioms, and checks the `[lean: ...]` citations in `ring.rs` and `stack_ring.rs`.
+- **Mutation check:** five deliberate bugs in `window.rs` were each rejected: an off-by-one in `write_window` and in `free_space`, `write_window` ignoring `n` (the #15/#32 class), `read_window` using `<` instead of `<=` (the #17 class), and a wrong mask in `slot_index`.
+
+What we learned:
+
+- **Charon and Aeneas ship as one release.** The macOS Aeneas release bundles `charon` and `charon-driver`, so nothing is built from source. Charon needs its own nightly (`nightly-2026-09-17`) and its own target directory (`target/charon`). It coexists with the Verus pin and the stable toolchain.
+- **`usize` width is abstract in Aeneas,** so `u64 as usize` is a truncating cast in the model. The theorems are proved for both 32-bit and 64-bit `usize` (open question 2). On a 32-bit target, `read_window` could return an empty window if `tail - head` were a multiple of `2^32`. INV-SEQ-01 rules that out, and `read_window_spec` states it as a premise.
+- **The first proofs needed Aeneas-specific tactics.** `omega` can't see through `Usize` comparisons in `if` conditions, and `scalar_tac` can loop on cast equations. The workarounds are small and noted in `RingLean/Window.lean`.
 
 ---
 
@@ -270,8 +285,8 @@ The new column is the only entry that says **production, all inputs**.
 
 ## 8. Open questions
 
-1. **Toolchains.** Can Charon's nightly pin coexist with the Verus pin (Rust 1.99.1)? Should `crates/ringmpsc/lean/` be a separate workspace, as `verus/` is?
-2. **Aeneas and `u64 → usize` casts.** The cast `tail as usize` is a no-op only on 64-bit targets. Should the theorems assume a 64-bit `usize`, or be proved for 32-bit too?
+1. **Toolchains.** ~~Can Charon's nightly pin coexist with the Verus pin (Rust 1.99.1)?~~ Yes: Charon runs on its own nightly with its own target directory, and `crates/ringmpsc/lean/` is a standalone Lake project outside the Cargo workspace.
+2. **Aeneas and `u64 → usize` casts.** ~~Should the theorems assume a 64-bit `usize`?~~ Resolved: Aeneas leaves the width abstract, and the theorems hold for both 32-bit and 64-bit.
 3. **CI cost.** Lean build time grows with the code verified. Should it run on every PR, or only on changes to `ring.rs`, `stack_ring.rs`, `reservation.rs` or `window.rs`?
 4. **The verified ring.** If phase 7 (#26) replaces production with `verus/ringmpsc-verified`, most of this proposal's reason to exist goes away. Decide #26 first.
 
