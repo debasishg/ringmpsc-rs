@@ -22,20 +22,20 @@ set_option maxRecDepth 2048
 namespace ringmpsc_rs
 
 /-- [ringmpsc_rs::window::slot_index]:
-    Source: 'crates/ringmpsc/src/window.rs', lines 32:0-34:1 -/
+    Source: 'crates/ringmpsc/src/window.rs', lines 38:0-40:1 -/
 def window.slot_index
   (seq : Std.U64) (mask : Std.Usize) : Result Std.Usize := do
   let i ← lift (UScalar.cast .Usize seq)
   ok (i &&& mask)
 
 /-- [ringmpsc_rs::window::occupancy]:
-    Source: 'crates/ringmpsc/src/window.rs', lines 43:0-45:1 -/
+    Source: 'crates/ringmpsc/src/window.rs', lines 49:0-51:1 -/
 def window.occupancy (tail : Std.U64) (head : Std.U64) : Result Std.Usize := do
   let i ← lift (core.num.U64.wrapping_sub tail head)
   ok (UScalar.cast .Usize i)
 
 /-- [ringmpsc_rs::window::free_space]:
-    Source: 'crates/ringmpsc/src/window.rs', lines 63:0-70:1 -/
+    Source: 'crates/ringmpsc/src/window.rs', lines 69:0-76:1 -/
 def window.free_space
   (tail : Std.U64) (head : Std.U64) (cap : Std.Usize) : Result Std.Usize := do
   let used ← window.occupancy tail head
@@ -44,7 +44,7 @@ def window.free_space
   else cap - used
 
 /-- [ringmpsc_rs::window::write_window]:
-    Source: 'crates/ringmpsc/src/window.rs', lines 87:0-92:1 -/
+    Source: 'crates/ringmpsc/src/window.rs', lines 93:0-98:1 -/
 def window.write_window
   (tail : Std.U64) (n : Std.Usize) (cap : Std.Usize) :
   Result (Std.Usize × Std.Usize)
@@ -57,7 +57,7 @@ def window.write_window
   else ok (idx, room)
 
 /-- [ringmpsc_rs::window::read_window]:
-    Source: 'crates/ringmpsc/src/window.rs', lines 111:0-121:1 -/
+    Source: 'crates/ringmpsc/src/window.rs', lines 120:0-130:1 -/
 def window.read_window
   (head : Std.U64) (tail : Std.U64) (cap : Std.Usize) :
   Result (Option (Std.Usize × Std.Usize))
@@ -75,7 +75,7 @@ def window.read_window
     else ok (some (idx, room))
 
 /-- [ringmpsc_rs::window::consume_count]:
-    Source: 'crates/ringmpsc/src/window.rs', lines 129:0-135:1 -/
+    Source: 'crates/ringmpsc/src/window.rs', lines 138:0-144:1 -/
 def window.consume_count
   (avail : Std.Usize) (max : Std.Usize) : Result Std.Usize := do
   if avail < max

@@ -1,17 +1,16 @@
 # Lean 4 proofs of crates/ringmpsc/src/window.rs (RINGLEAN_DESIGN.md, Phase 0).
 #
-# Runs only when the proved code, the code that cites the proofs, or the Lean
-# project changes. Do not make this a required check: path-filtered workflows
+# Runs only when the ringmpsc sources (the proved code and every file whose
+# Safety comments can cite the proofs), the crate manifest, or the Lean
+# project change. Do not make this a required check: path-filtered workflows
 # don't run on other pushes, so a required check would never report.
 name: lean
 
 on:
   push:
     paths:
-      - crates/ringmpsc/src/window.rs
-      - crates/ringmpsc/src/ring.rs
-      - crates/ringmpsc/src/stack_ring.rs
-      - crates/ringmpsc/src/lib.rs
+      # check.sh checks [lean: ...] citations in every file under src/.
+      - crates/ringmpsc/src/**
       - crates/ringmpsc/Cargo.toml
       - crates/ringmpsc/lean/**
       - .github/workflows/lean.yml
@@ -27,6 +26,10 @@ env:
   AENEAS_TAG: nightly-2026.11.24-fb44cb4
   # Charon's toolchain: `channel` in the release's rust-toolchain file.
   CHARON_TOOLCHAIN: nightly-2026-09-17
+  # elan (Lean's version manager), pinned by release and checksum. Its install
+  # script always fetches the latest binary, so the release asset is used.
+  ELAN_VERSION: v4.4.0
+  ELAN_SHA256: 0e8250aa2be86c7af929ade68db617af9edc8b9ccf6eaf5ece228250d0d032e2
   AENEAS_DIR: ${{ github.workspace }}/.aeneas
 
 jobs:
@@ -62,10 +65,16 @@ jobs:
           rustup toolchain install "$CHARON_TOOLCHAIN" --profile minimal \
             -c rustc-dev -c llvm-tools -c rust-src -c miri
 
-      - name: Install elan
+      - name: Install elan (pinned)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-            | sh -s -- -y --default-toolchain none
+          tmp="$(mktemp -d)"
+          gh release download "$ELAN_VERSION" -R leanprover/elan \
+            -p 'elan-x86_64-unknown-linux-gnu.tar.gz' -D "$tmp"
+          echo "$ELAN_SHA256  $tmp/elan-x86_64-unknown-linux-gnu.tar.gz" | sha256sum -c -
+          tar xzf "$tmp/elan-x86_64-unknown-linux-gnu.tar.gz" -C "$tmp"
+          "$tmp/elan-init" -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lean toolchain and packages

@@ -16,7 +16,13 @@
 //! facts the callers already maintain:
 //! - `cap` is a power of two, `cap ≥ 1` (INV-MEM-02)
 //! - `mask == cap - 1`
-//! - `tail - head ≤ cap`, in wrapping `u64` arithmetic (INV-SEQ-01)
+//! - `tail - head ≤ cap` (INV-SEQ-01)
+//! - sequence numbers never wrap past `u64::MAX` (INV-SEQ-03)
+//!
+//! `occupancy` and `free_space` use wrapping subtraction, but `read_window`
+//! compares `tail <= head` as plain `u64` values. After a wrap, `read_window`
+//! would report the ring as empty. INV-SEQ-03 rules that out: at 10⁹ messages
+//! per second, a `u64` takes about 584 years to wrap.
 //!
 //! The Lean theorems for each function are listed under `# Proves`.
 
@@ -99,13 +105,16 @@ pub(crate) const fn write_window(tail: u64, n: usize, cap: usize) -> (usize, usi
 /// of subtracting makes a trailing cache read as empty, not as a huge count.
 ///
 /// # Requires
-/// `cap` a power of two.
+/// `cap` a power of two. No `u64` wrap between `head` and `tail` (INV-SEQ-03):
+/// a `tail` that has wrapped past 0 reads as `None`.
 ///
 /// # Proves
-/// - `idx < cap`
-/// - `idx + len ≤ cap`
-/// - `1 ≤ len ≤ tail - head`, so the window lies in `[head, tail)` (INV-INIT-01)
-/// - `tail ≤ head → None`
+/// - `None` exactly when `tail ≤ head`
+/// - otherwise `idx = head mod cap`, `idx < cap` and `idx + len ≤ cap`
+/// - `len ≤ tail - head`, so the window lies in `[head, tail)` (INV-INIT-01)
+/// - `len ≥ 1` when also `tail - head ≤ cap` (INV-SEQ-01). Without it, on a
+///   32-bit target a distance that is a multiple of `2^32` truncates to an
+///   empty window.
 #[inline]
 #[must_use]
 pub(crate) const fn read_window(head: u64, tail: u64, cap: usize) -> Option<(usize, usize)> {
@@ -216,15 +225,20 @@ mod tests {
             for head in seqs(cap) {
                 for d in 0..=cap as u64 {
                     let tail = head.wrapping_add(d);
-                    match read_window(head, tail, cap) {
-                        None => assert!(tail <= head),
-                        Some((idx, len)) => {
-                            assert!(tail > head);
-                            assert!(idx < cap);
-                            assert!(idx + len <= cap);
-                            assert!(len >= 1);
-                            assert!(len as u64 <= tail - head);
-                        }
+                    let got = read_window(head, tail, cap);
+                    if d == 0 {
+                        assert_eq!(got, None, "nothing published");
+                    } else if tail < head {
+                        // `tail` wrapped past u64::MAX. Ruled out by INV-SEQ-03;
+                        // pin the documented behavior: the ring reads as empty.
+                        assert_eq!(got, None, "wrapped tail reads as empty");
+                    } else {
+                        // Items are published and must be returned.
+                        let (idx, len) = got.expect("published items are readable");
+                        let c = cap as u64;
+                        assert_eq!(idx as u64, head % c);
+                        assert!(idx + len <= cap);
+                        assert_eq!(len as u64, d.min(c - head % c), "window is min(avail, room)");
                     }
                 }
             }
