@@ -247,28 +247,21 @@ impl<T, const N: usize> StackRing<T, N> {
     ///
     /// Safe to call from any thread. Called from a thread other than the
     /// producer or consumer, it is a snapshot that may already be stale, but
-    /// it is always in `0..=capacity()`.
+    /// it is a consistent one: some `tail - head` the ring actually had, so it
+    /// is at most `capacity()` while INV-SEQ-01 holds (see
+    /// `occupancy_snapshot` in `ring.rs`).
     #[inline]
     pub fn len(&self) -> usize {
-        // Load head first. The consumer only stores a head `h` (Release) after
-        // reading a tail >= h, so once this Acquire load sees `h`, the tail
-        // load below can't return an older value than that: head <= tail.
-        // Loading tail first allowed an old tail with a newer head, and
-        // `tail - head` wrapped to about 2^64.
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Relaxed);
-        // Between the two loads the consumer and producer can both move on,
-        // so `tail - head` can exceed the capacity, and a stale `tail` can
-        // trail `head` if the consumer's tail read was itself Relaxed. Clamp:
-        // a snapshot only means something in 0..=capacity (INV-SEQ-01).
-        tail.saturating_sub(head).min(N as u64) as usize
+        crate::ring::occupancy_snapshot(&self.head, &self.tail) as usize
     }
 
     /// Returns true if the ring is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        // Uses `len()`'s load order and clamp.
-        self.len() == 0
+        // Two Relaxed loads, not `len()`. From a thread other than the
+        // producer or consumer this is only a hint: it may be stale or pair
+        // loads from different moments. It stays cheap for polling loops.
+        self.tail.load(Ordering::Relaxed) == self.head.load(Ordering::Relaxed)
     }
 
     /// Returns true if the ring is full.

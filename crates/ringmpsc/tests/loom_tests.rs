@@ -31,11 +31,31 @@ unsafe impl Sync for LoomRing {}
 
 impl LoomRing {
     fn new() -> Self {
+        Self::with_capacity(4)
+    }
+
+    /// A ring using the first `capacity` slots of the buffer. A smaller ring
+    /// fills up in fewer steps, which keeps loom's search small.
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity.is_power_of_two() && capacity <= 4);
         Self {
             tail: AtomicU64::new(0),
             head: AtomicU64::new(0),
             buffer: UnsafeCell::new([0; 4]),
-            capacity: 4,
+            capacity,
+        }
+    }
+
+    /// `len()` as `Ring::len` computes it: the same loads and orderings as
+    /// `occupancy_snapshot` in `src/ring.rs`. Keep the two in sync.
+    fn len(&self) -> u64 {
+        loop {
+            let h1 = self.head.load(Ordering::Acquire);
+            let t = self.tail.load(Ordering::Acquire);
+            let h2 = self.head.load(Ordering::Relaxed);
+            if h1 == h2 {
+                return t.wrapping_sub(h1);
+            }
         }
     }
 
@@ -260,5 +280,73 @@ fn loom_cached_sequence_pattern() {
         // Both should have advanced by 1
         assert_eq!(tail.load(Ordering::SeqCst), 1);
         assert_eq!(head.load(Ordering::SeqCst), 1);
+    });
+}
+
+/// `len()` from a third thread, while a producer and a consumer both move.
+///
+/// A 2-slot ring with 3 items makes the producer wait for the consumer, so
+/// `head` and `tail` both advance while the observer reads them. In every
+/// explored interleaving, `len()` must be a consistent snapshot: never an old
+/// `tail` with a newer `head` (wraps to about 2^64), never a new `tail` with an
+/// old `head` (more than the capacity).
+///
+/// The observer is a spawned thread, not the model's main thread: with the
+/// loads on the main thread, loom never interleaved them with the other two
+/// threads, and the test passed even with the old, broken `len()`.
+///
+/// Preemptions are bounded at 2 so the test runs in seconds; unbounded, it
+/// did not finish within 10 minutes. A bound of 1 already finds both bad
+/// pairings in the old `len()`.
+#[test]
+fn loom_len_snapshot_from_observer() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(|| {
+        const CAPACITY: u64 = 2;
+        const ITEMS: u64 = 3;
+        let ring = Arc::new(LoomRing::with_capacity(CAPACITY as usize));
+        let producer_ring = Arc::clone(&ring);
+        let consumer_ring = Arc::clone(&ring);
+
+        let producer = thread::spawn(move || {
+            let mut sent = 0;
+            // Bounded retries keep loom's search finite.
+            for _ in 0..8 {
+                if sent == ITEMS {
+                    break;
+                }
+                if producer_ring.push(sent) {
+                    sent += 1;
+                } else {
+                    loom::thread::yield_now();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut received = 0;
+            for _ in 0..8 {
+                if received == ITEMS {
+                    break;
+                }
+                if consumer_ring.pop().is_some() {
+                    received += 1;
+                } else {
+                    loom::thread::yield_now();
+                }
+            }
+        });
+
+        let observer = thread::spawn(move || {
+            for _ in 0..2 {
+                let len = ring.len();
+                assert!(len <= CAPACITY, "len() = {len} > capacity {CAPACITY}");
+            }
+        });
+
+        observer.join().expect("observer: len() out of range");
+        producer.join().expect("producer panicked");
+        consumer.join().expect("consumer panicked");
     });
 }
