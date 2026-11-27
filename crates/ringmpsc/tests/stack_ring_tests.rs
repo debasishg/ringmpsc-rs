@@ -30,7 +30,8 @@ fn test_stack_ring_spsc_threads() {
         let mut sent = 0u64;
         while sent < MSG_COUNT {
             // Safety: this thread is the ring's only producer (INV-SW-01). It
-            // writes every reserved slot before commit(len) (INV-INIT-03).
+            // writes every reserved slot before commit(len), so commit publishes
+            // only initialized slots (INV-INIT-01).
             unsafe {
                 if let Some((ptr, len)) = ring.reserve(1) {
                     ptr.write(sent);
@@ -94,7 +95,8 @@ fn test_stack_ring_fifo_order() {
         for i in 0..10_000u64 {
             loop {
                 // Safety: this thread is the ring's only producer (INV-SW-01). It
-                // writes every reserved slot before commit(len) (INV-INIT-03).
+                // writes every reserved slot before commit(len), so commit publishes
+                // only initialized slots (INV-INIT-01).
                 unsafe {
                     if let Some((ptr, len)) = ring.reserve(1) {
                         ptr.write(i);
@@ -191,7 +193,8 @@ fn test_stack_ring_stress() {
         while sent < messages {
             let batch = ((messages - sent) as usize).min(64);
             // Safety: this thread is the ring's only producer (INV-SW-01). It
-            // writes every reserved slot before commit(len) (INV-INIT-03).
+            // writes every reserved slot before commit(len), so commit publishes
+            // only initialized slots (INV-INIT-01).
             unsafe {
                 if let Some((ptr, len)) = ring.reserve(batch) {
                     for i in 0..len {

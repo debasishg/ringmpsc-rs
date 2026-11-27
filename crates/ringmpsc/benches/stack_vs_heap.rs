@@ -359,8 +359,8 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
             let channel = Box::new(StackChannel::<u32, 65536, 2>::new());
             let channel_ptr = Box::into_raw(channel);
             // Safety: channel_ptr comes from Box::into_raw, so it is valid and
-            // aligned. It is freed only after every producer (INV-CH-01) is joined
-            // and the consumer (INV-CH-02) is dropped.
+            // aligned. It is freed only after every producer thread is joined
+            // and the consumer (INV-CH-02) is dropped: its Drop writes the channel.
             let channel_ref: &'static StackChannel<u32, 65536, 2> = unsafe { &*channel_ptr };
             
             let handles: Vec<_> = (0..NUM_PRODUCERS)
@@ -406,8 +406,8 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
             // INV-CH-02 consumer flag), so it must run before the free.
             drop(consumer);
             
-            // Safety: channel_ptr came from Box::into_raw; the producers
-            // (INV-CH-01) are joined and the consumer (INV-CH-02) is dropped,
+            // Safety: channel_ptr came from Box::into_raw; the producer
+            // threads are joined and the consumer (INV-CH-02) is dropped,
             // so nothing borrows the channel any more.
             unsafe { drop(Box::from_raw(channel_ptr)); }
             black_box(total)
@@ -430,8 +430,8 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
             let channel = Box::new(StackChannel::<u32, 65536, 4>::new());
             let channel_ptr = Box::into_raw(channel);
             // Safety: channel_ptr comes from Box::into_raw, so it is valid and
-            // aligned. It is freed only after every producer (INV-CH-01) is joined
-            // and the consumer (INV-CH-02) is dropped.
+            // aligned. It is freed only after every producer thread is joined
+            // and the consumer (INV-CH-02) is dropped: its Drop writes the channel.
             let channel_ref: &'static StackChannel<u32, 65536, 4> = unsafe { &*channel_ptr };
             
             let handles: Vec<_> = (0..NUM_PRODUCERS)
@@ -477,8 +477,8 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
             // INV-CH-02 consumer flag), so it must run before the free.
             drop(consumer);
             
-            // Safety: channel_ptr came from Box::into_raw; the producers
-            // (INV-CH-01) are joined and the consumer (INV-CH-02) is dropped,
+            // Safety: channel_ptr came from Box::into_raw; the producer
+            // threads are joined and the consumer (INV-CH-02) is dropped,
             // so nothing borrows the channel any more.
             unsafe { drop(Box::from_raw(channel_ptr)); }
             black_box(total)
@@ -501,8 +501,8 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
             let channel = Box::new(StackChannel::<u32, 65536, 8>::new());
             let channel_ptr = Box::into_raw(channel);
             // Safety: channel_ptr comes from Box::into_raw, so it is valid and
-            // aligned. It is freed only after every producer (INV-CH-01) is joined
-            // and the consumer (INV-CH-02) is dropped.
+            // aligned. It is freed only after every producer thread is joined
+            // and the consumer (INV-CH-02) is dropped: its Drop writes the channel.
             let channel_ref: &'static StackChannel<u32, 65536, 8> = unsafe { &*channel_ptr };
             
             let handles: Vec<_> = (0..NUM_PRODUCERS)
@@ -548,8 +548,8 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
             // INV-CH-02 consumer flag), so it must run before the free.
             drop(consumer);
             
-            // Safety: channel_ptr came from Box::into_raw; the producers
-            // (INV-CH-01) are joined and the consumer (INV-CH-02) is dropped,
+            // Safety: channel_ptr came from Box::into_raw; the producer
+            // threads are joined and the consumer (INV-CH-02) is dropped,
             // so nothing borrows the channel any more.
             unsafe { drop(Box::from_raw(channel_ptr)); }
             black_box(total)

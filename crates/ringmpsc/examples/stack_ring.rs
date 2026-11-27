@@ -178,8 +178,8 @@ fn example_mpsc_throughput() {
     let channel = Box::new(StackChannel::<u64, 65536, 4>::new());
     let channel_ptr = Box::into_raw(channel);
     // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
-    // It is freed only after every producer (INV-CH-01) is joined and the
-    // consumer (INV-CH-02) is dropped.
+    // It is freed only after every producer thread is joined and the
+    // consumer (INV-CH-02) is dropped: its Drop writes the channel.
     let channel_ref: &'static StackChannel<u64, 65536, 4> = unsafe { &*channel_ptr };
 
     let start = Instant::now();
@@ -228,7 +228,7 @@ fn example_mpsc_throughput() {
     // Cleanup. The consumer's Drop writes to the channel (it releases the
     // INV-CH-02 consumer flag), so it must run before the free.
     drop(consumer);
-    // Safety: channel_ptr came from Box::into_raw; the producers (INV-CH-01)
+    // Safety: channel_ptr came from Box::into_raw; the producer threads
     // are joined and the consumer (INV-CH-02) is dropped, so nothing borrows
     // the channel any more.
     unsafe {

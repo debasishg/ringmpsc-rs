@@ -20,8 +20,8 @@ fn test_stack_channel_per_producer_fifo() {
     let channel_ptr: *mut StackChannel<(usize, usize), 4096, 4> =
         Box::into_raw(Box::new(StackChannel::new()));
     // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
-    // It is freed only after every producer (INV-CH-01) has been joined and the
-    // consumer (INV-CH-02) has been dropped.
+    // It is freed only after every producer thread has been joined and the
+    // consumer (INV-CH-02) has been dropped: its Drop writes the channel.
     let channel: &'static StackChannel<(usize, usize), 4096, 4> = unsafe { &*channel_ptr };
 
     let handles: Vec<_> = (0..NUM_PRODUCERS)
@@ -83,7 +83,7 @@ fn test_stack_channel_per_producer_fifo() {
     }
 
     // Cleanup
-    // Safety: channel_ptr came from Box::into_raw. Every producer (INV-CH-01) is
+    // Safety: channel_ptr came from Box::into_raw. Every producer thread is
     // joined, and the consumer (INV-CH-02) was dropped inside the receive loop,
     // so nothing borrows the channel and `channel` is not used again.
     unsafe { drop(Box::from_raw(channel_ptr)) };
@@ -102,8 +102,8 @@ fn test_stack_channel_stress() {
     let channel_ptr: *mut StackChannel<u64, 8192, 8> =
         Box::into_raw(Box::new(StackChannel::new()));
     // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
-    // It is freed only after every producer (INV-CH-01) has been joined and the
-    // consumer (INV-CH-02) has been dropped.
+    // It is freed only after every producer thread has been joined and the
+    // consumer (INV-CH-02) has been dropped: its Drop writes the channel.
     let channel: &'static StackChannel<u64, 8192, 8> = unsafe { &*channel_ptr };
 
     let sent_count = Arc::new(AtomicUsize::new(0));
@@ -150,7 +150,7 @@ fn test_stack_channel_stress() {
     assert_eq!(received_count, TOTAL_ITEMS);
 
     // Cleanup
-    // Safety: channel_ptr came from Box::into_raw. Every producer (INV-CH-01) is
+    // Safety: channel_ptr came from Box::into_raw. Every producer thread is
     // joined, and the consumer (INV-CH-02) was dropped inside the receive loop,
     // so nothing borrows the channel and `channel` is not used again.
     unsafe { drop(Box::from_raw(channel_ptr)) };
@@ -165,8 +165,8 @@ fn test_stack_channel_owned_strings() {
     let channel_ptr: *mut StackChannel<String, 256, 4> =
         Box::into_raw(Box::new(StackChannel::new()));
     // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
-    // It is freed only after every producer (INV-CH-01) has been joined and the
-    // consumer (INV-CH-02) has been dropped.
+    // It is freed only after every producer thread has been joined and the
+    // consumer (INV-CH-02) has been dropped: its Drop writes the channel.
     let channel: &'static StackChannel<String, 256, 4> = unsafe { &*channel_ptr };
 
     let handles: Vec<_> = (0..4)
@@ -210,7 +210,7 @@ fn test_stack_channel_owned_strings() {
     }
 
     // Cleanup
-    // Safety: channel_ptr came from Box::into_raw. Every producer (INV-CH-01) is
+    // Safety: channel_ptr came from Box::into_raw. Every producer thread is
     // joined, and the consumer (INV-CH-02) was dropped inside the receive loop,
     // so nothing borrows the channel and `channel` is not used again.
     unsafe { drop(Box::from_raw(channel_ptr)) };

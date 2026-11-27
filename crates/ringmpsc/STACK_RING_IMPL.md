@@ -160,13 +160,21 @@ use ringmpsc_rs::StackRing;
 // 4K slots, stack-allocated
 let ring: StackRing<u64, 4096> = StackRing::new();
 
-// Producer
-unsafe {
-    if let Some((ptr, len)) = ring.reserve(10) {
-        for i in 0..len {
-            *ptr.add(i) = i as u64;
+// Producer: reserve(n) may return fewer than n slots (wrap-around), so loop
+// until all 10 items are committed.
+let mut sent = 0;
+while sent < 10 {
+    // Safety: this is the ring's only producer (INV-SW-01). It writes every
+    // reserved slot before commit(len), so commit publishes only initialized
+    // slots (INV-INIT-01).
+    unsafe {
+        if let Some((ptr, len)) = ring.reserve(10 - sent) {
+            for i in 0..len {
+                ptr.add(i).write((sent + i) as u64);
+            }
+            ring.commit(len);
+            sent += len;
         }
-        ring.commit(len);
     }
 }
 
@@ -193,14 +201,24 @@ thread::scope(|s| {
     for i in 0..4usize {
         let producer = channel.register().expect("at most 4 producers");
         s.spawn(move || {
-            // Safety: this thread is this ring's only producer (INV-CH-01), and
-            // it writes every reserved slot before commit(len) (INV-INIT-03).
-            unsafe {
-                if let Some((ptr, len)) = producer.reserve(100) {
-                    for j in 0..len {
-                        ptr.add(j).write((i * 1000 + j) as u64);
+            // reserve(n) may return fewer than n slots, or None when the ring
+            // is full, so loop until all 100 items are committed.
+            let mut sent = 0;
+            while sent < 100 {
+                // Safety: this thread is the only producer of its ring
+                // (INV-CH-01). It writes every reserved slot before
+                // commit(len), so commit publishes only initialized slots
+                // (INV-INIT-01).
+                unsafe {
+                    if let Some((ptr, len)) = producer.reserve(100 - sent) {
+                        for j in 0..len {
+                            ptr.add(j).write((i * 1000 + sent + j) as u64);
+                        }
+                        producer.commit(len);
+                        sent += len;
+                    } else {
+                        thread::yield_now(); // ring full: back off, don't spin
                     }
-                    producer.commit(len);
                 }
             }
         });
