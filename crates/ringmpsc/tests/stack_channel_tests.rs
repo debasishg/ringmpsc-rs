@@ -14,9 +14,13 @@ fn test_stack_channel_per_producer_fifo() {
     const NUM_PRODUCERS: usize = 4;
     const ITEMS_PER_PRODUCER: usize = 1000;
 
-    // Use Box::leak to get 'static lifetime for thread sharing
-    let channel: &'static StackChannel<(usize, usize), 4096, 4> =
-        Box::leak(Box::new(StackChannel::new()));
+    // A raw pointer from Box::into_raw, so the channel can be freed through it
+    // at the end. Freeing through a pointer cast from the shared reference
+    // would be undefined behavior (it only grants read access).
+    let channel_ptr: *mut StackChannel<(usize, usize), 4096, 4> = Box::into_raw(Box::new(StackChannel::new()));
+    // Safety: channel_ptr comes from Box::into_raw and is freed only after
+    // every thread using `channel` has been joined.
+    let channel: &'static StackChannel<(usize, usize), 4096, 4> = unsafe { &*channel_ptr };
 
     let handles: Vec<_> = (0..NUM_PRODUCERS)
         .map(|producer_id| {
@@ -76,11 +80,9 @@ fn test_stack_channel_per_producer_fifo() {
     }
 
     // Cleanup
-    unsafe {
-        drop(Box::from_raw(
-            channel as *const _ as *mut StackChannel<(usize, usize), 4096, 4>,
-        ));
-    }
+    // Safety: channel_ptr came from Box::into_raw, all threads are joined, and
+    // `channel` is not used after this point.
+    unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
 /// Stress test with concurrent producers and consumer.
@@ -90,8 +92,13 @@ fn test_stack_channel_stress() {
     const ITEMS_PER_PRODUCER: usize = 50_000;
     const TOTAL_ITEMS: usize = NUM_PRODUCERS * ITEMS_PER_PRODUCER;
 
-    let channel: &'static StackChannel<u64, 8192, 8> =
-        Box::leak(Box::new(StackChannel::new()));
+    // A raw pointer from Box::into_raw, so the channel can be freed through it
+    // at the end. Freeing through a pointer cast from the shared reference
+    // would be undefined behavior (it only grants read access).
+    let channel_ptr: *mut StackChannel<u64, 8192, 8> = Box::into_raw(Box::new(StackChannel::new()));
+    // Safety: channel_ptr comes from Box::into_raw and is freed only after
+    // every thread using `channel` has been joined.
+    let channel: &'static StackChannel<u64, 8192, 8> = unsafe { &*channel_ptr };
 
     let sent_count = Arc::new(AtomicUsize::new(0));
 
@@ -137,18 +144,21 @@ fn test_stack_channel_stress() {
     assert_eq!(received_count, TOTAL_ITEMS);
 
     // Cleanup
-    unsafe {
-        drop(Box::from_raw(
-            channel as *const _ as *mut StackChannel<u64, 8192, 8>,
-        ));
-    }
+    // Safety: channel_ptr came from Box::into_raw, all threads are joined, and
+    // `channel` is not used after this point.
+    unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
 /// Test consume_all_owned with String (verifies ownership transfer).
 #[test]
 fn test_stack_channel_owned_strings() {
-    let channel: &'static StackChannel<String, 256, 4> =
-        Box::leak(Box::new(StackChannel::new()));
+    // A raw pointer from Box::into_raw, so the channel can be freed through it
+    // at the end. Freeing through a pointer cast from the shared reference
+    // would be undefined behavior (it only grants read access).
+    let channel_ptr: *mut StackChannel<String, 256, 4> = Box::into_raw(Box::new(StackChannel::new()));
+    // Safety: channel_ptr comes from Box::into_raw and is freed only after
+    // every thread using `channel` has been joined.
+    let channel: &'static StackChannel<String, 256, 4> = unsafe { &*channel_ptr };
 
     let handles: Vec<_> = (0..4)
         .map(|i| {
@@ -191,11 +201,9 @@ fn test_stack_channel_owned_strings() {
     }
 
     // Cleanup
-    unsafe {
-        drop(Box::from_raw(
-            channel as *const _ as *mut StackChannel<String, 256, 4>,
-        ));
-    }
+    // Safety: channel_ptr came from Box::into_raw, all threads are joined, and
+    // `channel` is not used after this point.
+    unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
 /// Test producer registration limits.
