@@ -179,7 +179,7 @@ pub(crate) fn free_space(tail: u64, head: u64, cap: usize) -> usize { ... }
 Phase 0 proofs are **not checked by `cargo build` or `cargo test`**. They run as a separate step, like the Quint model checks:
 
 ```
-charon (on crates/ringmpsc) → aeneas → lean/Generated/Window.lean → lake build
+charon (on crates/ringmpsc) → aeneas → lean/RingmpscRs/Funs.lean → lake build
 ```
 
 - **Where it runs:** in `/verify` (step 4, `check.sh --check-generated`). CI runs the same command in `.github/workflows/lean.yml` on pushes that touch the proved code, the code citing it, or the Lean project. It is path-filtered, so it is not a required check.
@@ -209,6 +209,105 @@ What we learned:
 - **Charon and Aeneas ship as one release.** The macOS Aeneas release bundles `charon` and `charon-driver`, so nothing is built from source. Charon needs its own nightly (`nightly-2026-09-17`) and its own target directory (`target/charon`). It coexists with the Verus pin and the stable toolchain.
 - **`usize` width is abstract in Aeneas,** so `u64 as usize` is a truncating cast in the model. The theorems are proved for both 32-bit and 64-bit `usize` (open question 2). On a 32-bit target, `read_window` could return an empty window if `tail - head` were a multiple of `2^32`. INV-SEQ-01 rules that out, and `read_window_spec` states it as a premise.
 - **The first proofs needed Aeneas-specific tactics.** `omega` can't see through `Usize` comparisons in `if` conditions, and `scalar_tac` can loop on cast equations. The workarounds are small and noted in `RingLean/Window.lean`.
+
+### How a proof flows from Rust to Lean: `write_window`
+
+Five steps take a Rust function to a proof that a `// Safety:` comment can cite. The example is `write_window`, which picks the buffer slots for a producer's reservation.
+
+**Step 1: Move the arithmetic into a pure Rust function.** Charon and Aeneas can't handle atomics, pointers, `unsafe` or generics, so the index math moves out of `make_reservation` into `crates/ringmpsc/src/window.rs`:
+
+```rust
+pub(crate) const fn write_window(tail: u64, n: usize, cap: usize) -> (usize, usize) {
+    let idx = slot_index(tail, cap - 1);
+    let room = cap - idx;
+    let len = if n < room { n } else { room };   // `if`, not `min`: no trait model needed in Lean
+    (idx, len)
+}
+```
+
+`Ring` and `StackRing` call it and pass the result to the `unsafe` block, which is unchanged:
+
+```rust
+let (idx, contiguous) = crate::window::write_window(tail, n, self.capacity());
+let slice = unsafe { std::slice::from_raw_parts_mut(self.slot(idx), contiguous) };
+```
+
+The refactor removes no `unsafe`. It changes how that `unsafe` is justified: the numbers passed into it now come from a proved function. Because the ring runs the same function that is proved, the proof is about production code.
+
+**Step 2: Charon extracts the compiled code.** `check.sh` runs `charon cargo --preset=aeneas`. Charon hooks into rustc and writes the `window` module's MIR to `ringmpsc_rs.llbc`.
+
+**Step 3: Aeneas generates Lean definitions.** `aeneas -backend lean` turns the `.llbc` file into `crates/ringmpsc/lean/RingmpscRs/Funs.lean`. Nobody edits this file; every run regenerates it.
+
+```lean
+def window.write_window (tail : Std.U64) (n : Std.Usize) (cap : Std.Usize) :
+  Result (Std.Usize × Std.Usize) := do
+  let i ← cap - 1#usize                -- fails on underflow
+  let idx ← window.slot_index tail i
+  let room ← cap - idx                 -- fails on underflow
+  if n < room then ok (idx, n) else ok (idx, room)
+```
+
+Each arithmetic step returns a `Result` because it could panic in Rust. Proving that the function returns `ok` therefore also proves the Rust function can't panic.
+
+**Step 4: Write the theorem by hand.** `crates/ringmpsc/lean/RingLean/Window.lean` states the property and proves it:
+
+```lean
+theorem write_window_spec (tail : U64) (n cap : Usize) (k : Nat) (hcap : cap.val = 2 ^ k) :
+    write_window tail n cap ⦃ idx len =>
+      idx.val = tail.val % cap.val ∧ idx.val < cap.val ∧
+      idx.val + len.val ≤ cap.val ∧ len.val ≤ n.val ∧
+      len.val = min n.val (cap.val - idx.val) ∧
+      (1 ≤ n.val → 1 ≤ len.val) ⦄ := by
+  have hpos : 1 ≤ cap.val := by rw [hcap]; exact Nat.one_le_two_pow
+  unfold write_window
+  step as ⟨i, hi⟩
+  step with slot_index_spec tail i cap k hcap (by omega) as ⟨idx, hidx, hlt⟩
+  step as ⟨room, hroom⟩
+  split <;> simp only [spec_ok] <;> refine ⟨hidx, hlt, ?_, ?_, ?_, ?_⟩ <;> scalar_tac
+```
+
+`f ⦃ r => P r ⦄` (Aeneas notation; `⦃ ⦄` are U+2983/U+2984) means "`f` returns `ok r` and `P r` holds". The proof works through the generated body one line at a time:
+
+- `have hpos` proves `cap ≥ 1` up front, so the `cap - 1` on the next line can't underflow. `Nat.one_le_two_pow` is from Lean's standard library.
+- `unfold write_window` replaces the name with the generated body from step 3.
+- Each `step` handles one `←` line. It proves the line can't fail and records what the line computed (`hi`, `hroom`). For the `slot_index` call it reuses the earlier `slot_index_spec` theorem, which proves that masking equals `mod` for a power-of-two `cap`.
+- `split` splits on the `if`. `simp only [spec_ok]` removes the `⦃ ⦄` wrapper, and `refine` fills the first two facts directly from `hidx` and `hlt`. `scalar_tac` proves the remaining arithmetic in both branches. The non-empty case (`1 ≤ n → 1 ≤ len`) needs `hlt`: `idx < cap` makes `room ≥ 1`.
+
+Larger theorems are built from the per-function ones. `reservation_disjoint` combines `free_space_spec` and `write_window_spec` to show that an allowed reservation never overlaps the consumer's `[head, tail)`.
+
+**Step 5: Check the proofs and the links.** `crates/ringmpsc/lean/scripts/check.sh` runs these in order (`/verify` and `lean.yml` run it with `--check-generated`):
+
+1. **Regenerate.** Run Charon and Aeneas again. With `--check-generated`, fail if the committed `RingmpscRs/` differs from a fresh run, so a change to `window.rs` can't go unproved.
+2. **`lake build`.** Build the Aeneas Lean library (pinned in `lakefile.toml`), `RingmpscRs` and `RingLean`. Type-checking a theorem checks its proof: the tactics build a proof term and Lean's kernel re-checks it. The script also fails if the build log reports a `sorry`.
+3. **Axiom audit.** `scripts/Audit.lean` calls `collectAxioms` on every theorem in `RingLean.*`, `private` ones included. It allows only `propext`, `Classical.choice` and `Quot.sound`, which rejects `sorry` (`sorryAx`), user-declared `axiom`s and `native_decide` (`Lean.ofReduceBool`). It prints `THEOREM <name>` for each theorem that passes.
+4. **Citation check.** Every `[lean: name]` tag in `crates/ringmpsc/src/` must name one of those audited theorems. For example, `ring.rs` cites `[lean: write_window_spec, reservation_disjoint, free_space_stale_conservative]`.
+
+#### The overall flow
+
+```
+window.rs (Rust, pure)  ◄── called by ring.rs / stack_ring.rs before their unsafe blocks
+   │  Charon (rustc driver)
+   ▼
+ringmpsc_rs.llbc
+   │  Aeneas
+   ▼
+RingmpscRs/Funs.lean  (generated; --check-generated keeps it in sync with window.rs)
+   │  imported by name
+   ▼
+RingLean/Window.lean  (hand-written theorems about those definitions)
+   │  lake build: the kernel checks each proof
+   ▼
+scripts/Audit.lean    (only standard axioms; emits the list of proved theorems)
+   │
+   ▼
+[lean: …] tags in the // Safety: comments of ring.rs / stack_ring.rs, checked against that list
+```
+
+**What ties the generated and hand-written halves together.** `Window.lean` imports `RingmpscRs.Funs` and opens `namespace ringmpsc_rs.window`, the namespace Aeneas generates into. So `write_window` in the theorem is the generated definition itself, not a restatement of it. `unfold` brings in its body, and if `window.rs` changes, either the proof still works on the new body or `lake build` fails.
+
+**What a human still reviews.** Lean checks that each proof proves its statement. It doesn't check that the statement is the property the `unsafe` code needs. The theorem statements (the premises before the `:` and the conditions inside `⦃ ⦄`) are the trusted, reviewed part. The mutation check above is evidence that they are strong enough to catch the bugs that matter.
+
+**What the proofs assume.** The proofs cover index arithmetic. Premises such as `head ≤ tail` (INV-SEQ-03) and `tail - head ≤ cap` (INV-SEQ-01) are assumed here and checked elsewhere: by Verus and Quint for the protocol, and by loom and Miri for the memory orderings.
 
 ---
 
