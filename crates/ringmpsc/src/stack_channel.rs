@@ -27,8 +27,8 @@
 //!
 //! # Usage
 //!
-//! ```ignore
-//! use ringmpsc_rs::{StackChannel, StackChannelError};
+//! ```
+//! use ringmpsc_rs::StackChannel;
 //! use std::thread;
 //!
 //! // 4K slots per ring, max 4 producers
@@ -38,7 +38,7 @@
 //! // is freed normally when it goes out of scope.
 //! thread::scope(|s| {
 //!     for i in 0..4 {
-//!         let producer = channel.register().unwrap();
+//!         let producer = channel.register().expect("at most 4 producers");
 //!         s.spawn(move || {
 //!             producer.push((i * 1000) as u64);
 //!         });
@@ -46,7 +46,11 @@
 //! });
 //!
 //! // Consume on main thread
-//! let total = channel.consumer().unwrap().consume_all(|v| println!("{}", v));
+//! let total = channel
+//!     .consumer()
+//!     .expect("no other consumer exists")
+//!     .consume_all(|v| println!("{}", v));
+//! assert_eq!(total, 4);
 //! ```
 //!
 //! # Size Constraints

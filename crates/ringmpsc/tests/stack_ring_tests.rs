@@ -29,9 +29,11 @@ fn test_stack_ring_spsc_threads() {
     let producer = thread::spawn(move || {
         let mut sent = 0u64;
         while sent < MSG_COUNT {
+            // Safety: this thread is the ring's only producer (INV-SW-01). It
+            // writes every reserved slot before commit(len) (INV-INIT-03).
             unsafe {
                 if let Some((ptr, len)) = ring.reserve(1) {
-                    *ptr = sent;
+                    ptr.write(sent);
                     ring.commit(len);
                     sent += 1;
                 } else {
@@ -47,6 +49,7 @@ fn test_stack_ring_spsc_threads() {
         let mut sum = 0u64;
         let mut count = 0u64;
         loop {
+            // Safety: this thread is the ring's only consumer (INV-SW-02).
             unsafe {
                 let consumed = ring.consume_batch(|v| {
                     sum += v;
@@ -90,9 +93,11 @@ fn test_stack_ring_fifo_order() {
     let producer = thread::spawn(move || {
         for i in 0..10_000u64 {
             loop {
+                // Safety: this thread is the ring's only producer (INV-SW-01). It
+                // writes every reserved slot before commit(len) (INV-INIT-03).
                 unsafe {
                     if let Some((ptr, len)) = ring.reserve(1) {
-                        *ptr = i;
+                        ptr.write(i);
                         ring.commit(len);
                         break;
                     }
@@ -108,6 +113,7 @@ fn test_stack_ring_fifo_order() {
         let mut violations = 0u64;
 
         loop {
+            // Safety: this thread is the ring's only consumer (INV-SW-02).
             unsafe {
                 let consumed = ring.consume_batch(|v| {
                     if *v != expected {
@@ -184,6 +190,8 @@ fn test_stack_ring_stress() {
         let mut sent = 0u64;
         while sent < messages {
             let batch = ((messages - sent) as usize).min(64);
+            // Safety: this thread is the ring's only producer (INV-SW-01). It
+            // writes every reserved slot before commit(len) (INV-INIT-03).
             unsafe {
                 if let Some((ptr, len)) = ring.reserve(batch) {
                     for i in 0..len {
@@ -203,6 +211,7 @@ fn test_stack_ring_stress() {
     let consumer = thread::spawn(move || {
         let mut received = 0u64;
         loop {
+            // Safety: this thread is the ring's only consumer (INV-SW-02).
             unsafe {
                 let count = ring.consume_batch(|_| {});
                 received += count as u64;

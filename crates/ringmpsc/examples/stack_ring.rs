@@ -46,7 +46,7 @@ fn example_spsc_basic() {
         for batch_start in (0..10).step_by(5) {
             if let Some((ptr, len)) = ring.reserve(5) {
                 for i in 0..len {
-                    *ptr.add(i) = (batch_start + i) as u64 * 10;
+                    ptr.add(i).write((batch_start + i) as u64 * 10);
                 }
                 ring.commit(len);
             }
@@ -75,7 +75,9 @@ fn example_spsc_throughput() {
     let ring = Box::new(StackRing::<u64, 65536>::new());
     let ring_ptr = Box::into_raw(ring);
 
-    // SAFETY: We control the lifetime - ring lives until both threads complete
+    // Safety: ring_ptr comes from Box::into_raw, so it is valid and aligned. It
+    // is freed only after the producer (INV-SW-01) thread is joined and this
+    // thread, the consumer (INV-SW-02), is done with the ring.
     let ring_ref: &'static StackRing<u64, 65536> = unsafe { &*ring_ptr };
 
     let start = Instant::now();
@@ -87,7 +89,7 @@ fn example_spsc_throughput() {
             unsafe {
                 if let Some((ptr, len)) = ring_ref.reserve(1024) {
                     for i in 0..len {
-                        *ptr.add(i) = sent + i as u64;
+                        ptr.add(i).write(sent + i as u64);
                     }
                     ring_ref.commit(len);
                     sent += len as u64;
@@ -112,10 +114,13 @@ fn example_spsc_throughput() {
         }
     }
 
-    producer.join().unwrap();
+    producer.join().expect("fatal: producer thread panicked");
     let elapsed = start.elapsed();
 
     // Cleanup
+    // Safety: ring_ptr came from Box::into_raw; the producer (INV-SW-01) is
+    // joined and the consumer (INV-SW-02) loop has ended, so nothing borrows the
+    // ring.
     unsafe {
         drop(Box::from_raw(ring_ptr));
     }
@@ -136,9 +141,9 @@ fn example_mpsc_basic() {
     let channel: StackChannel<String, 256, 4> = StackChannel::new();
 
     // Register 3 producers
-    let p1 = channel.register().unwrap();
-    let p2 = channel.register().unwrap();
-    let p3 = channel.register().unwrap();
+    let p1 = channel.register().expect("fatal: too many producers");
+    let p2 = channel.register().expect("fatal: too many producers");
+    let p3 = channel.register().expect("fatal: too many producers");
 
     println!("   Registered {} producers", channel.producer_count());
 
@@ -149,7 +154,10 @@ fn example_mpsc_basic() {
 
     // Consume all messages
     let mut messages = Vec::new();
-    channel.consumer().unwrap().consume_all_owned(|msg| messages.push(msg));
+    channel
+        .consumer()
+        .expect("fatal: consumer already taken")
+        .consume_all_owned(|msg| messages.push(msg));
 
     for msg in &messages {
         println!("   Received: {}", msg);
@@ -169,6 +177,9 @@ fn example_mpsc_throughput() {
     // Put channel on heap for 'static lifetime, but rings are still inline
     let channel = Box::new(StackChannel::<u64, 65536, 4>::new());
     let channel_ptr = Box::into_raw(channel);
+    // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
+    // It is freed only after every producer (INV-CH-01) is joined and the
+    // consumer (INV-CH-02) is dropped.
     let channel_ref: &'static StackChannel<u64, 65536, 4> = unsafe { &*channel_ptr };
 
     let start = Instant::now();
@@ -176,7 +187,7 @@ fn example_mpsc_throughput() {
     // Spawn producer threads
     let handles: Vec<_> = (0..NUM_PRODUCERS)
         .map(|id| {
-            let producer = channel_ref.register().unwrap();
+            let producer = channel_ref.register().expect("fatal: too many producers");
             thread::spawn(move || {
                 let base = id as u64 * msg_per_producer;
                 let mut sent = 0u64;
@@ -184,7 +195,7 @@ fn example_mpsc_throughput() {
                     unsafe {
                         if let Some((ptr, len)) = producer.reserve(512) {
                             for i in 0..len {
-                                *ptr.add(i) = base + sent + i as u64;
+                                ptr.add(i).write(base + sent + i as u64);
                             }
                             producer.commit(len);
                             sent += len as u64;
@@ -199,7 +210,7 @@ fn example_mpsc_throughput() {
 
     // Consumer on main thread
     let mut received = 0u64;
-    let mut consumer = channel_ref.consumer().unwrap();
+    let mut consumer = channel_ref.consumer().expect("fatal: consumer already taken");
     while received < MSG_COUNT {
         let consumed = consumer.consume_all(|_| {});
         received += consumed as u64;
@@ -209,7 +220,7 @@ fn example_mpsc_throughput() {
     }
 
     for h in handles {
-        h.join().unwrap();
+        h.join().expect("fatal: producer thread panicked");
     }
 
     let elapsed = start.elapsed();

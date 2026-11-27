@@ -78,7 +78,7 @@ fn bench_stack_single_thread(c: &mut Criterion) {
                     unsafe {
                         if let Some((ptr, len)) = ring.reserve(want) {
                             for i in 0..len {
-                                *ptr.add(i) = black_box((sent + i as u64) as u32);
+                                ptr.add(i).write(black_box((sent + i as u64) as u32));
                             }
                             ring.commit(len);
                             sent += len as u64;
@@ -168,7 +168,9 @@ fn bench_stack_spsc(c: &mut Criterion) {
             let ring = Box::new(StackRing::<u32, 65536>::new());
             let ring_ptr = Box::into_raw(ring);
             
-            // SAFETY: We control the lifetime - ring lives until both threads complete
+            // Safety: ring_ptr comes from Box::into_raw, so it is valid and aligned.
+            // It is freed only after the producer (INV-SW-01) thread is joined and
+            // this thread, the consumer (INV-SW-02), is done with the ring.
             let ring_ref: &'static StackRing<u32, 65536> = unsafe { &*ring_ptr };
             
             let done = Arc::new(AtomicBool::new(false));
@@ -181,7 +183,7 @@ fn bench_stack_spsc(c: &mut Criterion) {
                     unsafe {
                         if let Some((ptr, len)) = ring_ref.reserve(want) {
                             for i in 0..len {
-                                *ptr.add(i) = (sent + i as u64) as u32;
+                                ptr.add(i).write((sent + i as u64) as u32);
                             }
                             ring_ref.commit(len);
                             sent += len as u64;
@@ -206,9 +208,12 @@ fn bench_stack_spsc(c: &mut Criterion) {
                 }
             }
 
-            producer.join().unwrap();
+            producer.join().expect("producer thread panicked");
             
             // Clean up
+            // Safety: ring_ptr came from Box::into_raw; the producer (INV-SW-01)
+            // is joined and the consumer (INV-SW-02) loop has ended, so nothing
+            // borrows the ring.
             unsafe { drop(Box::from_raw(ring_ptr)); }
             
             black_box(total)
@@ -243,7 +248,7 @@ fn bench_stack_sizes(c: &mut Criterion) {
                             unsafe {
                                 if let Some((ptr, len)) = ring.reserve(want) {
                                     for i in 0..len {
-                                        *ptr.add(i) = black_box((sent + i as u64) as u32);
+                                        ptr.add(i).write(black_box((sent + i as u64) as u32));
                                     }
                                     ring.commit(len);
                                     sent += len as u64;
@@ -353,11 +358,14 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
         b.iter(|| {
             let channel = Box::new(StackChannel::<u32, 65536, 2>::new());
             let channel_ptr = Box::into_raw(channel);
+            // Safety: channel_ptr comes from Box::into_raw, so it is valid and
+            // aligned. It is freed only after every producer (INV-CH-01) is joined
+            // and the consumer (INV-CH-02) is dropped.
             let channel_ref: &'static StackChannel<u32, 65536, 2> = unsafe { &*channel_ptr };
             
             let handles: Vec<_> = (0..NUM_PRODUCERS)
                 .map(|_| {
-                    let producer = channel_ref.register().unwrap();
+                    let producer = channel_ref.register().expect("register producer");
                     thread::spawn(move || {
                         let mut sent = 0u64;
                         while sent < msg_per_producer {
@@ -365,7 +373,7 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
                             unsafe {
                                 if let Some((ptr, len)) = producer.reserve(want) {
                                     for i in 0..len {
-                                        *ptr.add(i) = (sent + i as u64) as u32;
+                                        ptr.add(i).write((sent + i as u64) as u32);
                                     }
                                     producer.commit(len);
                                     sent += len as u64;
@@ -379,7 +387,7 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
                 .collect();
             
             let mut total = 0u64;
-            let mut consumer = channel_ref.consumer().unwrap();
+            let mut consumer = channel_ref.consumer().expect("no other consumer exists");
             loop {
                 let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
@@ -392,7 +400,7 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
             }
             
             for h in handles {
-                h.join().unwrap();
+                h.join().expect("producer thread panicked");
             }
             // The consumer's Drop writes to the channel (it releases the
             // INV-CH-02 consumer flag), so it must run before the free.
@@ -421,11 +429,14 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
         b.iter(|| {
             let channel = Box::new(StackChannel::<u32, 65536, 4>::new());
             let channel_ptr = Box::into_raw(channel);
+            // Safety: channel_ptr comes from Box::into_raw, so it is valid and
+            // aligned. It is freed only after every producer (INV-CH-01) is joined
+            // and the consumer (INV-CH-02) is dropped.
             let channel_ref: &'static StackChannel<u32, 65536, 4> = unsafe { &*channel_ptr };
             
             let handles: Vec<_> = (0..NUM_PRODUCERS)
                 .map(|_| {
-                    let producer = channel_ref.register().unwrap();
+                    let producer = channel_ref.register().expect("register producer");
                     thread::spawn(move || {
                         let mut sent = 0u64;
                         while sent < msg_per_producer {
@@ -433,7 +444,7 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
                             unsafe {
                                 if let Some((ptr, len)) = producer.reserve(want) {
                                     for i in 0..len {
-                                        *ptr.add(i) = (sent + i as u64) as u32;
+                                        ptr.add(i).write((sent + i as u64) as u32);
                                     }
                                     producer.commit(len);
                                     sent += len as u64;
@@ -447,7 +458,7 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
                 .collect();
             
             let mut total = 0u64;
-            let mut consumer = channel_ref.consumer().unwrap();
+            let mut consumer = channel_ref.consumer().expect("no other consumer exists");
             loop {
                 let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
@@ -460,7 +471,7 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
             }
             
             for h in handles {
-                h.join().unwrap();
+                h.join().expect("producer thread panicked");
             }
             // The consumer's Drop writes to the channel (it releases the
             // INV-CH-02 consumer flag), so it must run before the free.
@@ -489,11 +500,14 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
         b.iter(|| {
             let channel = Box::new(StackChannel::<u32, 65536, 8>::new());
             let channel_ptr = Box::into_raw(channel);
+            // Safety: channel_ptr comes from Box::into_raw, so it is valid and
+            // aligned. It is freed only after every producer (INV-CH-01) is joined
+            // and the consumer (INV-CH-02) is dropped.
             let channel_ref: &'static StackChannel<u32, 65536, 8> = unsafe { &*channel_ptr };
             
             let handles: Vec<_> = (0..NUM_PRODUCERS)
                 .map(|_| {
-                    let producer = channel_ref.register().unwrap();
+                    let producer = channel_ref.register().expect("register producer");
                     thread::spawn(move || {
                         let mut sent = 0u64;
                         while sent < msg_per_producer {
@@ -501,7 +515,7 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
                             unsafe {
                                 if let Some((ptr, len)) = producer.reserve(want) {
                                     for i in 0..len {
-                                        *ptr.add(i) = (sent + i as u64) as u32;
+                                        ptr.add(i).write((sent + i as u64) as u32);
                                     }
                                     producer.commit(len);
                                     sent += len as u64;
@@ -515,7 +529,7 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
                 .collect();
             
             let mut total = 0u64;
-            let mut consumer = channel_ref.consumer().unwrap();
+            let mut consumer = channel_ref.consumer().expect("no other consumer exists");
             loop {
                 let consumed = consumer.consume_all(|_| {});
                 total += consumed as u64;
@@ -528,7 +542,7 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
             }
             
             for h in handles {
-                h.join().unwrap();
+                h.join().expect("producer thread panicked");
             }
             // The consumer's Drop writes to the channel (it releases the
             // INV-CH-02 consumer flag), so it must run before the free.
