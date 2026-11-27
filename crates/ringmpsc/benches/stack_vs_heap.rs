@@ -394,7 +394,13 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
             for h in handles {
                 h.join().unwrap();
             }
+            // The consumer's Drop writes to the channel (it releases the
+            // INV-CH-02 consumer flag), so it must run before the free.
+            drop(consumer);
             
+            // Safety: channel_ptr came from Box::into_raw; the producers
+            // (INV-CH-01) are joined and the consumer (INV-CH-02) is dropped,
+            // so nothing borrows the channel any more.
             unsafe { drop(Box::from_raw(channel_ptr)); }
             black_box(total)
         });
@@ -456,7 +462,13 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
             for h in handles {
                 h.join().unwrap();
             }
+            // The consumer's Drop writes to the channel (it releases the
+            // INV-CH-02 consumer flag), so it must run before the free.
+            drop(consumer);
             
+            // Safety: channel_ptr came from Box::into_raw; the producers
+            // (INV-CH-01) are joined and the consumer (INV-CH-02) is dropped,
+            // so nothing borrows the channel any more.
             unsafe { drop(Box::from_raw(channel_ptr)); }
             black_box(total)
         });
@@ -518,7 +530,13 @@ fn bench_stack_mpsc_8p(c: &mut Criterion) {
             for h in handles {
                 h.join().unwrap();
             }
+            // The consumer's Drop writes to the channel (it releases the
+            // INV-CH-02 consumer flag), so it must run before the free.
+            drop(consumer);
             
+            // Safety: channel_ptr came from Box::into_raw; the producers
+            // (INV-CH-01) are joined and the consumer (INV-CH-02) is dropped,
+            // so nothing borrows the channel any more.
             unsafe { drop(Box::from_raw(channel_ptr)); }
             black_box(total)
         });

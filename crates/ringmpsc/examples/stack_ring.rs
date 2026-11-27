@@ -214,7 +214,12 @@ fn example_mpsc_throughput() {
 
     let elapsed = start.elapsed();
 
-    // Cleanup
+    // Cleanup. The consumer's Drop writes to the channel (it releases the
+    // INV-CH-02 consumer flag), so it must run before the free.
+    drop(consumer);
+    // Safety: channel_ptr came from Box::into_raw; the producers (INV-CH-01)
+    // are joined and the consumer (INV-CH-02) is dropped, so nothing borrows
+    // the channel any more.
     unsafe {
         drop(Box::from_raw(channel_ptr));
     }

@@ -15,8 +15,13 @@ const MSG_COUNT: u64 = 100_000;
 /// Test basic SPSC pattern with separate producer and consumer threads.
 #[test]
 fn test_stack_ring_spsc_threads() {
-    // Use Box::leak to get 'static lifetime for thread sharing
-    let ring: &'static StackRing<u64, 4096> = Box::leak(Box::new(StackRing::new()));
+    // A raw pointer from Box::into_raw, so the ring can be freed through it at
+    // the end. Box::leak would never free it.
+    let ring_ptr: *mut StackRing<u64, 4096> = Box::into_raw(Box::new(StackRing::new()));
+    // Safety: ring_ptr comes from Box::into_raw, so it is valid and aligned. It
+    // is freed only after the one producer (INV-SW-01) and the one consumer
+    // (INV-SW-02) thread have both been joined.
+    let ring: &'static StackRing<u64, 4096> = unsafe { &*ring_ptr };
     let received = Arc::new(AtomicU64::new(0));
     let received_clone = Arc::clone(&received);
 
@@ -59,8 +64,11 @@ fn test_stack_ring_spsc_threads() {
         sum
     });
 
-    producer.join().unwrap();
-    let sum = consumer.join().unwrap();
+    producer.join().expect("producer thread panicked");
+    let sum = consumer.join().expect("consumer thread panicked");
+    // Safety: ring_ptr came from Box::into_raw, and the producer (INV-SW-01) and
+    // consumer (INV-SW-02) threads are joined, so nothing borrows the ring.
+    unsafe { drop(Box::from_raw(ring_ptr)) };
 
     assert_eq!(received.load(Ordering::Acquire), MSG_COUNT);
     // Sum of 0..MSG_COUNT = MSG_COUNT * (MSG_COUNT - 1) / 2
@@ -71,7 +79,13 @@ fn test_stack_ring_spsc_threads() {
 /// Test FIFO ordering is preserved.
 #[test]
 fn test_stack_ring_fifo_order() {
-    let ring: &'static StackRing<u64, 1024> = Box::leak(Box::new(StackRing::new()));
+    // A raw pointer from Box::into_raw, so the ring can be freed through it at
+    // the end. Box::leak would never free it.
+    let ring_ptr: *mut StackRing<u64, 1024> = Box::into_raw(Box::new(StackRing::new()));
+    // Safety: ring_ptr comes from Box::into_raw, so it is valid and aligned. It
+    // is freed only after the one producer (INV-SW-01) and the one consumer
+    // (INV-SW-02) thread have both been joined.
+    let ring: &'static StackRing<u64, 1024> = unsafe { &*ring_ptr };
 
     let producer = thread::spawn(move || {
         for i in 0..10_000u64 {
@@ -109,8 +123,11 @@ fn test_stack_ring_fifo_order() {
         violations
     });
 
-    producer.join().unwrap();
-    let violations = consumer.join().unwrap();
+    producer.join().expect("producer thread panicked");
+    let violations = consumer.join().expect("consumer thread panicked");
+    // Safety: ring_ptr came from Box::into_raw, and the producer (INV-SW-01) and
+    // consumer (INV-SW-02) threads are joined, so nothing borrows the ring.
+    unsafe { drop(Box::from_raw(ring_ptr)) };
     assert_eq!(violations, 0, "FIFO order violated");
 }
 
@@ -154,7 +171,13 @@ fn test_stack_ring_batch_wrap() {
 /// Stress test with rapid producer/consumer cycling.
 #[test]
 fn test_stack_ring_stress() {
-    let ring: &'static StackRing<u64, 8192> = Box::leak(Box::new(StackRing::new()));
+    // A raw pointer from Box::into_raw, so the ring can be freed through it at
+    // the end. Box::leak would never free it.
+    let ring_ptr: *mut StackRing<u64, 8192> = Box::into_raw(Box::new(StackRing::new()));
+    // Safety: ring_ptr comes from Box::into_raw, so it is valid and aligned. It
+    // is freed only after the one producer (INV-SW-01) and the one consumer
+    // (INV-SW-02) thread have both been joined.
+    let ring: &'static StackRing<u64, 8192> = unsafe { &*ring_ptr };
     let messages = 500_000u64;
 
     let producer = thread::spawn(move || {
@@ -191,8 +214,11 @@ fn test_stack_ring_stress() {
         received
     });
 
-    let sent = producer.join().unwrap();
-    let received = consumer.join().unwrap();
+    let sent = producer.join().expect("producer thread panicked");
+    let received = consumer.join().expect("consumer thread panicked");
+    // Safety: ring_ptr came from Box::into_raw, and the producer (INV-SW-01) and
+    // consumer (INV-SW-02) threads are joined, so nothing borrows the ring.
+    unsafe { drop(Box::from_raw(ring_ptr)) };
 
     assert_eq!(sent, messages);
     assert_eq!(received, messages);
