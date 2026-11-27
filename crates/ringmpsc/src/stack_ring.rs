@@ -250,21 +250,40 @@ impl<T, const N: usize> StackRing<T, N> {
     /// it is a consistent one: some `tail - head` the ring actually had, so it
     /// is at most `capacity()` while INV-SEQ-01 holds (see
     /// `occupancy_snapshot` in `ring.rs`).
+    ///
+    /// It retries if the consumer advances in the middle of reading, so
+    /// while the consumer is very busy a call can take several attempts. The
+    /// producer and consumer calling it on their own ring almost never retry.
     #[inline]
     pub fn len(&self) -> usize {
         crate::ring::occupancy_snapshot(&self.head, &self.tail) as usize
     }
 
     /// Returns true if the ring is empty.
+    ///
+    /// Safe to call from any thread. Called from a thread other than the
+    /// producer or consumer, the answer may already be stale. But `true`
+    /// never pairs a stale `tail` with a newer `head`: it means the consumer
+    /// itself saw `tail == head` when it last moved `head`.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        // Two Relaxed loads, not `len()`. From a thread other than the
-        // producer or consumer this is only a hint: it may be stale or pair
-        // loads from different moments. It stays cheap for polling loops.
-        self.tail.load(Ordering::Relaxed) == self.head.load(Ordering::Relaxed)
+        // Load head first, with Acquire, then tail. As in `occupancy_snapshot`,
+        // the consumer stores `head = h` only after reading some `tail >= h`,
+        // so the tail loaded here is at least that tail, and `tail == h` means
+        // the consumer saw the ring empty when it stored `h`. Loading tail first,
+        // or with Relaxed loads, could pair a stale tail with a head that had
+        // caught up to it, and report queued items as empty.
+        //
+        // No retry is needed: a stale answer is fine for an emptiness hint,
+        // only a wrong one isn't. Two loads, so it stays cheap for polling.
+        let head = self.head.load(Ordering::Acquire);
+        self.tail.load(Ordering::Acquire) == head
     }
 
     /// Returns true if the ring is full.
+    ///
+    /// `len() >= capacity()`, so like `len()` it may retry while the
+    /// consumer keeps advancing.
     #[inline]
     pub fn is_full(&self) -> bool {
         self.len() >= N

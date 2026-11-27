@@ -42,7 +42,8 @@ impl Drop for SetOnPanic<'_> {
 }
 
 /// Runs `produce` and `consume` concurrently with an observer that calls
-/// `observe` until both finish. Returns the number of observations.
+/// `observe` until both finish, and at least once. Returns the number of
+/// observations.
 ///
 /// `produce` and `consume` get an `abort` flag, set if the other one panics,
 /// and must return when it is set: otherwise a consumer would wait forever
@@ -58,10 +59,15 @@ fn race(
     let abort = AtomicBool::new(false);
     thread::scope(|s| {
         let observer = s.spawn(|| {
+            // Observe at least once, even if the producer and consumer finish
+            // before this thread first runs (a slow or single-core machine).
             let mut observations = 0u64;
-            while !done.load(Ordering::Acquire) {
+            loop {
                 observe();
                 observations += 1;
+                if done.load(Ordering::Acquire) {
+                    break;
+                }
             }
             observations
         });
