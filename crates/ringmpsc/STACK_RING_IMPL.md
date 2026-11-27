@@ -115,7 +115,7 @@ impl<T, const N: usize> StackRing<T, N> {
     pub unsafe fn peek(&self) -> (*const T, usize);
 
     /// Advance the read pointer by n elements.
-    pub fn advance(&self, n: usize);
+    pub unsafe fn advance(&self, n: usize);
 
     /// Consume all available items in batch (single atomic head update).
     pub unsafe fn consume_batch<F: FnMut(&T)>(&self, handler: F) -> usize;

@@ -310,7 +310,8 @@ fn test_stack_ring_peek_after_consume_batch() {
 #[should_panic(expected = "INV-ORD-03 violated")]
 fn test_stack_ring_advance_past_tail_panics() {
     let ring = StackRing::<u64, 4>::new();
-    ring.advance(1);
+    // Safety: single thread, so this is the ring's only consumer (INV-SW-02).
+    unsafe { ring.advance(1) };
 }
 
 /// #14: a wrapping `n` would move head backwards; it panics too.
@@ -329,6 +330,7 @@ fn test_stack_ring_advance_wrapping_n_panics() {
         ptr.write(2);
         ring.commit(1); // tail = 2
     }
-    ring.advance(usize::MAX); // 1 + MAX wraps to 0
+    // Safety: single thread, so this is the ring's only consumer (INV-SW-02).
+    unsafe { ring.advance(usize::MAX) }; // 1 + MAX wraps to 0
 }
 

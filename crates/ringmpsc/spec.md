@@ -123,7 +123,7 @@ A `Reservation` grants exclusive write access to uninitialized slots. The produc
 | `head` | Consumer only | Producer (Acquire) |
 | `cached_tail` | Consumer only | Consumer only |
 
-**Enforced by**: every consumer method on `Ring` takes `&mut self`, and a `Channel` (or `StackChannel`) hands out at most one `Consumer` (`StackConsumer`) at a time, whose methods also take `&mut self`. See INV-CH-02.
+**Enforced by**: every consumer method on `Ring` takes `&mut self`, and a `Channel` (or `StackChannel`) hands out at most one `Consumer` (`StackConsumer`) at a time, whose methods also take `&mut self`. See INV-CH-02. `StackRing`'s consumer methods take `&self` (it is `Sync`, and `StackChannel::get_ring` hands out `&StackRing`), so each is an `unsafe fn` whose contract requires the ring's only consumer: `peek`, `advance`, `consume_batch`, `consume_batch_owned`, `consume_up_to`. `advance` was a safe method until it was found that a second thread could move `head` backwards with it.
 
 ### INV-SW-03: Buffer Slot Ownership
 ```

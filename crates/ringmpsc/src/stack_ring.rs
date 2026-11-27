@@ -452,8 +452,29 @@ impl<T, const N: usize> StackRing<T, N> {
     /// If `n` is more than the number of published items, in every build
     /// profile. Moving head past tail would make the next consume read
     /// unwritten slots.
+    ///
+    /// # Safety
+    ///
+    /// The caller must be this ring's only consumer (INV-SW-02): no other
+    /// consumer call on this ring (`peek`, `advance`, `consume_*`) may run at
+    /// the same time.
+    ///
+    /// This used to be a safe method, but it isn't safe: `StackRing` is
+    /// `Sync`, and `StackChannel::get_ring` hands out `&StackRing` to any
+    /// thread. A second thread calling `advance` while the consumer runs can
+    /// store an older `head` after the consumer's newer one, so `head` moves
+    /// backwards and the next consume reads, and drops, the same items again.
+    ///
+    /// Calling it without `unsafe` does not compile:
+    ///
+    /// ```compile_fail,E0133
+    /// use ringmpsc_rs::StackRing;
+    ///
+    /// let ring = StackRing::<u64, 4>::new();
+    /// ring.advance(0); // ERROR: call to unsafe function
+    /// ```
     #[inline]
-    pub fn advance(&self, n: usize) {
+    pub unsafe fn advance(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
 
@@ -878,7 +899,8 @@ mod tests {
         }
 
         // Advance by 2
-        ring.advance(2);
+        // Safety: single thread, so this is the ring's only consumer (INV-SW-02).
+        unsafe { ring.advance(2) };
         assert_eq!(ring.len(), 2);
 
         // Peek again
