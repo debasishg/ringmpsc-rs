@@ -1,9 +1,10 @@
-# Every push: build, lint and test all crates (release mode, per CLAUDE.md).
+# Every push and pull request: build, lint and test all crates (release mode, per CLAUDE.md).
 # Miri, loom, Quint and the Lean proofs run elsewhere (/verify, lean.yml).
 name: ci
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 concurrency:

@@ -1,9 +1,10 @@
 # Lean 4 proofs of crates/ringmpsc/src/window.rs (RINGLEAN_DESIGN.md, Phase 0).
 #
 # Runs only when the ringmpsc sources (the proved code and every file whose
-# Safety comments can cite the proofs), the crate manifest, or the Lean
-# project change. Do not make this a required check: path-filtered workflows
-# don't run on other pushes, so a required check would never report.
+# Safety comments can cite the proofs), the crate or workspace manifest, the
+# lockfile, or the Lean project change. Do not make this a required check:
+# path-filtered workflows don't run on other pushes, so a required check would
+# never report.
 name: lean
 
 on:
@@ -12,6 +13,20 @@ on:
       # check.sh checks [lean: ...] citations in every file under src/.
       - crates/ringmpsc/src/**
       - crates/ringmpsc/Cargo.toml
+      # Charon builds the crate and its dependencies with its own nightly.
+      - Cargo.toml
+      - Cargo.lock
+      - crates/ringmpsc/lean/**
+      - .github/workflows/lean.yml
+  pull_request:
+    # Same list as push.
+    paths:
+      # check.sh checks [lean: ...] citations in every file under src/.
+      - crates/ringmpsc/src/**
+      - crates/ringmpsc/Cargo.toml
+      # Charon builds the crate and its dependencies with its own nightly.
+      - Cargo.toml
+      - Cargo.lock
       - crates/ringmpsc/lean/**
       - .github/workflows/lean.yml
   workflow_dispatch:

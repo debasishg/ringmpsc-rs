@@ -29,20 +29,20 @@ Every `_spec` theorem also proves the function **cannot panic**: Aeneas models o
 
 **No `u64` wrap-around.** The theorems use real `u64` arithmetic but do not cover sequence numbers wrapping past `u64::MAX`. `read_window` compares `tail <= head` without wrapping, so after a wrap it would report the ring as empty, and `reservation_disjoint` assumes `head ≤ tail`. INV-SEQ-03 rules wrap out (about 584 years at 10⁹ messages per second).
 
-**Assumed, not proved here.** Premises named after `spec.md` invariants (INV-SEQ-01, INV-SEQ-03, INV-MEM-02) are maintained by the ring protocol and covered by Verus, Quint and MBT. Memory orderings are covered by loom and Miri.
+**Assumed, not proved here.** Premises named after `spec.md` invariants (INV-SEQ-01, INV-SEQ-03, INV-ORD-03, INV-MEM-02) are maintained by the ring protocol and covered by Verus, Quint and MBT. Memory orderings are covered by loom and Miri.
 
 ## Citations
 
-`// Safety:` comments in `ring.rs` and `stack_ring.rs` cite theorems as `[lean: write_window_spec, ...]`, next to the `INV-*` IDs they rely on. Keep each `[lean: ...]` list on one line. `check.sh` fails if a cited name is not an audited theorem, or if `src/` has no citations at all.
+`// Safety:` comments in `crates/ringmpsc/src/` (today `ring.rs` and `stack_ring.rs`) cite theorems as `[lean: write_window_spec, ...]`, next to the `INV-*` IDs they rely on. Keep each `[lean: ...]` list on one line. `check.sh` fails if a cited name is not an audited theorem, or if `src/` has no citations at all.
 
 ## Running
 
 ```bash
 crates/ringmpsc/lean/scripts/check.sh                     # regenerate + prove + audit
-crates/ringmpsc/lean/scripts/check.sh --check-generated   # also fail if RingmpscRs/ is stale (CI)
+crates/ringmpsc/lean/scripts/check.sh --check-generated   # also fail if RingmpscRs/ was stale (/verify, CI)
 ```
 
-`/verify` runs it (step 4). `cargo build` and `cargo test` do not; see the design doc, "When proofs run". CI runs it in `.github/workflows/lean.yml` on pushes that touch `window.rs`, `ring.rs`, `stack_ring.rs`, `lib.rs`, the crate manifest, or this directory. When upgrading Aeneas, also update `AENEAS_TAG` and `CHARON_TOOLCHAIN` there.
+`/verify` runs it (step 4). `cargo build` and `cargo test` do not; see the design doc, "When proofs run". CI runs it in `.github/workflows/lean.yml` on pushes and pull requests that touch any file under `crates/ringmpsc/src/` (citations are checked across all of it), the crate manifest, the workspace `Cargo.toml` or `Cargo.lock`, or this directory. When upgrading Aeneas, also update `AENEAS_TAG` and `CHARON_TOOLCHAIN` there.
 
 ### One-time setup
 

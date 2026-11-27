@@ -4,7 +4,7 @@ Always use `--release` — debug builds break lock-free correctness.
 
 **Feature matrix per crate:**
 
-- `ringmpsc-rs`: run default, `stack-ring`, `quint-mbt`, `allocator-api`, and on Linux `numa`
+- `ringmpsc-rs`: run default, `stack-ring`, `quint-mbt`, `allocator-api` (with `cargo +nightly`), and on Linux `numa`
 - `ringmpsc-stream`: run default only
 - `ringwal`: run default only
 - `ringwal-sim`: run default only
@@ -16,7 +16,7 @@ Always use `--release` — debug builds break lock-free correctness.
 cargo test -p ringmpsc-rs --release
 cargo test -p ringmpsc-rs --features stack-ring --release
 cargo test -p ringmpsc-rs --features quint-mbt --release
-cargo test -p ringmpsc-rs --features allocator-api --release
+cargo +nightly test -p ringmpsc-rs --features allocator-api --release   # nightly: #![feature(allocator_api)]
 ```
 
 Print a per-run status table after all runs complete. Show full output only for failures.

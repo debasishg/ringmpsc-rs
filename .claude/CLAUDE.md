@@ -119,7 +119,7 @@ Pedantic baseline. Workspace `Cargo.toml` allows: `cast_possible_truncation`, `c
 | `stack-ring` | ringmpsc-rs | `StackRing`/`StackChannel` — 2–3× faster, compile-time capacity |
 | `loom` | ringmpsc-rs | Replace std atomics with loom for exhaustive concurrency testing |
 | `quint-mbt` | ringmpsc-rs | Model-based tests driven by Quint spec + ITF traces |
-| `allocator-api` | ringmpsc-rs | Nightly custom allocator API |
+| `allocator-api` | ringmpsc-rs | Nightly custom allocator API (`cargo +nightly test ... --features allocator-api`; the pinned stable toolchain rejects it) |
 | `numa` | ringmpsc-rs | NUMA-aware allocation via `libc` |
 
 ## Adding New Crates
@@ -135,7 +135,7 @@ See `SKILLS.md` at the workspace root for the full hierarchy. Quick reference:
 
 | Command | Purpose |
 |---------|---------|
-| `/verify` | Full pre-merge suite (orchestrates the three below) |
+| `/verify` | Full pre-merge suite (the three below, then the Lean proofs via `crates/ringmpsc/lean/scripts/check.sh`) |
 | `/verify-concurrency` | Loom + Miri for `ringmpsc` |
 | `/verify-spec` | TLA+/Quint model check + ITF trace replay |
 | `/verify-invariants` | spec.md ↔ invariants.rs INV-* cross-check (all crates) |

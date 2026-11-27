@@ -15,7 +15,10 @@
 #   -c rustc-dev -c llvm-tools -c rust-src -c miri
 #
 # With --check-generated, also fails if regeneration changed RingmpscRs/,
-# i.e. window.rs changed but the generated Lean wasn't committed (for CI).
+# i.e. window.rs changed but RingmpscRs/ wasn't regenerated. It compares
+# against the working tree, not git, so uncommitted regenerated files pass
+# (pre-commit /verify). In CI the working tree is the commit, so it also
+# catches a window.rs change committed without its generated Lean.
 set -euo pipefail
 
 AENEAS_DIR="${AENEAS_DIR:-$HOME/tools/aeneas}"
@@ -33,15 +36,20 @@ echo "==> charon: extracting ringmpsc_rs::window"
     --dest-file "$tmp/ringmpsc_rs.llbc" \
     -- -p ringmpsc-rs --lib --quiet)
 
+# Snapshot RingmpscRs/ as it is before regenerating, for --check-generated.
+mkdir -p "$tmp/before" "$lean_dir/RingmpscRs"
+cp -R "$lean_dir/RingmpscRs/." "$tmp/before/"
+
 echo "==> aeneas: generating RingmpscRs/"
 "$AENEAS_DIR/aeneas" -backend lean -split-files -dest "$lean_dir/RingmpscRs" \
     "$tmp/ringmpsc_rs.llbc" > "$tmp/aeneas.log" 2>&1 || { cat "$tmp/aeneas.log"; exit 1; }
 
 if [[ "${1:-}" == "--check-generated" ]]; then
-    # `git status`, not `git diff`: a newly generated, untracked file is also stale.
-    if [[ -n "$(git -C "$lean_dir" status --porcelain -- RingmpscRs)" ]]; then
-        git -C "$lean_dir" status --short -- RingmpscRs
-        echo "error: RingmpscRs/ is stale; rerun scripts/check.sh and commit it"; exit 1
+    # `diff -r` also reports a newly generated file the snapshot lacked.
+    if ! diff -r "$tmp/before" "$lean_dir/RingmpscRs" > "$tmp/generated.diff"; then
+        cat "$tmp/generated.diff"
+        echo "error: RingmpscRs/ was stale and has now been regenerated; review it, commit it with window.rs, and rerun"
+        exit 1
     fi
 fi
 

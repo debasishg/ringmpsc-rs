@@ -182,8 +182,8 @@ Phase 0 proofs are **not checked by `cargo build` or `cargo test`**. They run as
 charon (on crates/ringmpsc) → aeneas → lean/RingmpscRs/Funs.lean → lake build
 ```
 
-- **Where it runs:** in `/verify` (step 4, `check.sh --check-generated`). CI runs the same command in `.github/workflows/lean.yml` on pushes that touch the proved code, the code citing it, or the Lean project. It is path-filtered, so it is not a required check.
-- **Proofs can't go stale when the check runs.** The Lean code is regenerated from the source on every run, and `--check-generated` fails if the committed `RingmpscRs/` differs from what `window.rs` generates, including newly generated files. If a change to `window.rs` breaks a property, that run fails.
+- **Where it runs:** in `/verify` (step 4, `check.sh --check-generated`). CI runs the same command in `.github/workflows/lean.yml` on pushes and pull requests that touch the proved code, the code citing it, the workspace manifest or lockfile, or the Lean project. It is path-filtered, so it is not a required check.
+- **Proofs can't go stale when the check runs.** The Lean code is regenerated from the source on every run, and `--check-generated` fails if `RingmpscRs/` in the working tree differs from what `window.rs` generates, including newly generated files. In CI the working tree is the commit; locally, regenerated files that aren't committed yet pass, so `/verify` can run before the commit. If a change to `window.rs` breaks a property, that run fails.
 - **What a pass means:** every theorem is proved and depends only on `propext`, `Classical.choice` and `Quot.sound`. That rules out `sorry`, user-declared axioms and `native_decide` (`scripts/Audit.lean`).
 - **What a failure looks like:** Lean names the goal it couldn't prove, and `omega` prints the inequalities it couldn't satisfy.
 
@@ -201,7 +201,7 @@ Implemented. Layout and setup are in `crates/ringmpsc/lean/README.md`.
 
 - **`crates/ringmpsc/src/window.rs`:** six pure functions: `slot_index`, `occupancy`, `free_space`, `write_window`, `read_window`, `consume_count`. Every index and slice length that `Ring` and `StackRing` pass to `unsafe` code now comes from one of them. Behavior is unchanged: release tests, Miri and loom pass.
 - **`crates/ringmpsc/lean/`:** Aeneas generates `RingmpscRs/Funs.lean` from `window.rs`. `RingLean/Window.lean` holds 13 theorems, including the specs for all six functions (each also proving the function can't panic), stale-cache conservativeness for `free_space`, and `reservation_disjoint`: a reservation that `free_space` allows never maps to a slot in the consumer's `[head, tail)`. All depend only on Lean's standard axioms.
-- **`scripts/check.sh`:** regenerates, proves, audits axioms, and checks the `[lean: ...]` citations in `ring.rs` and `stack_ring.rs`.
+- **`scripts/check.sh`:** regenerates, proves, audits axioms, and checks the `[lean: ...]` citations in every file under `crates/ringmpsc/src/` (today `ring.rs` and `stack_ring.rs`).
 - **Mutation check:** five deliberate bugs in `window.rs` were each rejected: an off-by-one in `write_window` and in `free_space`, `write_window` ignoring `n` (the #15/#32 class), `read_window` using `<` instead of `<=` (the #17 class), and a wrong mask in `slot_index`.
 
 What we learned:
@@ -277,7 +277,7 @@ Larger theorems are built from the per-function ones. `reservation_disjoint` com
 
 **Step 5: Check the proofs and the links.** `crates/ringmpsc/lean/scripts/check.sh` runs these in order (`/verify` and `lean.yml` run it with `--check-generated`):
 
-1. **Regenerate.** Run Charon and Aeneas again. With `--check-generated`, fail if the committed `RingmpscRs/` differs from a fresh run, so a change to `window.rs` can't go unproved.
+1. **Regenerate.** Run Charon and Aeneas again. With `--check-generated`, fail if `RingmpscRs/` as it was before the run differs from a fresh run, so a change to `window.rs` can't go unproved.
 2. **`lake build`.** Build the Aeneas Lean library (pinned in `lakefile.toml`), `RingmpscRs` and `RingLean`. Type-checking a theorem checks its proof: the tactics build a proof term and Lean's kernel re-checks it. The script also fails if the build log reports a `sorry`.
 3. **Axiom audit.** `scripts/Audit.lean` calls `collectAxioms` on every theorem in `RingLean.*`, `private` ones included. It allows only `propext`, `Classical.choice` and `Quot.sound`, which rejects `sorry` (`sorryAx`), user-declared `axiom`s and `native_decide` (`Lean.ofReduceBool`). It prints `THEOREM <name>` for each theorem that passes.
 4. **Citation check.** Every `[lean: name]` tag in `crates/ringmpsc/src/` must name one of those audited theorems. For example, `ring.rs` cites `[lean: write_window_spec, reservation_disjoint, free_space_stale_conservative]`.

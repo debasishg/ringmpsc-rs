@@ -59,7 +59,8 @@ Per-crate `SKILLS.md` files document which skills are relevant to each crate spe
 /verify
 ├── /verify-concurrency
 ├── /verify-spec
-└── /verify-invariants
+├── /verify-invariants
+└── crates/ringmpsc/lean/scripts/check.sh --check-generated   (Lean proofs; needs Aeneas, Charon and Lean, see crates/ringmpsc/lean/README.md)
 ```
 
 `/new-crate` generates a `SKILLS.md` skeleton in the new crate directory automatically.

@@ -229,7 +229,7 @@ theorem windows_disjoint (head tail len cap : Nat)
 touches a slot the consumer has not yet read. -/
 theorem reservation_disjoint (tail head : U64) (n cap f idx len : Usize) (k : Nat)
     (hcap : cap.val = 2 ^ k)
-    (horder : head.val ≤ tail.val)                 -- INV-SEQ-03
+    (horder : head.val ≤ tail.val)                 -- INV-ORD-03 (as u64, by INV-SEQ-03)
     (hseq : tail.val - head.val ≤ cap.val)          -- INV-SEQ-01
     (hfree : free_space tail head cap = ok f)
     (hn : n.val ≤ f.val)

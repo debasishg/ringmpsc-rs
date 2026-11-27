@@ -6,7 +6,7 @@ Execute these commands in order:
 cargo test --workspace --release
 cargo test -p ringmpsc-rs --features stack-ring --release
 cargo test -p ringmpsc-rs --features quint-mbt --release
-cargo test -p ringmpsc-rs --features allocator-api --release
+cargo +nightly test -p ringmpsc-rs --features allocator-api --release   # nightly: #![feature(allocator_api)]
 cargo test -p ringmpsc-stream --release
 cargo test -p ringwal --release
 cargo test -p ringwal-sim --release
