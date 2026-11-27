@@ -14,13 +14,19 @@ fn test_stack_channel_per_producer_fifo() {
     const NUM_PRODUCERS: usize = 4;
     const ITEMS_PER_PRODUCER: usize = 1000;
 
-    // Use Box::leak to get 'static lifetime for thread sharing
-    let channel: &'static StackChannel<(usize, usize), 4096, 4> =
-        Box::leak(Box::new(StackChannel::new()));
+    // A raw pointer from Box::into_raw, so the channel can be freed through it
+    // at the end. Freeing through a pointer cast from the shared reference
+    // would be undefined behavior (it only grants read access).
+    let channel_ptr: *mut StackChannel<(usize, usize), 4096, 4> =
+        Box::into_raw(Box::new(StackChannel::new()));
+    // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
+    // It is freed only after every producer thread has been joined and the
+    // consumer (INV-CH-02) has been dropped: its Drop writes the channel.
+    let channel: &'static StackChannel<(usize, usize), 4096, 4> = unsafe { &*channel_ptr };
 
     let handles: Vec<_> = (0..NUM_PRODUCERS)
         .map(|producer_id| {
-            let producer = channel.register().unwrap();
+            let producer = channel.register().expect("register producer");
             thread::spawn(move || {
                 for seq in 0..ITEMS_PER_PRODUCER {
                     // Retry with backpressure handling
@@ -38,7 +44,8 @@ fn test_stack_channel_per_producer_fifo() {
 
     // Consume until we have all items
     while total_received < NUM_PRODUCERS * ITEMS_PER_PRODUCER {
-        let consumed = channel.consumer().unwrap().consume_all(|(producer_id, seq)| {
+        let mut consumer = channel.consumer().expect("no other consumer exists");
+        let consumed = consumer.consume_all(|(producer_id, seq)| {
             // Verify FIFO order per producer
             if let Some(&prev) = last_seq.get(producer_id) {
                 assert_eq!(
@@ -62,7 +69,7 @@ fn test_stack_channel_per_producer_fifo() {
     }
 
     for h in handles {
-        h.join().unwrap();
+        h.join().expect("producer thread panicked");
     }
 
     // Verify all producers sent complete sequences
@@ -76,11 +83,10 @@ fn test_stack_channel_per_producer_fifo() {
     }
 
     // Cleanup
-    unsafe {
-        drop(Box::from_raw(
-            channel as *const _ as *mut StackChannel<(usize, usize), 4096, 4>,
-        ));
-    }
+    // Safety: channel_ptr came from Box::into_raw. Every producer thread is
+    // joined, and the consumer (INV-CH-02) was dropped inside the receive loop,
+    // so nothing borrows the channel and `channel` is not used again.
+    unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
 /// Stress test with concurrent producers and consumer.
@@ -90,15 +96,22 @@ fn test_stack_channel_stress() {
     const ITEMS_PER_PRODUCER: usize = 50_000;
     const TOTAL_ITEMS: usize = NUM_PRODUCERS * ITEMS_PER_PRODUCER;
 
-    let channel: &'static StackChannel<u64, 8192, 8> =
-        Box::leak(Box::new(StackChannel::new()));
+    // A raw pointer from Box::into_raw, so the channel can be freed through it
+    // at the end. Freeing through a pointer cast from the shared reference
+    // would be undefined behavior (it only grants read access).
+    let channel_ptr: *mut StackChannel<u64, 8192, 8> =
+        Box::into_raw(Box::new(StackChannel::new()));
+    // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
+    // It is freed only after every producer thread has been joined and the
+    // consumer (INV-CH-02) has been dropped: its Drop writes the channel.
+    let channel: &'static StackChannel<u64, 8192, 8> = unsafe { &*channel_ptr };
 
     let sent_count = Arc::new(AtomicUsize::new(0));
 
     // Spawn producers
     let handles: Vec<_> = (0..NUM_PRODUCERS)
         .map(|i| {
-            let producer = channel.register().unwrap();
+            let producer = channel.register().expect("register producer");
             let sent_count = Arc::clone(&sent_count);
             thread::spawn(move || {
                 for j in 0..ITEMS_PER_PRODUCER {
@@ -117,7 +130,7 @@ fn test_stack_channel_stress() {
     let mut received_count = 0usize;
 
     while received_count < TOTAL_ITEMS {
-        let consumed = channel.consumer().unwrap().consume_all(|v| {
+        let consumed = channel.consumer().expect("no other consumer exists").consume_all(|v| {
             received_sum += v;
         });
         received_count += consumed;
@@ -128,7 +141,7 @@ fn test_stack_channel_stress() {
     }
 
     for h in handles {
-        h.join().unwrap();
+        h.join().expect("producer thread panicked");
     }
 
     // Verify: sum of 0..TOTAL_ITEMS = TOTAL_ITEMS * (TOTAL_ITEMS - 1) / 2
@@ -137,22 +150,28 @@ fn test_stack_channel_stress() {
     assert_eq!(received_count, TOTAL_ITEMS);
 
     // Cleanup
-    unsafe {
-        drop(Box::from_raw(
-            channel as *const _ as *mut StackChannel<u64, 8192, 8>,
-        ));
-    }
+    // Safety: channel_ptr came from Box::into_raw. Every producer thread is
+    // joined, and the consumer (INV-CH-02) was dropped inside the receive loop,
+    // so nothing borrows the channel and `channel` is not used again.
+    unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
 /// Test consume_all_owned with String (verifies ownership transfer).
 #[test]
 fn test_stack_channel_owned_strings() {
-    let channel: &'static StackChannel<String, 256, 4> =
-        Box::leak(Box::new(StackChannel::new()));
+    // A raw pointer from Box::into_raw, so the channel can be freed through it
+    // at the end. Freeing through a pointer cast from the shared reference
+    // would be undefined behavior (it only grants read access).
+    let channel_ptr: *mut StackChannel<String, 256, 4> =
+        Box::into_raw(Box::new(StackChannel::new()));
+    // Safety: channel_ptr comes from Box::into_raw, so it is valid and aligned.
+    // It is freed only after every producer thread has been joined and the
+    // consumer (INV-CH-02) has been dropped: its Drop writes the channel.
+    let channel: &'static StackChannel<String, 256, 4> = unsafe { &*channel_ptr };
 
     let handles: Vec<_> = (0..4)
         .map(|i| {
-            let producer = channel.register().unwrap();
+            let producer = channel.register().expect("register producer");
             thread::spawn(move || {
                 for j in 0..100 {
                     let msg = format!("producer_{}_msg_{}", i, j);
@@ -168,7 +187,7 @@ fn test_stack_channel_owned_strings() {
     let mut count = 0;
 
     while count < 400 {
-        let consumed = channel.consumer().unwrap().consume_all_owned(|s| {
+        let consumed = channel.consumer().expect("no other consumer exists").consume_all_owned(|s| {
             owned_messages.push(s);
         });
         count += consumed;
@@ -179,7 +198,7 @@ fn test_stack_channel_owned_strings() {
     }
 
     for h in handles {
-        h.join().unwrap();
+        h.join().expect("producer thread panicked");
     }
 
     assert_eq!(owned_messages.len(), 400);
@@ -191,11 +210,10 @@ fn test_stack_channel_owned_strings() {
     }
 
     // Cleanup
-    unsafe {
-        drop(Box::from_raw(
-            channel as *const _ as *mut StackChannel<String, 256, 4>,
-        ));
-    }
+    // Safety: channel_ptr came from Box::into_raw. Every producer thread is
+    // joined, and the consumer (INV-CH-02) was dropped inside the receive loop,
+    // so nothing borrows the channel and `channel` is not used again.
+    unsafe { drop(Box::from_raw(channel_ptr)) };
 }
 
 /// Test producer registration limits.

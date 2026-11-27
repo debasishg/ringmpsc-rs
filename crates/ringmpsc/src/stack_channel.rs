@@ -27,28 +27,30 @@
 //!
 //! # Usage
 //!
-//! ```ignore
-//! use ringmpsc_rs::{StackChannel, StackChannelError};
+//! ```
+//! use ringmpsc_rs::StackChannel;
 //! use std::thread;
 //!
 //! // 4K slots per ring, max 4 producers
 //! let channel: StackChannel<u64, 4096, 4> = StackChannel::new();
 //!
-//! // Leak to 'static for thread sharing (or use scoped threads)
-//! let channel: &'static _ = Box::leak(Box::new(channel));
-//!
-//! // Spawn producers
-//! let handles: Vec<_> = (0..4).map(|i| {
-//!     let producer = channel.register().unwrap();
-//!     thread::spawn(move || {
-//!         producer.push((i * 1000) as u64);
-//!     })
-//! }).collect();
-//!
-//! for h in handles { h.join().unwrap(); }
+//! // Scoped threads borrow the channel, so it needs no 'static lifetime and
+//! // is freed normally when it goes out of scope.
+//! thread::scope(|s| {
+//!     for i in 0..4 {
+//!         let producer = channel.register().expect("at most 4 producers");
+//!         s.spawn(move || {
+//!             producer.push((i * 1000) as u64);
+//!         });
+//!     }
+//! });
 //!
 //! // Consume on main thread
-//! let total = channel.consumer().unwrap().consume_all(|v| println!("{}", v));
+//! let total = channel
+//!     .consumer()
+//!     .expect("no other consumer exists")
+//!     .consume_all(|v| println!("{}", v));
+//! assert_eq!(total, 4);
 //! ```
 //!
 //! # Size Constraints

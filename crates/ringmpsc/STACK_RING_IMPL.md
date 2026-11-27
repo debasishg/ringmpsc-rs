@@ -160,13 +160,21 @@ use ringmpsc_rs::StackRing;
 // 4K slots, stack-allocated
 let ring: StackRing<u64, 4096> = StackRing::new();
 
-// Producer
-unsafe {
-    if let Some((ptr, len)) = ring.reserve(10) {
-        for i in 0..len {
-            *ptr.add(i) = i as u64;
+// Producer: reserve(n) may return fewer than n slots (wrap-around), so loop
+// until all 10 items are committed.
+let mut sent = 0;
+while sent < 10 {
+    // Safety: this is the ring's only producer (INV-SW-01). It writes every
+    // reserved slot before commit(len), so commit publishes only initialized
+    // slots (INV-INIT-01).
+    unsafe {
+        if let Some((ptr, len)) = ring.reserve(10 - sent) {
+            for i in 0..len {
+                ptr.add(i).write((sent + i) as u64);
+            }
+            ring.commit(len);
+            sent += len;
         }
-        ring.commit(len);
     }
 }
 
@@ -181,31 +189,47 @@ unsafe {
 ### Multi-Producer (StackChannel)
 
 ```rust
-use ringmpsc_rs::{StackChannel, StackProducer};
+use ringmpsc_rs::StackChannel;
 use std::thread;
 
 // 4K slots per ring, max 4 producers
 let channel: StackChannel<u64, 4096, 4> = StackChannel::new();
 
-// Leak to get 'static lifetime for thread sharing
-let channel: &'static _ = Box::leak(Box::new(channel));
-
-let handles: Vec<_> = (0..4).map(|i| {
-    let producer = channel.register().unwrap();
-    thread::spawn(move || {
-        unsafe {
-            if let Some((ptr, len)) = producer.reserve(100) {
-                for j in 0..len {
-                    *ptr.add(j) = (i * 1000 + j) as u64;
+// Scoped threads borrow the channel, so it needs no 'static lifetime and is
+// freed normally when it goes out of scope.
+thread::scope(|s| {
+    for i in 0..4usize {
+        let producer = channel.register().expect("at most 4 producers");
+        s.spawn(move || {
+            // reserve(n) may return fewer than n slots, or None when the ring
+            // is full, so loop until all 100 items are committed.
+            let mut sent = 0;
+            while sent < 100 {
+                // Safety: this thread is the only producer of its ring
+                // (INV-CH-01). It writes every reserved slot before
+                // commit(len), so commit publishes only initialized slots
+                // (INV-INIT-01).
+                unsafe {
+                    if let Some((ptr, len)) = producer.reserve(100 - sent) {
+                        for j in 0..len {
+                            ptr.add(j).write((i * 1000 + sent + j) as u64);
+                        }
+                        producer.commit(len);
+                        sent += len;
+                    } else {
+                        thread::yield_now(); // ring full: back off, don't spin
+                    }
                 }
-                producer.commit(len);
             }
-        }
-    })
-}).collect();
+        });
+    }
+});
 
 // Consumer on main thread
-let total = channel.consumer().unwrap().consume_all(|v| println!("{}", v));
+let total = channel
+    .consumer()
+    .expect("no other consumer exists")
+    .consume_all(|v| println!("{}", v));
 ```
 
 ### Type Aliases for Common Configurations
@@ -293,7 +317,7 @@ The `examples/span_collector` uses the heap-based `Channel<Span>`. A stack-alloc
 
 1. **Static producer count** — `StackChannel<T, N, P>` requires knowing `P` at compile time, but `SpanCollector` uses dynamic `register()`. Solution: Make `P` a const generic on `StackSpanCollector`.
 
-2. **Lifetime management** — `StackProducer<'a, ...>` is tied to the channel's lifetime. For spawned async tasks, need `Box::leak` or scoped threads.
+2. **Lifetime management** — `StackProducer<'a, ...>` is tied to the channel's lifetime. Spawned async tasks need a `'static` channel; scoped threads avoid that for plain threads. A `'static` channel made with `Box::into_raw` must be freed through that original pointer, and only after every producer and the consumer are gone (see `tests/stack_channel_tests.rs`).
 
 3. **`Span` is not `Copy`** — Contains `String` and `Box<HashMap>`, so can't use `send()` batch method. Must use `push()` or `reserve()`/`commit()` loops.
 
