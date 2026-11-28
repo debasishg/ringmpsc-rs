@@ -118,7 +118,8 @@ fn stack_ring_reserve_and_peek_overlap() {
                 // Safety: i < len, inside the published window (INV-INIT-01,
                 // INV-MEM-02). `u64` is `Copy`, so reading moves nothing out.
                 seen.extend((0..len).map(|i| unsafe { ptr.add(i).read() }));
-                ring.advance(len);
+                // Safety: this thread is the ring's only consumer (INV-SW-02).
+                unsafe { ring.advance(len) };
                 len
             })
         });

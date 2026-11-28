@@ -125,6 +125,19 @@ impl<T> std::ops::DerefMut for CacheAligned<T> {
 /// │   [UnsafeCell<MaybeUninit<T>>; N]                                  │
 /// └────────────────────────────────────────────────────────────────────┘
 /// ```
+///
+/// # Consumer contract
+///
+/// The consumer methods (`peek`, `advance`, `consume_batch`,
+/// `consume_batch_owned`, `consume_up_to`) take `&self` and are `unsafe`.
+/// Every call to them on one ring must be ordered by happens-before with
+/// every other such call on it (INV-SW-02): make them all from one thread,
+/// or hand the consumer role to another thread through a Release/Acquire
+/// synchronization, as `StackChannel::consumer` does. Not overlapping in
+/// time is not enough: without that ordering a call can load a stale `head`
+/// and store it after a newer one, moving `head` backwards so the same items
+/// are read and dropped twice. For a ring owned by a `StackChannel`, make no
+/// such call outside its `StackConsumer` while one exists.
 #[repr(C)]
 pub struct StackRing<T, const N: usize> {
     // === PRODUCER HOT === (128-byte aligned)
@@ -406,9 +419,11 @@ impl<T, const N: usize> StackRing<T, N> {
     /// # Safety
     ///
     /// The caller must:
-    /// - Only read from the returned pointer
+    /// - Follow the [consumer contract](StackRing#consumer-contract)
+    /// - Only read from the returned pointer, and only its first `len` slots
+    /// - Not read through it after a later `advance` or `consume_*` call, which
+    ///   hands the slots back to the producer
     /// - Call `advance(n)` after processing `n` items
-    /// - Ensure only one consumer thread calls this
     #[inline]
     pub unsafe fn peek(&self) -> Option<(*const T, usize)> {
         let head = self.head.load(Ordering::Relaxed);
@@ -452,8 +467,25 @@ impl<T, const N: usize> StackRing<T, N> {
     /// If `n` is more than the number of published items, in every build
     /// profile. Moving head past tail would make the next consume read
     /// unwritten slots.
+    ///
+    /// # Safety
+    ///
+    /// The caller must:
+    /// - Follow the [consumer contract](StackRing#consumer-contract) (INV-SW-02)
+    /// - Not read through any pointer into the `n` advanced slots after this
+    ///   call: the Release store of `head` hands them to the producer, which
+    ///   may overwrite them
+    ///
+    /// Calling it without `unsafe` does not compile:
+    ///
+    /// ```compile_fail,E0133
+    /// use ringmpsc_rs::StackRing;
+    ///
+    /// let ring = StackRing::<u64, 4>::new();
+    /// ring.advance(0); // ERROR: call to unsafe function
+    /// ```
     #[inline]
-    pub fn advance(&self, n: usize) {
+    pub unsafe fn advance(&self, n: usize) {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
 
@@ -478,7 +510,7 @@ impl<T, const N: usize> StackRing<T, N> {
     ///
     /// # Safety
     ///
-    /// - Must be called from a single consumer thread only
+    /// - The caller must follow the [consumer contract](StackRing#consumer-contract)
     /// - Items are moved out of the buffer and dropped after the handler returns
     ///
     /// # Example
@@ -533,7 +565,7 @@ impl<T, const N: usize> StackRing<T, N> {
     ///
     /// # Safety
     ///
-    /// - Must be called from a single consumer thread only
+    /// - The caller must follow the [consumer contract](StackRing#consumer-contract)
     /// - The handler receives ownership and is responsible for dropping the item
     #[inline]
     pub unsafe fn consume_batch_owned<F>(&self, mut handler: F) -> usize
@@ -575,7 +607,7 @@ impl<T, const N: usize> StackRing<T, N> {
     ///
     /// # Safety
     ///
-    /// Must be called from a single consumer thread only.
+    /// The caller must follow the [consumer contract](StackRing#consumer-contract).
     #[inline]
     pub unsafe fn consume_up_to<F>(&self, max: usize, mut handler: F) -> usize
     where
@@ -863,27 +895,35 @@ mod tests {
 
         // Write items
         for i in 0..4 {
+            // Safety: single thread, so this is the only producer (INV-SW-01);
+            // the one reserved slot is written before it is committed
+            // (INV-INIT-01).
             unsafe {
-                let (ptr, len) = ring.reserve(1).unwrap();
-                *ptr = i * 10;
+                let (ptr, len) = ring.reserve(1).expect("ring has room");
+                ptr.write(i * 10);
                 ring.commit(len);
             }
         }
 
         // Peek should show items
+        // Safety: single thread, so this is the only consumer (INV-SW-02); the
+        // pointer is read only within the published range (INV-INIT-01).
         unsafe {
-            let (ptr, len) = ring.peek().unwrap();
+            let (ptr, len) = ring.peek().expect("ring has items");
             assert!(len >= 1);
             assert_eq!(*ptr, 0);
         }
 
         // Advance by 2
-        ring.advance(2);
+        // Safety: single thread, so this is the ring's only consumer (INV-SW-02).
+        unsafe { ring.advance(2) };
         assert_eq!(ring.len(), 2);
 
         // Peek again
+        // Safety: single thread, so this is the only consumer (INV-SW-02); the
+        // pointer is read only within the published range (INV-INIT-01).
         unsafe {
-            let (ptr, _) = ring.peek().unwrap();
+            let (ptr, _) = ring.peek().expect("ring has items");
             assert_eq!(*ptr, 20);
         }
     }

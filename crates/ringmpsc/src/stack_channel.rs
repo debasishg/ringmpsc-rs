@@ -281,9 +281,10 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
 
     /// Get a reference to a specific producer's ring.
     ///
-    /// The ring's consumer methods are `unsafe`: calling them while this
-    /// channel's [`StackConsumer`] exists, or from two threads at once, is
-    /// undefined behavior.
+    /// The ring's consumer methods are `unsafe`; see the
+    /// [consumer contract](StackRing#consumer-contract). Calling them while
+    /// this channel's [`StackConsumer`] exists, or from two threads without a
+    /// happens-before ordering between the calls, is undefined behavior.
     ///
     /// Returns `None` if `ring_id >= P`.
     #[inline]
