@@ -1,0 +1,9 @@
+# Toolchain for the workspace, used locally and in CI (.github/workflows/ci.yml).
+# Other pinned toolchains, which take precedence where they apply:
+# - verus/ringmpsc-verified/rust-toolchain.toml (Verus)
+# - Charon, for the Lean proofs: nightly-2026-09-17 (crates/ringmpsc/lean/README.md)
+# - Miri: run explicitly with `cargo +nightly miri ...`
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -8,7 +8,7 @@
 //!
 //! # Provided types
 //!
-//! - [`WalStore<K, V>`] — trait for storage backends (implement for LMDB, RocksDB, etc.)
+//! - [`WalStore<K, V>`] — trait for storage backends (implement for LMDB, `RocksDB`, etc.)
 //! - [`InMemoryStore<K, V>`] — thread-safe `HashMap`-backed reference implementation
 //! - [`recover_into_store()`] — main entry point: recover WAL segments and replay into a store
 //! - [`apply_transactions()`] — replay a set of recovered transactions into a store

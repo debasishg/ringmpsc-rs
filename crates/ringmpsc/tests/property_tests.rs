@@ -71,7 +71,7 @@ proptest! {
         writes in 0usize..100,
     ) {
         const CAP: usize = 64;
-        let mut ring = StackRing::<u64, CAP>::new();
+        let ring = StackRing::<u64, CAP>::new();
 
         // Write some items using unsafe API
         let actual_writes = writes.min(CAP);
@@ -148,7 +148,7 @@ proptest! {
         ops in prop::collection::vec(prop::bool::ANY, 1..30),
     ) {
         const CAP: usize = 32;
-        let mut ring = StackRing::<u64, CAP>::new();
+        let ring = StackRing::<u64, CAP>::new();
 
         for write_op in ops {
             let len_before = ring.len();
@@ -227,7 +227,7 @@ proptest! {
         writes in 0usize..30,
     ) {
         const CAP: usize = 32;
-        let mut ring = StackRing::<u64, CAP>::new();
+        let ring = StackRing::<u64, CAP>::new();
 
         let mut produced = 0;
         for i in 0..writes.min(CAP) {
@@ -360,7 +360,7 @@ proptest! {
                     prop_assert_eq!(got, want);
                 }
                 Op::ReadableAdvance(k) => {
-                    let seen: Vec<u64> = ring.readable().map(<[u64]>::to_vec).unwrap_or_default();
+                    let seen: Vec<u64> = ring.readable().map_or_default(<[u64]>::to_vec);
                     // A contiguous prefix of the published items, never more.
                     prop_assert!(seen.len() <= model.len(),
                         "readable returned {} items, only {} published", seen.len(), model.len());

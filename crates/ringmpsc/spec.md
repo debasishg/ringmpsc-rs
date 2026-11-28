@@ -83,6 +83,14 @@ Using u64 sequences instead of wrapped indices prevents ABA problem. At 10 billi
 
 **Critical for**: Lock-free correctness without epoch-based reclamation
 
+### INV-SEQ-04: Producer Cache Bound
+```
+0 ≤ (tail - cached_head) ≤ capacity
+```
+The producer's cached copy of `head` lags the real `head`, but `tail` never runs more than `capacity` past it. It holds because the producer only reserves within `free_space(tail, cached_head)`, so it never commits past `cached_head + capacity`; and each refresh sets `cached_head` to the real `head`, where INV-SEQ-01 gives the same bound.
+
+**Verified by**: `debug_assert_cached_head_bound!` in the `reserve` fast path of `Ring` and `StackRing`. Being a `debug_assert!`, it runs only in debug builds: the unit tests and Miri, not the `--release` stress tests. It is the `hstale` premise of the Lean theorem `free_space_stale_conservative`, which shows that a stale `cached_head` never reports more free space than the real `head`.
+
 ## 3. Memory Initialization Invariants
 
 ### INV-INIT-01: Initialized Range
@@ -273,6 +281,7 @@ For code that sends through producers and reports success to its callers: every 
 | INV-SEQ-01 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
 | INV-SEQ-02 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
 | INV-SEQ-03 | [tests/integration_tests.rs](tests/integration_tests.rs) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
+| INV-SEQ-04 | Lean `free_space_stale_conservative` (premise `hstale`, assumed there); dynamically only in debug builds: the unit tests and Miri runs (release stress tests compile the `debug_assert!` out) | `invariants.rs` → `ring.rs`, `stack_ring.rs` (`reserve` fast path) |
 | INV-INIT-01 | [tests/miri_tests.rs](tests/miri_tests.rs) (UB detection) | `invariants.rs` → `ring.rs`, `stack_ring.rs` |
 | INV-INIT-02 | [tests/miri_tests.rs](tests/miri_tests.rs) (UB detection) | N/A (reservation API prevents) |
 | INV-INIT-03 | Structural (borrow checker) | N/A (structural) |

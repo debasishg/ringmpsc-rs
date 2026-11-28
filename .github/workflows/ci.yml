@@ -1,0 +1,41 @@
+# Every push and pull request: build, lint and test all crates (release mode, per CLAUDE.md).
+# Miri, loom, Quint and the Lean proofs run elsewhere (/verify, lean.yml).
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the toolchain and components pinned in rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --release -- -D warnings
+
+      - name: clippy ringmpsc with stack-ring
+        run: cargo clippy -p ringmpsc-rs --features stack-ring --all-targets --release -- -D warnings
+
+      # Plain `cargo test` only runs the default member (ringmpsc).
+      - name: test workspace
+        run: cargo test --workspace --release
+
+      - name: test ringmpsc with stack-ring
+        run: cargo test -p ringmpsc-rs --features stack-ring --release

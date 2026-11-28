@@ -1,8 +1,9 @@
 //! Debug assertion macros for stream pipeline invariants.
 //!
 //! These macros provide runtime checks for the invariants documented in `spec.md`.
-//! They are only active in debug builds (`#[cfg(debug_assertions)]`), so there is
-//! zero overhead in release builds.
+//! They expand to `debug_assert!`, which evaluates nothing in release builds, so
+//! call sites use them unconditionally (no `#[cfg(debug_assertions)]` gate).
+//! Zero overhead in release builds.
 
 // =============================================================================
 // INV-STREAM-03: Backpressure Relief Signaling
@@ -209,8 +210,6 @@ macro_rules! debug_assert_senders_woken {
 /// section can open after the close), so re-checking here must hold.
 ///
 /// Used in: `receiver.rs` → `finish()`, before the end of the stream.
-// Used only in debug builds (`#[cfg(debug_assertions)]` call site).
-#[allow(unused_macros)]
 macro_rules! debug_assert_quiet_at_end {
     ($closed_and_quiet:expr) => {
         debug_assert!(
@@ -230,7 +229,6 @@ pub(crate) use debug_assert_recheck_after_register;
 pub(crate) use debug_assert_explicit_registration;
 pub(crate) use debug_assert_item_preserved;
 pub(crate) use debug_assert_senders_woken;
-#[allow(unused_imports)]
 pub(crate) use debug_assert_quiet_at_end;
 pub(crate) use debug_assert_shutdown_drained;
 pub(crate) use debug_assert_shutdown_signaled;

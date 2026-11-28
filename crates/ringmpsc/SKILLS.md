@@ -11,7 +11,7 @@ See the workspace-level [`SKILLS.md`](../../SKILLS.md) for the full hierarchy.
 | Formal spec verification | `/verify-spec` | Quint model checking (`RingSPSC.qnt` safety + `RingSPSCLiveness.qnt` liveness via TLC backend) + Quint model-based tests replaying ITF traces against the Rust implementation |
 | Invariant sync | `/verify-invariants` | Cross-checks every `INV-*` ID in `spec.md` against `debug_assert!` macros in `src/invariants.rs` |
 
-Run all three at once with `/verify`.
+Run all three at once with `/verify`, which also checks the Lean proofs of `window.rs` (`crates/ringmpsc/lean/scripts/check.sh`).
 
 ## Testing
 

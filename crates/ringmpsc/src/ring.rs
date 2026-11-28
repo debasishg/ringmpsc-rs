@@ -36,14 +36,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// the loads, so it only repeats while the consumer makes progress. There is
 /// deliberately no retry cap: a fallback value would be approximate again.
 #[inline]
-pub(crate) fn occupancy_snapshot(head: &AtomicU64, tail: &AtomicU64) -> u64 {
+pub(crate) fn occupancy_snapshot(head: &AtomicU64, tail: &AtomicU64) -> usize {
     loop {
         let h1 = head.load(Ordering::Acquire);
         let t = tail.load(Ordering::Acquire);
         // Relaxed is enough: the upper bound comes from the Acquire on `tail`.
         let h2 = head.load(Ordering::Relaxed);
         if h1 == h2 {
-            return t.wrapping_sub(h1);
+            // The pair is consistent (above), so `t - h1 <= capacity` while
+            // INV-SEQ-01 holds: `occupancy`'s precondition, so the result is
+            // exact [lean: occupancy_spec].
+            return crate::window::occupancy(t, h1);
         }
         // The consumer advanced between the loads. Not backpressure: the
         // retry just re-reads, and each one means the consumer made progress.
@@ -269,7 +272,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// retry, since it is the only thread that moves `head`.
     #[inline]
     pub fn len(&self) -> usize {
-        occupancy_snapshot(&self.head, &self.tail) as usize
+        occupancy_snapshot(&self.head, &self.tail)
     }
 
     /// Returns true if the ring is empty.
@@ -390,7 +393,10 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         // SAFETY: cached_head is only written by the producer (this code path).
         // No other thread writes to it, so this unsynchronized read is safe.
         let cached_head = unsafe { *self.cached_head.get() };
-        let space = self.capacity().saturating_sub(tail.wrapping_sub(cached_head) as usize);
+        // INV-SEQ-04: the premise that makes a stale cached_head safe to use
+        // [lean: free_space_stale_conservative].
+        crate::invariants::debug_assert_cached_head_bound!(tail, cached_head, self.capacity());
+        let space = crate::window::free_space(tail, cached_head, self.capacity());
 
         if space >= n {
             return Some(self.make_reservation(tail, n));
@@ -402,7 +408,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         // The Acquire load above synchronizes with the consumer's Release store.
         unsafe { *self.cached_head.get() = head; }
 
-        let space = self.capacity().saturating_sub(tail.wrapping_sub(head) as usize);
+        let space = crate::window::free_space(tail, head, self.capacity());
         if space < n {
             return None;
         }
@@ -444,12 +450,13 @@ impl<T, A: BufferAllocator> Ring<T, A> {
 
     /// Internal: Create a reservation for writing.
     fn make_reservation(&self, tail: u64, n: usize) -> Reservation<'_, T, A> {
-        let mask = self.mask();
-        let idx = (tail as usize) & mask;
-        let contiguous = n.min(self.capacity() - idx);
+        let (idx, contiguous) = crate::window::write_window(tail, n, self.capacity());
 
         // SAFETY: Buffer access is safe because:
-        // 1. idx is within bounds (masked to capacity)
+        // 1. [idx, idx+contiguous) is within the buffer and disjoint from the
+        //    consumer's [head, tail) (INV-MEM-02, INV-SEQ-01). `reserve` sizes `n`
+        //    against the cached head, which is conservative.
+        //    [lean: write_window_spec, reservation_disjoint, free_space_stale_conservative]
         // 2. These slots are not being read by consumer (they're beyond current tail)
         // 3. Only the producer writes to slots between tail and tail+n
         // 4. The Reservation's commit() will publish via Release store to tail
@@ -458,7 +465,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         let slice = unsafe { std::slice::from_raw_parts_mut(self.slot(idx), contiguous) };
 
         // Create reservation with commit callback
-        let ring_ptr = self as *const Self;
+        let ring_ptr = std::ptr::from_ref::<Self>(self);
         Reservation::new(slice, ring_ptr)
     }
 
@@ -535,20 +542,14 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // SAFETY: cached_tail is only written by the consumer (this code path).
             // The Acquire load above synchronizes with the producer's Release store.
             unsafe { *self.cached_tail.get() = cached_tail; }
-            if cached_tail <= head {
-                return None;
-            }
         }
-        // Now head < cached_tail <= tail, so this is the number of published
-        // items the consumer may read.
-        let avail = (cached_tail - head) as usize;
-
-        let mask = self.mask();
-        let idx = (head as usize) & mask;
-        let contiguous = avail.min(self.capacity() - idx);
+        // `read_window` returns None when `cached_tail <= head`. Otherwise
+        // head < cached_tail <= tail, and the window lies in [head, cached_tail).
+        let (idx, contiguous) = crate::window::read_window(head, cached_tail, self.capacity())?;
 
         // SAFETY: Buffer access is safe because:
-        // 1. idx is within bounds (masked to capacity)
+        // 1. [idx, idx+contiguous) is within the buffer and within
+        //    [head, cached_tail) (INV-MEM-02, INV-INIT-01) [lean: read_window_spec]
         // 2. Items in [head, tail) were written by producer and published via Release
         // 3. The Acquire load on tail synchronizes with that Release
         // 4. Only consumer reads these slots; producer won't overwrite until head advances
@@ -684,7 +685,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
@@ -698,9 +699,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & mask;
+            let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds (masked to capacity)
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - item will be dropped after handler
@@ -775,7 +776,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
@@ -789,9 +790,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & mask;
+            let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds (masked to capacity)
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - handler takes ownership
@@ -847,12 +848,12 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
 
-        let to_consume = avail.min(max_items);
+        let to_consume = crate::window::consume_count(avail, max_items);
         let mask = self.mask();
         let mut pos = head;
         let mut count = 0;
@@ -862,9 +863,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & mask;
+            let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds (masked to capacity)
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - item will be dropped after handler
@@ -924,12 +925,12 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
-        let avail = tail.wrapping_sub(head) as usize;
+        let avail = crate::window::occupancy(tail, head);
         if avail == 0 {
             return 0;
         }
 
-        let to_consume = avail.min(max_items);
+        let to_consume = crate::window::consume_count(avail, max_items);
         let mask = self.mask();
         let mut pos = head;
         let mut count = 0;
@@ -939,9 +940,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             // INV-INIT-01: Verify we're reading from initialized range
             debug_assert_initialized_read!(pos, head, tail);
 
-            let idx = (pos as usize) & mask;
+            let idx = crate::window::slot_index(pos, mask);
             // SAFETY: Buffer access is safe because:
-            // 1. idx is within bounds (masked to capacity)
+            // 1. idx is within bounds (INV-MEM-02) [lean: slot_index_spec]
             // 2. Items in [head, tail) were fully written by producer
             // 3. The Acquire load on tail synchronizes with producer's Release store
             // 4. assume_init_read moves ownership out - handler takes ownership
@@ -1084,15 +1085,16 @@ impl<T, A: BufferAllocator> Drop for Ring<T, A> {
         // Drop all initialized items in the ring
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
-        let count = tail.wrapping_sub(head) as usize;
+        let count = crate::window::occupancy(tail, head);
 
         if count > 0 {
             let capacity = self.capacity();
             let mask = self.mask();
 
             for i in 0..count {
-                let idx = ((head as usize).wrapping_add(i)) & mask;
-                // Safety: idx bounded by mask; slot in [head, tail) is initialized (INV-INIT-01, INV-DROP-01).
+                let idx = crate::window::slot_index(head.wrapping_add(i as u64), mask);
+                // Safety: idx bounded by mask (INV-MEM-02) [lean: slot_index_spec]; slot in
+                // [head, tail) is initialized (INV-INIT-01, INV-DROP-01).
                 // We hold `&mut self`, so there is no concurrent access, but we still
                 // go through `slot()` rather than deref the buffer: a wide retag here
                 // would be pointless and `base` is exactly the right pointer.

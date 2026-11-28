@@ -1,12 +1,12 @@
-//! Benchmark comparing StackRing (stack-allocated) vs Ring (heap-allocated)
+//! Benchmark comparing `StackRing` (stack-allocated) vs Ring (heap-allocated)
 //!
 //! This benchmark measures SPSC (Single-Producer Single-Consumer) throughput
 //! for both implementations to quantify the benefit of eliminating heap
 //! pointer indirection.
 //!
-//! Also benchmarks StackChannel vs Channel for MPSC scenarios.
+//! Also benchmarks `StackChannel` vs Channel for MPSC scenarios.
 //!
-//! Run with: cargo bench --features stack-ring --bench stack_vs_heap
+//! Run with: `cargo bench --features stack-ring --bench stack_vs_heap`
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use ringmpsc_rs::{Channel, Config, Ring, StackChannel, StackRing};
@@ -59,7 +59,7 @@ fn bench_heap_single_thread(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark StackRing - single threaded reserve/commit/consume cycle
+/// Benchmark `StackRing` - single threaded reserve/commit/consume cycle
 fn bench_stack_single_thread(c: &mut Criterion) {
     let mut group = c.benchmark_group("single_thread");
     group.throughput(Throughput::Elements(MSG_COUNT));
@@ -157,7 +157,7 @@ fn bench_heap_spsc(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark StackRing with producer/consumer threads
+/// Benchmark `StackRing` with producer/consumer threads
 fn bench_stack_spsc(c: &mut Criterion) {
     let mut group = c.benchmark_group("spsc_throughput");
     group.throughput(Throughput::Elements(MSG_COUNT));
@@ -346,7 +346,7 @@ fn bench_heap_mpsc(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark StackChannel with multiple producers (2P)
+/// Benchmark `StackChannel` with multiple producers (2P)
 fn bench_stack_mpsc_2p(c: &mut Criterion) {
     let mut group = c.benchmark_group("mpsc_throughput");
     group.throughput(Throughput::Elements(MPSC_MSG_COUNT));
@@ -417,7 +417,7 @@ fn bench_stack_mpsc_2p(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark StackChannel with 4 producers
+/// Benchmark `StackChannel` with 4 producers
 fn bench_stack_mpsc_4p(c: &mut Criterion) {
     let mut group = c.benchmark_group("mpsc_throughput");
     group.throughput(Throughput::Elements(MPSC_MSG_COUNT));
@@ -488,7 +488,7 @@ fn bench_stack_mpsc_4p(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark StackChannel with 8 producers
+/// Benchmark `StackChannel` with 8 producers
 fn bench_stack_mpsc_8p(c: &mut Criterion) {
     let mut group = c.benchmark_group("mpsc_throughput");
     group.throughput(Throughput::Elements(MPSC_MSG_COUNT));

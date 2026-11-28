@@ -15,10 +15,10 @@ Lock-free Rust workspace built on **ring decomposition** (each producer owns a d
 
 `ringmpsc` is the **default workspace member** — `cargo test` without `-p` only runs ringmpsc tests.
 
-**Edition**: 2021 (most crates). **Resolver**: 2.
+**Edition**: 2021 (most crates). **Resolver**: 2. **Toolchain**: Rust 1.100.0, pinned in `rust-toolchain.toml` (Verus, Charon and Miri use their own).
 
 ### Key Source Files (ringmpsc)
-`ring.rs` (core SPSC), `channel.rs` (MPSC), `stack_ring.rs` / `stack_channel.rs` (stack variants), `numa.rs`, `allocator.rs`, `invariants.rs`, `reservation.rs`.
+`ring.rs` (core SPSC), `channel.rs` (MPSC), `stack_ring.rs` / `stack_channel.rs` (stack variants), `numa.rs`, `allocator.rs`, `invariants.rs`, `reservation.rs`, `window.rs` (pure index/window arithmetic, proved in Lean; rerun `crates/ringmpsc/lean/scripts/check.sh` after changing it).
 
 ## Development Commands
 
@@ -38,6 +38,9 @@ MIRIFLAGS="-Zmiri-preemption-rate=0.1" cargo +nightly miri test -p ringmpsc-rs -
 
 # Model-based testing (Quint spec → ITF traces → Rust assertions)
 cargo test -p ringmpsc-rs --features quint-mbt --release
+
+# Lean 4 proofs of window.rs (Charon + Aeneas; setup in crates/ringmpsc/lean/README.md)
+crates/ringmpsc/lean/scripts/check.sh
 
 # Benchmarks
 cargo bench -p ringmpsc-rs
@@ -116,7 +119,7 @@ Pedantic baseline. Workspace `Cargo.toml` allows: `cast_possible_truncation`, `c
 | `stack-ring` | ringmpsc-rs | `StackRing`/`StackChannel` — 2–3× faster, compile-time capacity |
 | `loom` | ringmpsc-rs | Replace std atomics with loom for exhaustive concurrency testing |
 | `quint-mbt` | ringmpsc-rs | Model-based tests driven by Quint spec + ITF traces |
-| `allocator-api` | ringmpsc-rs | Nightly custom allocator API |
+| `allocator-api` | ringmpsc-rs | Nightly custom allocator API (`cargo +nightly test ... --features allocator-api`; the pinned stable toolchain rejects it) |
 | `numa` | ringmpsc-rs | NUMA-aware allocation via `libc` |
 
 ## Adding New Crates
@@ -132,7 +135,7 @@ See `SKILLS.md` at the workspace root for the full hierarchy. Quick reference:
 
 | Command | Purpose |
 |---------|---------|
-| `/verify` | Full pre-merge suite (orchestrates the three below) |
+| `/verify` | Full pre-merge suite (the three below, then the Lean proofs via `crates/ringmpsc/lean/scripts/check.sh`) |
 | `/verify-concurrency` | Loom + Miri for `ringmpsc` |
 | `/verify-spec` | TLA+/Quint model check + ITF trace replay |
 | `/verify-invariants` | spec.md ↔ invariants.rs INV-* cross-check (all crates) |

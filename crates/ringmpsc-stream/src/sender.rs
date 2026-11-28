@@ -1,7 +1,6 @@
 //! Async sender implementing `futures::Sink`.
 
 use crate::error::StreamError;
-#[cfg(debug_assertions)]
 use crate::invariants::{debug_assert_data_notified, debug_assert_item_preserved};
 use crate::shutdown::ShutdownState;
 use ringmpsc_rs::Producer;
@@ -122,7 +121,6 @@ fn push_one<T>(
     // Fails once the channel is closed. While the section is open, the
     // receiver waits before its final drain.
     let Some(section) = shutdown_state.begin_send(producer.id()) else {
-        #[cfg(debug_assertions)]
         debug_assert_item_preserved!(true, true);
         return Push::Closed(item);
     };
@@ -137,7 +135,6 @@ fn push_one<T>(
         let _ = section.end();
         data_notify.notify_one();
         // INV-SINK-03: Verify data notification sent
-        #[cfg(debug_assertions)]
         debug_assert_data_notified!(true, true);
         return Push::Sent;
     }
@@ -147,7 +144,6 @@ fn push_one<T>(
         data_notify.notify_one();
     }
     // INV-SINK-01: the item was not consumed, since reserve() returned None.
-    #[cfg(debug_assertions)]
     debug_assert_item_preserved!(true, true);
     // A closed ring refuses every reserve, so `None` may mean closed, not
     // full. Waiting for space would never end then.

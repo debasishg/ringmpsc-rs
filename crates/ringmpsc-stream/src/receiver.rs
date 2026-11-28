@@ -1,7 +1,6 @@
 //! Async receiver implementing `futures::Stream`.
 
 use crate::config::StreamConfig;
-#[cfg(debug_assertions)]
 use crate::invariants::{
     debug_assert_backpressure_signaled, debug_assert_quiet_at_end,
     debug_assert_recheck_after_register, debug_assert_shutdown_drained,
@@ -226,7 +225,6 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                     this.backpressure_notify.notify_waiters();
                 }
                 // INV-STREAM-03: Verify backpressure signaled after drain
-                #[cfg(debug_assertions)]
                 debug_assert_backpressure_signaled!(drained, signaled || drained == 0);
             }
         }
@@ -271,10 +269,8 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                 if recheck_count > 0 {
                     this.backpressure_notify.notify_waiters();
                     // INV-STREAM-03: Verify backpressure signaled
-                    #[cfg(debug_assertions)]
                     debug_assert_backpressure_signaled!(recheck_count, true);
                     // INV-STREAM-05: Verify recheck caught items
-                    #[cfg(debug_assertions)]
                     debug_assert_recheck_after_register!(recheck_count);
                     if let Some(item) = this.buffer.pop_front() {
                         return Poll::Ready(Some(item));
@@ -305,7 +301,6 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                         if count > 0 {
                             this.backpressure_notify.notify_waiters();
                             // INV-STREAM-03: Verify backpressure signaled
-                            #[cfg(debug_assertions)]
                             debug_assert_backpressure_signaled!(count, true);
                             if let Some(item) = this.buffer.pop_front() {
                                 return Poll::Ready(Some(item));
@@ -372,7 +367,6 @@ fn finish<T>(
             backpressure_notify.notify_waiters();
         }
         // INV-STREAM-03: Verify backpressure was signaled
-        #[cfg(debug_assertions)]
         debug_assert_backpressure_signaled!(drained, true);
 
         if quiet {
@@ -380,10 +374,8 @@ fn finish<T>(
             *quiet_wait = None;
             *drain_complete = true;
             // INV-STREAM-04: Verify drain complete before returning None
-            #[cfg(debug_assertions)]
             debug_assert_shutdown_drained!(true, *drain_complete);
             // INV-SHUT-04: still closed and quiet now that the stream ends.
-            #[cfg(debug_assertions)]
             debug_assert_quiet_at_end!(shutdown_state.is_closed_and_quiet());
             return Poll::Ready(buffer.pop_front());
         }

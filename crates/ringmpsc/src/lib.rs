@@ -51,6 +51,7 @@ mod metrics;
 mod registry;
 mod reservation;
 mod ring;
+mod window;
 
 #[cfg(feature = "stack-ring")]
 mod stack_ring;
