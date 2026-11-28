@@ -319,14 +319,15 @@ fn test_stack_ring_advance_past_tail_panics() {
 #[should_panic(expected = "INV-ORD-03 violated")]
 fn test_stack_ring_advance_wrapping_n_panics() {
     let ring = StackRing::<u64, 4>::new();
-    // SAFETY: single thread, so this is the only producer and consumer; each
-    // reserve is followed by writing exactly the reserved slot and committing.
+    // SAFETY: single thread, so this is the only producer (INV-SW-01) and
+    // consumer (INV-SW-02); each reserve returns at least the one slot asked
+    // for (INV-RES-01), which is written before it is committed (INV-INIT-01).
     unsafe {
-        let (ptr, _) = ring.reserve(1).unwrap();
+        let (ptr, _) = ring.reserve(1).expect("empty ring has room");
         ptr.write(1);
         ring.commit(1);
         ring.consume_batch(|_| {}); // head = 1
-        let (ptr, _) = ring.reserve(1).unwrap();
+        let (ptr, _) = ring.reserve(1).expect("ring has room");
         ptr.write(2);
         ring.commit(1); // tail = 2
     }

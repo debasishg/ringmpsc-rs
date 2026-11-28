@@ -111,10 +111,12 @@ impl<T, const N: usize> StackRing<T, N> {
     /// first n reserved slots were written (#15).
     pub unsafe fn commit(&self, n: usize);
 
-    /// Peek at available data for reading.
-    pub unsafe fn peek(&self) -> (*const T, usize);
+    /// Peek at available data for reading. `None` if the ring is empty.
+    pub unsafe fn peek(&self) -> Option<(*const T, usize)>;
 
-    /// Advance the read pointer by n elements.
+    /// Advance the read pointer by n elements. Unsafe: the caller must be
+    /// the ring's only consumer, with every consumer call ordered by
+    /// happens-before (INV-SW-02).
     pub unsafe fn advance(&self, n: usize);
 
     /// Consume all available items in batch (single atomic head update).
