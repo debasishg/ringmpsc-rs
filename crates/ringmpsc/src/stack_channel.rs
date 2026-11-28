@@ -292,11 +292,13 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// this channel's [`StackConsumer`] exists, or from two threads without a
     /// happens-before ordering between the calls, is undefined behavior.
     ///
-    /// Its producer methods (`reserve`, `commit`) are `unsafe` too, and require
-    /// the caller to be the ring's only producer (INV-SW-01). Calling them
-    /// while a [`StackProducer`] for `ring_id` exists, or from two threads at
-    /// once, is undefined behavior: both writers would fill the same slots and
-    /// store the same `tail`.
+    /// Its producer methods (`reserve`, `commit`) are `unsafe` too; see the
+    /// [producer contract](StackRing#producer-contract) (INV-SW-01). Calling
+    /// them while a [`StackProducer`] for `ring_id` exists, or from two
+    /// threads without a happens-before ordering between the calls (including
+    /// the last use of a dropped `StackProducer` for that ring), is undefined
+    /// behavior: both writers would fill the same slots and store the same
+    /// `tail`.
     ///
     /// Returns `None` if `ring_id >= P`.
     #[inline]
@@ -566,7 +568,14 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     ///
     /// # Safety
     ///
-    /// The caller must write exactly `len` items before calling `commit(len)`.
+    /// The caller must:
+    /// - Write the first `n <= len` slots starting at `ptr` before calling
+    ///   `commit(n)` (INV-INIT-01)
+    /// - Until that `commit`, make no other `reserve`, `push`, `send` or
+    ///   `commit` call on this producer. `tail` hasn't moved yet, so any of
+    ///   them would reuse the same slots (INV-SW-01)
+    /// - Not use the pointer after that `commit()`, which publishes the
+    ///   slots to the consumer
     ///
     /// # Example
     ///
@@ -582,7 +591,11 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub unsafe fn reserve(&self, n: usize) -> Option<(*mut T, usize)> {
-        self.channel.rings[self.id].reserve(n)
+        // SAFETY: the caller's obligations are forwarded from this function's
+        // contract, which covers `StackRing::reserve`'s. This `StackProducer`
+        // is the ring's only producer (INV-SW-01, INV-CH-01): ids are unique
+        // per `register()`, and it is neither `Clone` nor `Sync`.
+        unsafe { self.channel.rings[self.id].reserve(n) }
     }
 
     /// Commit `n` elements that were written after `reserve()`.

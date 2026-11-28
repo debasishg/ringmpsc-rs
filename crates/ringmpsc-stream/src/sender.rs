@@ -4,7 +4,7 @@ use crate::error::StreamError;
 #[cfg(debug_assertions)]
 use crate::invariants::{debug_assert_data_notified, debug_assert_item_preserved};
 use crate::shutdown::ShutdownState;
-use ringmpsc_rs::Producer;
+use ringmpsc_rs::{Producer, Reservation};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -27,7 +27,7 @@ pin_project! {
     /// to preserve the single-producer-per-ring invariant. To create
     /// multiple senders, call `SenderFactory::register()` for each.
     pub struct RingSender<T> {
-        producer: Producer<T>,
+        producer: ExclusiveProducer<T>,
         data_notify: Arc<Notify>,
         backpressure_notify: Arc<Notify>,
         shutdown_state: Arc<ShutdownState>,
@@ -35,27 +35,39 @@ pin_project! {
     }
 }
 
-// Safety: `Producer` is `!Sync` because its `push`/`send` take `&self`
-// (ringmpsc INV-SW-01). `RingSender` never calls them through `&self`: every
-// write (`try_send`, `send`, `send_cloned`, the `Sink` methods) takes
-// `&mut self` or `Pin<&mut Self>`, which is exclusive. Its `&self` methods,
-// `is_closed` and `close`, only touch atomics. So a shared `&RingSender` can't
-// push. `T: Sync` is required, as it was when this impl was automatic, for
-// the `pending_item: Option<T>` field. Keep every write behind `&mut self`.
-unsafe impl<T: Send + Sync> Sync for RingSender<T> {}
+/// A [`Producer`] reached only through `&mut self` for writes.
+///
+/// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
+/// wrapper doesn't expose them: it forwards `reserve` through
+/// `&mut self`, and through `&self` only `is_closed` and `close`, which touch
+/// nothing but atomics. So it is safe to share, and `RingSender` gets its
+/// `Sync` from the compiler, which still checks every other field.
+struct ExclusiveProducer<T>(Producer<T>);
 
-// The impl above skips the compiler's field check, so check the other fields
-// by hand: if one stops being `Sync`, this fails to compile.
-// Never called: the fns only need to type-check.
-#[allow(dead_code)]
-const _: () = {
-    fn assert_sync<S: Sync>() {}
-    fn fields_are_sync<T: Sync>() {
-        assert_sync::<Arc<Notify>>();
-        assert_sync::<Arc<ShutdownState>>();
-        assert_sync::<Option<T>>();
+// Safety: a shared `&ExclusiveProducer` can only call `is_closed` and
+// `close`, which are atomic loads and stores. Every write to the ring goes
+// through `&mut self`, so it stays on one thread at a time and the ring keeps
+// a single producer (ringmpsc INV-SW-01). Keep it that way: never add a
+// `&self` method that reserves, pushes or sends, and never hand out
+// `&Producer`. `T: Send` matches `Producer`'s own `Send` bound.
+unsafe impl<T: Send> Sync for ExclusiveProducer<T> {}
+
+impl<T> ExclusiveProducer<T> {
+    #[inline]
+    fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T>> {
+        self.0.reserve(n)
     }
-};
+
+    #[inline]
+    fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
+
+    #[inline]
+    fn close(&self) {
+        self.0.close();
+    }
+}
 
 impl<T: Send + 'static> RingSender<T> {
     /// Creates a new sender wrapping the given producer.
@@ -66,7 +78,7 @@ impl<T: Send + 'static> RingSender<T> {
         shutdown_state: Arc<ShutdownState>,
     ) -> Self {
         Self {
-            producer,
+            producer: ExclusiveProducer(producer),
             data_notify,
             backpressure_notify,
             shutdown_state,

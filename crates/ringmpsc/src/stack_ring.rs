@@ -138,6 +138,25 @@ impl<T> std::ops::DerefMut for CacheAligned<T> {
 /// and store it after a newer one, moving `head` backwards so the same items
 /// are read and dropped twice. For a ring owned by a `StackChannel`, make no
 /// such call outside its `StackConsumer` while one exists.
+///
+/// # Producer contract
+///
+/// The producer methods (`reserve`, `commit`) take `&self` and are `unsafe`.
+/// Every call to them on one ring must be ordered by happens-before with
+/// every other such call on it (INV-SW-01): make them all from one thread,
+/// or hand the producer role to another thread through a Release/Acquire
+/// synchronization. Not overlapping in time is not enough: the producer's
+/// `cached_head` is a plain cell and `tail` is read `Relaxed`, so without that
+/// ordering two writers race on them and fill the same slots.
+///
+/// Each `reserve` must be followed by its `commit` before the next
+/// `reserve`: until then `tail` hasn't moved, so a second `reserve` would
+/// hand out the same slots again. The pointer from a `reserve` must not be
+/// used after its `commit`, which publishes the slots to the consumer.
+///
+/// For a ring owned by a `StackChannel`, make no such call except through
+/// its `StackProducer` while one exists for this ring, and order calls made
+/// after that producer is dropped by happens-before with its last use.
 #[repr(C)]
 pub struct StackRing<T, const N: usize> {
     // === PRODUCER HOT === (128-byte aligned)
@@ -335,9 +354,10 @@ impl<T, const N: usize> StackRing<T, N> {
     /// # Safety
     ///
     /// The caller must:
-    /// - Write to exactly `len` slots starting at `ptr` before calling `commit(len)`
-    /// - Not hold the pointer across a `commit()` call
-    /// - Ensure only one producer thread calls this
+    /// - Follow the [producer contract](StackRing#producer-contract) (INV-SW-01)
+    /// - Write the first `n <= len` slots starting at `ptr` before calling
+    ///   `commit(n)`, with no other `reserve` in between
+    /// - Not use the pointer after that `commit()`
     ///
     /// # Example
     ///
@@ -406,7 +426,7 @@ impl<T, const N: usize> StackRing<T, N> {
     /// - `n` must be at most the length returned by the preceding `reserve()`.
     /// - The caller must have written `n` initialized values to the first `n`
     ///   slots that `reserve()` returned.
-    /// - The caller must be this ring's only producer.
+    /// - The caller must follow the [producer contract](StackRing#producer-contract) (INV-SW-01).
     ///
     /// Calling it without `unsafe` does not compile:
     ///
