@@ -118,7 +118,11 @@ theorem free_space_spec (tail head : U64) (cap : Usize) :
   · step*
 
 /-- A stale `head` (the producer's `cached_head`, which only lags the real
-`head`) never reports more free space than the real `head` would. -/
+`head`) never reports more free space than the real `head` would.
+
+Premises: `hstale` is INV-SEQ-04 (`tail - cached_head ≤ cap`, the producer
+never commits past its cached view plus `cap`), and `hlag` says the cache
+lags the real `head`. Both are maintained by the ring, not proved here. -/
 theorem free_space_stale_conservative (tail head stale : U64) (cap f_stale f_head : Usize)
     (hstale : dist tail stale ≤ cap.val)
     (hlag : dist tail head ≤ dist tail stale)

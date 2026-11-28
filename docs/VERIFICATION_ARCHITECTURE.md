@@ -2,7 +2,7 @@
 
 How the verification tools in this workspace divide the work: what each one checks, what it checks it *against*, and where the gaps between them are.
 
-No single tool covers everything. Quint checks the design but not the code. Miri checks the code but only on the inputs a test gives it. Verus proves properties for all inputs, but only of what it has a model of. Each layer below covers part of what the others miss.
+No single tool covers everything. Quint checks the design but not the code. Miri checks the code but only on the inputs a test gives it. Verus proves properties for all inputs, but only of what it has a model of. Lean proves properties of the production `window.rs` itself, for all inputs, but only of that pure arithmetic. Each layer below covers part of what the others miss.
 
 ## The layers
 
@@ -20,6 +20,7 @@ flowchart TB
         MBT["<b>quint-connect</b> · quint_mbt.rs<br/>replays spec traces on Ring"]
         PT["<b>proptest</b> · property_tests.rs<br/>spec invariants, random inputs"]
         VA["<b>Verus</b> · arith.rs<br/>same bodies as ring.rs<br/>proven for every input"]
+        LN["<b>Lean 4</b> · ringlean<br/>window.rs via Charon + Aeneas<br/>proven for every input"]
     end
 
     CODE[["<b>crates/ringmpsc</b><br/>Ring · Reservation · Channel · Consumer · Producer<br/>StackRing · StackChannel"]]
@@ -43,6 +44,7 @@ flowchart TB
     MBT --> CODE
     PT --> CODE
     VA -. "mirrors" .-> CODE
+    LN -- "translates window.rs,<br/>which Ring and StackRing call" --> CODE
     VP -. "proves its own rings and channel<br/>(ring.rs, spsc.rs, channel.rs),<br/>not the production code" .-> CODE
     STATIC --> CODE
     DYNAMIC --> CODE
@@ -59,6 +61,7 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 | **Quint** liveness | If the consumer keeps running, does every item get consumed? | `RingSPSCLiveness.qnt` | the model, bounded | proof, for that bound |
 | **Verus** protocol | Are the invariants inductive, so they hold for every capacity and history? | `protocol.rs` | the model, unbounded | proof |
 | **Verus** arithmetic | Are masking, `len`, `space` and `contiguous` right for every input? | `arith.rs` (same bodies as `ring.rs`) | a copy of the code, unbounded | proof |
+| **Lean 4** (`crates/ringmpsc/lean/`) | Is the index and window arithmetic that `Ring` and `StackRing` hand to their `unsafe` code right, and panic-free, for every input? | `window.rs`, translated to Lean by Charon + Aeneas (no hand-written model) | the production arithmetic, unbounded; protocol premises (INV-SEQ-01/03/04, INV-MEM-02) assumed | proof |
 | **Verus** exec rings | Is a ring with the production design memory-safe and a correct FIFO for every input, and for every interleaving of a producer and a consumer thread? | `verus/.../ring.rs` (single-threaded), `spsc.rs` (two threads, SeqCst atomics, batches) and `channel.rs` (MPSC: registration and the consumer claim), on `slots.rs` | verified rings and channel, not the production ones | proof |
 | **quint-connect** | Does the real `Ring` do what the spec says, step by step? | spec traces replayed on `Ring<T>` | the real code | evidence |
 | **proptest** | Do the spec's invariants hold on random operation sequences? | `Ring<T>`, `StackRing` | the real code | evidence |
@@ -74,21 +77,23 @@ Solid arrows mean the tool checks that artifact directly. Dashed arrows mean the
 
 ✅ covered · 🟡 partly covered · ⬜ not covered
 
-| Concern | Quint | Verus | MBT / proptest | Borrow checker | Miri | loom | debug_assert |
-|---|---|---|---|---|---|---|---|
-| Protocol invariants (INV-SEQ, INV-INIT) | ✅ bounded | ✅ unbounded | ✅ | ⬜ | 🟡 | 🟡 | ✅ |
-| Cache soundness (`cached_head`, `cached_tail`) | ✅ bounded ¹ | ✅ | 🟡 | ⬜ | 🟡 | ✅ | ⬜ |
-| Index arithmetic, wrap-around | ⬜ | ✅ | 🟡 | ⬜ | 🟡 | ⬜ | 🟡 |
-| Liveness (no stuck items) | ✅ bounded | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| One producer, one consumer per ring | 🟡 assumed | ✅ verified ring ⁴ | ⬜ | ✅ | ✅ repro | ⬜ | ⬜ |
-| Memory orderings (`Acquire`/`Release`) | ⬜ | ⬜ ² | ⬜ | ⬜ | ✅ | ✅ replica | ⬜ |
-| Aliasing (`&mut` uniqueness, retags) | ⬜ | ⬜ | ⬜ | 🟡 | ✅ | ⬜ | ⬜ |
-| Uninitialized reads, double free | ⬜ | 🟡 ³ | ⬜ | ⬜ | ✅ | ⬜ | ⬜ |
+| Concern | Quint | Verus | Lean | MBT / proptest | Borrow checker | Miri | loom | debug_assert |
+|---|---|---|---|---|---|---|---|---|
+| Protocol invariants (INV-SEQ, INV-INIT) | ✅ bounded | ✅ unbounded | ⬜ assumed | ✅ | ⬜ | 🟡 | 🟡 | ✅ |
+| Cache soundness (`cached_head`, `cached_tail`) | ✅ bounded ¹ | ✅ | 🟡 ⁵ | 🟡 | ⬜ | 🟡 | ✅ | ⬜ |
+| Index arithmetic, wrap-around | ⬜ | ✅ | ✅ ⁶ | 🟡 | ⬜ | 🟡 | ⬜ | 🟡 |
+| Liveness (no stuck items) | ✅ bounded | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| One producer, one consumer per ring | 🟡 assumed | ✅ verified ring ⁴ | ⬜ | ⬜ | ✅ | ✅ repro | ⬜ | ⬜ |
+| Memory orderings (`Acquire`/`Release`) | ⬜ | ⬜ ² | ⬜ | ⬜ | ⬜ | ✅ | ✅ replica | ⬜ |
+| Aliasing (`&mut` uniqueness, retags) | ⬜ | ⬜ | ⬜ | ⬜ | 🟡 | ✅ | ⬜ | ⬜ |
+| Uninitialized reads, double free | ⬜ | 🟡 ³ | ⬜ | ⬜ | ⬜ | ✅ | ⬜ | ⬜ |
 
 1. Both models guard the producer by `cached_head`, which is what the code reads on the fast path, and carry the invariant `cached_head <= hd` (`cachesLag` in Quint, `caches_lag` in Verus). Quint checks it at the bound; Verus proves it for every capacity.
 2. Verus treats atomics as sequentially consistent. That rules out reasoning about weaker orderings.
 3. Proven for the verified rings in `verus/ringmpsc-verified`: `ring.rs` (#22, single-threaded) and `spsc.rs` (#23, a producer and a consumer thread). Their slots are `PCell`s whose `PointsTo` tokens live in the protocol, so every read needs an initialized token. Not the production `Ring`.
 4. In `spsc.rs`, each side's protocol tokens exist once and the halves aren't `Clone`, so a second producer or consumer can't be created. In `channel.rs`, `register` hands each ring out at most once (a compare-and-swap withdraws its permission), and the consumer claim admits at most one `ChannelConsumer` (#25). The production crate enforces the same rules with `&mut` and the runtime `Consumer` claim (#12).
+5. `free_space_stale_conservative`: a stale `cached_head` never reports more free space than the real `head`, given INV-SEQ-04 (`tail - cached_head ≤ cap`) as a premise.
+6. On the production `window.rs`, every input: `slot_index`, `occupancy`, `free_space`, `write_window`, `read_window`, `consume_count`, plus `reservation_disjoint` (an allowed reservation never maps to a slot in `[head, tail)`). Real `u64` arithmetic and both `usize` widths; sequence wrap past `u64::MAX` is excluded by INV-SEQ-03.
 
 ## Quint and Verus: the overlap
 
@@ -109,6 +114,7 @@ flowchart LR
     Q["Quint model"] -->|"quint-connect<br/>replays traces"| R["real Ring"]
     VP["Verus protocol + ring.rs"] -.->|"gap: verifies its own ring,<br/>not the production one"| R
     VA["Verus arith.rs"] -.->|"gap: bodies copied by hand"| R
+    LN["Lean ringlean"] -->|"translates the real window.rs;<br/>gap: protocol premises assumed"| R
     L["loom LoomRing"] -.->|"gap: a replica,<br/>not the real Ring"| R
     M["Miri"] -->|"runs the real code,<br/>but only tested inputs"| R
 ```
@@ -116,7 +122,8 @@ flowchart LR
 | Gap | Risk | Mitigation |
 |---|---|---|
 | Verus verifies its own exec ring (`ring.rs`, `spsc.rs`), not the production `Ring` | the production code drifts from the verified design | phase 7 (#26): the same Quint traces (`verus/.../tests/mbt.rs`) and a differential property test (`tests/differential.rs`) run on both rings and a model at once. The differential test already found two places the verified ring behaved differently (`consume_up_to`, `reserve`), now aligned. Whether the verified ring replaces production is still open in #26. |
-| `arith.rs` copies `ring.rs` bodies by hand | the two drift apart | review both together; once the exec ring is verified, it calls the verified functions directly |
+| `arith.rs` copies `ring.rs` bodies by hand | the two drift apart | review both together; once the exec ring is verified, it calls the verified functions directly. The Lean proofs have no such copy: they are generated from `window.rs`, which `Ring` and `StackRing` call, and `check.sh --check-generated` fails if the generated Lean is stale |
+| Lean proves `window.rs` given its premises (INV-SEQ-01/03/04, INV-MEM-02), not the premises themselves | a premise the ring doesn't actually keep would void a theorem | the premises are protocol invariants covered by Verus, Quint and MBT, and checked by `debug_assert!` macros; `// Safety:` comments cite the theorems they use, and `check.sh` checks each citation names a proved theorem |
 | loom tests `LoomRing`, not `Ring` | the replica's orderings differ from the real ones | keep `LoomRing` in sync with `ring.rs`, or run loom on `Ring` via a `cfg(loom)` atomics shim |
 | Miri sees only the executions a test drives | a bug on an untested path | Miri runs targeted repros, and Verus covers the paths no test reaches |
 | Quint compares unbounded integers | wrap-around bugs are invisible to it | Verus `arith.rs` checks the real `u64` arithmetic |
@@ -147,4 +154,5 @@ Every bug that reached code so far was UB that only Miri could *confirm*. But mo
 | Miri | `cargo +nightly miri test -p ringmpsc-rs --features stack-ring --test miri_tests` (also `miri_overlap_test`, `miri_double_consumer_test` and `miri_stack_overlap_test`, which need `MIRIFLAGS="-Zmiri-preemption-rate=0.1"`; for Tree Borrows add `-Zmiri-tree-borrows` to the same `MIRIFLAGS`) |
 | loom | `cargo test -p ringmpsc-rs --features loom --test loom_tests --release` |
 | Verus | `cd verus/ringmpsc-verified && cargo verus focus` (needs a Verus release on `PATH`; see its README) |
+| Lean 4 (`window.rs`) | `crates/ringmpsc/lean/scripts/check.sh --check-generated` (needs the pinned Aeneas release; see `crates/ringmpsc/lean/README.md`) |
 | WAL simulation | `cargo test -p ringwal-sim` |

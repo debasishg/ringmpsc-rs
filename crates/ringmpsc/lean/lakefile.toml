@@ -8,7 +8,9 @@ name = "ringlean"
 defaultTargets = ["RingmpscRs", "RingLean"]
 
 # Pinned to the Aeneas release whose `aeneas` and `charon` binaries
-# generate RingmpscRs/ (see scripts/check.sh, AENEAS_REV).
+# generate RingmpscRs/. CI downloads that release by its tag, AENEAS_TAG in
+# .github/workflows/lean.yml; keep this `rev` and that tag in step.
+# Locally, scripts/check.sh uses the binaries unpacked at $AENEAS_DIR.
 [[require]]
 name = "aeneas"
 git = "https://github.com/AeneasVerif/aeneas"

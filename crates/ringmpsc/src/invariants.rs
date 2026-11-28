@@ -28,6 +28,30 @@ macro_rules! debug_assert_bounded_count {
     };
 }
 
+// =============================================================================
+// INV-SEQ-04: Producer Cache Bound
+// =============================================================================
+
+/// Assert that `tail` is at most `capacity` past the producer's cached head.
+///
+/// **Invariant**: `0 ≤ (tail - cached_head) ≤ capacity`. The producer only
+/// reserves within `free_space(tail, cached_head)`, so `tail` never runs more
+/// than `capacity` past its cached view of `head`. This is the `hstale`
+/// premise of the Lean theorem `free_space_stale_conservative`.
+///
+/// Used in: the `reserve` fast path of `Ring` and `StackRing`
+macro_rules! debug_assert_cached_head_bound {
+    ($tail:expr, $cached_head:expr, $capacity:expr) => {
+        debug_assert!(
+            $tail.wrapping_sub($cached_head) <= $capacity as u64,
+            "INV-SEQ-04 violated: tail {} is more than capacity {} past cached_head {}",
+            $tail,
+            $capacity,
+            $cached_head
+        )
+    };
+}
+
 /// Assert that advancing head by `n` does not move it past tail.
 ///
 /// **Invariant**: `n ≤ tail - head`, so `head ≤ tail` after the advance
@@ -308,6 +332,7 @@ macro_rules! debug_assert_slot_in_bounds {
 // =============================================================================
 
 pub(crate) use debug_assert_bounded_count;
+pub(crate) use debug_assert_cached_head_bound;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_fifo_count;
 pub(crate) use assert_head_not_past_tail;

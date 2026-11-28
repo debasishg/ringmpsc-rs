@@ -66,9 +66,21 @@ echo "==> axioms"
 # native_decide). It prints `THEOREM <name>` for each one it audited.
 lake env lean scripts/Audit.lean > "$tmp/audit.log" 2>&1 || { cat "$tmp/audit.log"; exit 1; }
 theorems="$(sed -n 's/^THEOREM //p' "$tmp/audit.log")"
-echo "    $(echo "$theorems" | wc -l | tr -d ' ') theorems use only standard axioms"
+# Lean generates equation lemmas for a `match` in a theorem
+# (`read_window_spec.match_1.eq_1`); the audit checks them too, but they are
+# not hand-written theorems, so report them separately.
+total="$(echo "$theorems" | wc -l | tr -d ' ')"
+generated="$(echo "$theorems" | grep -cE '\.match_[0-9]+\.eq_[0-9]+$' || true)"
+echo "    $total theorems use only standard axioms ($((total - generated)) hand-written, $generated generated match lemmas)"
 
 echo "==> citations"
+# A citation must open and close on one line; otherwise the extraction below
+# would miss it, and an uncited or misnamed theorem would go unchecked.
+if unclosed="$(grep -rnE '\[lean:[^]]*$' "$crate_dir/src")"; then
+    echo "error: [lean: ...] citation not closed on the same line:"
+    echo "$unclosed"
+    exit 1
+fi
 # Every `[lean: thm, ...]` cited in src/ must name an audited theorem.
 cited="$(grep -rhoE '\[lean: [^]]+\]' "$crate_dir/src" | sed -E 's/\[lean: (.*)\]/\1/' \
     | tr ',' '\n' | tr -d ' ' | sort -u || true)"

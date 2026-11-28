@@ -396,6 +396,9 @@ impl<T, const N: usize> StackRing<T, N> {
         // Fast path: check cached head
         // SAFETY: cached_head is only written by the producer (this code path).
         let cached_head = *self.cached_head.get();
+        // INV-SEQ-04: the premise that makes a stale cached_head safe to use
+        // [lean: free_space_stale_conservative].
+        crate::invariants::debug_assert_cached_head_bound!(tail, cached_head, N);
         let space = crate::window::free_space(tail, cached_head, N);
 
         if space >= n {

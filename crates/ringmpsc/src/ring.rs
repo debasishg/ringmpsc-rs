@@ -393,6 +393,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
         // SAFETY: cached_head is only written by the producer (this code path).
         // No other thread writes to it, so this unsynchronized read is safe.
         let cached_head = unsafe { *self.cached_head.get() };
+        // INV-SEQ-04: the premise that makes a stale cached_head safe to use
+        // [lean: free_space_stale_conservative].
+        crate::invariants::debug_assert_cached_head_bound!(tail, cached_head, self.capacity());
         let space = crate::window::free_space(tail, cached_head, self.capacity());
 
         if space >= n {

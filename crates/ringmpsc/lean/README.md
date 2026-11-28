@@ -29,7 +29,7 @@ Every `_spec` theorem also proves the function **cannot panic**: Aeneas models o
 
 **No `u64` wrap-around.** The theorems use real `u64` arithmetic but do not cover sequence numbers wrapping past `u64::MAX`. `read_window` compares `tail <= head` without wrapping, so after a wrap it would report the ring as empty, and `reservation_disjoint` assumes `head ≤ tail`. INV-SEQ-03 rules wrap out (about 584 years at 10⁹ messages per second).
 
-**Assumed, not proved here.** Premises named after `spec.md` invariants (INV-SEQ-01, INV-SEQ-03, INV-ORD-03, INV-MEM-02) are maintained by the ring protocol and covered by Verus, Quint and MBT. Memory orderings are covered by loom and Miri.
+**Assumed, not proved here.** Premises named after `spec.md` invariants (INV-SEQ-01, INV-SEQ-03, INV-SEQ-04, INV-ORD-03, INV-MEM-02) are maintained by the ring protocol and covered by Verus, Quint and MBT. INV-SEQ-04 (`tail - cached_head ≤ cap`) is the `hstale` premise of `free_space_stale_conservative`; `debug_assert_cached_head_bound!` checks it in the `reserve` fast path. Memory orderings are covered by loom and Miri.
 
 ## Citations
 
