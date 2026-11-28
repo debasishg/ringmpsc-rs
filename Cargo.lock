@@ -1092,6 +1092,7 @@ dependencies = [
 name = "ringmpsc-stream"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "futures",
  "futures-core",
  "futures-sink",
