@@ -84,7 +84,10 @@ where
         self.factory.producer_count()
     }
 
-    /// Closes the factory, preventing new writer registrations.
+    /// Closes the factory: new writer registrations fail, and so does every
+    /// existing writer's next `append` / `commit` / `abort`, with
+    /// `WalError::Closed`. Let writers finish their transactions before
+    /// closing.
     pub fn close(&self) {
         self.factory.close();
     }

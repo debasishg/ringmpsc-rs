@@ -143,11 +143,13 @@ The sender factory and receiver share notification handles for bidirectional sig
 
 ### INV-CH-03: Closure Semantics
 ```
-SenderFactory::close() → prevents new register() calls
-                       → existing senders continue until ring full or dropped
-RingReceiver::shutdown() → drains remaining items → returns None
+SenderFactory::close() → new register() calls return Closed
+                       → every existing sender's next send returns Closed
+                         (its ring is closed), and senders waiting for space
+                         are woken to see that
+RingReceiver::shutdown() → same close, then drains remaining items → returns None
 ```
-Closure is two-phase: close prevents new registrations, shutdown drains existing items.
+A send that returned `Ok` before the close is always received (INV-SHUT-04).
 
 ## 4. Shutdown Invariants
 
@@ -170,6 +172,12 @@ let stream = receiver.take_until(token.cancelled());
 ```
 The internal oneshot handles programmatic shutdown; external `take_until` enables hierarchical cancellation.
 
+### INV-SHUT-04: Sent Implies Received
+```
+send returns Ok  →  the receiver yields the item before it returns None
+```
+Every send commits inside a *send section*: it opens one before reserving (failing if the channel is closed) and ends it after committing. The closed flag and the open-section count share one atomic word in `ShutdownState`, so the close and every section fall in one order. The receiver returns `None` only after it sees the flag set with no section open (`is_closed_and_quiet()`, Acquire) and drains once more; each section's end is a Release, so that drain sees every commit. Sections are a single non-blocking reserve and commit, never a wait for space, so the receiver only spins briefly.
+
 ## 5. Memory Ordering
 
 ### INV-ORD-01: Notify Synchronization
@@ -182,11 +190,13 @@ receiver: notified().await → read_from_ring
 
 ### INV-ORD-02: Shutdown State
 ```
-shutdown_state uses Acquire/Release ordering:
-  - is_closed(): Acquire
-  - close(): Release
+shutdown_state (one word: CLOSED bit + open send-section count):
+  - close(): fetch_or, Release
+  - is_closed(), is_closed_and_quiet(): Acquire
+  - begin_send(): fetch_add, Acquire (pairs with close)
+  - end of a send section: fetch_sub, Release (publishes its commit)
 ```
-Ensures shutdown visibility across threads.
+Every change is a read-modify-write on the same word, so each section's Release heads a release sequence that the receiver's Acquire load reads from (INV-SHUT-04).
 
 ## 6. Configuration
 
@@ -235,9 +245,10 @@ is_terminal(Closed | ShutDown) = true
 | INV-SINK-03 | Integration tests | `sender.rs` → `debug_assert_data_notified!` |
 | INV-CH-01 | Registration tests | `channel.rs` → `debug_assert_explicit_registration!` |
 | INV-CH-02 | Structural | N/A (structural - shared Arc) |
-| INV-CH-03 | Close/shutdown tests | N/A (structural - AtomicBool) |
+| INV-CH-03 | Close/shutdown tests (`test_waiting_sender_returns_closed_on_factory_close`, `test_send_after_factory_close_is_closed`) | N/A (behavioral) |
 | INV-SHUT-01 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_shutdown_signaled!` |
 | INV-SHUT-02 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_senders_woken!` |
+| INV-SHUT-04 | `receiver_waits_for_an_open_send_section` (deterministic, `sender.rs`), `test_every_ok_send_is_received_across_close` (concurrent senders vs close) | `shutdown.rs` → `debug_assert_section_open!` |
 
 ## debug_assert! Macros
 
@@ -254,6 +265,7 @@ All runtime invariant checks are in [src/invariants.rs](src/invariants.rs):
 | `debug_assert_explicit_registration!` | INV-CH-01 | Document explicit registration via factory |
 | `debug_assert_shutdown_signaled!` | INV-SHUT-01 | Verify shutdown oneshot sent |
 | `debug_assert_senders_woken!` | INV-SHUT-02 | Verify blocked senders woken on shutdown |
+| `debug_assert_section_open!` | INV-SHUT-04 | Verify a send section's end matches an open section |
 
 ## Related Specifications
 

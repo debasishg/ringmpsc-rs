@@ -149,7 +149,10 @@ impl SpanCollector {
         })
     }
 
-    /// Closes the channel, preventing new producers from registering
+    /// Closes the collector: new `register()` calls fail, and every existing
+    /// producer's ring refuses new spans, so their submits return
+    /// [`SubmitError::Closed`]. Spans submitted before the close can still be
+    /// consumed.
     pub fn close(&self) {
         self.channel.close();
     }

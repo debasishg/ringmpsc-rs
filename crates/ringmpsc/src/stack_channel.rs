@@ -110,8 +110,8 @@ pub enum StackChannelError {
 /// ```text
 /// ┌────────────────────────────────────────────────────────┐
 /// │ Atomic state                                           │
-/// │   producer_count: AtomicUsize                          │
-/// │   closed: AtomicBool                                   │
+/// │   registry: Registry (count + closed bit)              │
+/// │   closed: AtomicBool (set after rings close)           │
 /// ├────────────────────────────────────────────────────────┤
 /// │ Ring array (inline, P × StackRing<T, N>)               │
 /// │   rings[0]: StackRing<T, N>                            │

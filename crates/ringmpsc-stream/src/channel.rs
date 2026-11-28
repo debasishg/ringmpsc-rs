@@ -129,8 +129,9 @@ impl<T: Send + 'static> SenderFactory<T> {
     ///
     /// New calls to `register()` return `StreamError::Closed`, and so does
     /// every existing sender's next send: `close()` closes every sender's
-    /// ring, and a sender waiting for space is woken to see that. Items
-    /// already sent can still be received.
+    /// ring, and a sender waiting for space is woken to see that. Every
+    /// send that returned `Ok` is still received, even one that raced the
+    /// close (INV-SHUT-04).
     pub fn close(&self) {
         self.shutdown_state.close();
         self.channel.close();

@@ -85,7 +85,8 @@ impl<T: Send + 'static> RingReceiver<T> {
     /// Initiates graceful shutdown.
     ///
     /// This will:
-    /// 1. Close the channel for new registrations
+    /// 1. Close the channel: new registrations and every sender's next send
+    ///    fail with `Closed`
     /// 2. Signal internal consumer to drain remaining items
     /// 3. Continue yielding items until all are consumed
     /// 4. Return `None` when fully drained
@@ -161,29 +162,14 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                 Poll::Ready(_) => {
                     // Shutdown signaled - perform final drain
                     *this.shutdown_rx = None;
-
-                    // Drain all remaining items
-                    let mut drained = 0usize;
-                    this.consumer.consume_all_owned(|item| {
-                        this.buffer.push_back(item);
-                        drained += 1;
-                    });
-                    this.backpressure_notify.notify_waiters();
-                    *this.drain_complete = true;
-
-                    // INV-STREAM-03: Verify backpressure was signaled
-                    #[cfg(debug_assertions)]
-                    debug_assert_backpressure_signaled!(drained, true);
-
-                    // INV-STREAM-04: Verify drain complete before returning None
-                    #[cfg(debug_assertions)]
-                    debug_assert_shutdown_drained!(true, *this.drain_complete);
-
-                    // Yield buffered item if any
-                    if let Some(item) = this.buffer.pop_front() {
-                        return Poll::Ready(Some(item));
-                    }
-                    return Poll::Ready(None);
+                    return finish(
+                        this.consumer,
+                        this.buffer,
+                        this.backpressure_notify,
+                        this.shutdown_state,
+                        this.drain_complete,
+                        cx,
+                    );
                 }
                 Poll::Pending => {}
             }
@@ -296,24 +282,63 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
 
         // Check if channel is closed
         if this.shutdown_state.is_closed() {
-            // Try one more drain to ensure we got everything
-            let mut found_any = false;
-            this.consumer.consume_all_owned(|item| {
-                this.buffer.push_back(item);
-                found_any = true;
-            });
-            if found_any {
-                this.backpressure_notify.notify_waiters();
-                // INV-STREAM-03: Verify backpressure signaled
-                #[cfg(debug_assertions)]
-                debug_assert_backpressure_signaled!(1, true);
-                if let Some(item) = this.buffer.pop_front() {
-                    return Poll::Ready(Some(item));
-                }
-            }
-            return Poll::Ready(None);
+            return finish(
+                this.consumer,
+                this.buffer,
+                this.backpressure_notify,
+                this.shutdown_state,
+                this.drain_complete,
+                cx,
+            );
         }
 
         Poll::Pending
     }
+}
+
+/// End of stream after a close: yield what is left, and return `None` only
+/// once no send can still commit (INV-SHUT-04, INV-STREAM-04).
+///
+/// A sender that passed its closed check before the close may not have
+/// committed yet. `is_closed_and_quiet()` is true only once every such send
+/// section has ended, and its Acquire makes their commits visible, so the
+/// drain after it sees every item a send reported as `Ok`. Sections are short
+/// and non-blocking (one reserve and commit), so until then this re-polls.
+fn finish<T>(
+    consumer: &mut Consumer<T>,
+    buffer: &mut VecDeque<T>,
+    backpressure_notify: &Notify,
+    shutdown_state: &ShutdownState,
+    drain_complete: &mut bool,
+    cx: &mut Context<'_>,
+) -> Poll<Option<T>> {
+    let quiet = shutdown_state.is_closed_and_quiet();
+    let mut drained = 0usize;
+    consumer.consume_all_owned(|item| {
+        buffer.push_back(item);
+        drained += 1;
+    });
+    if drained > 0 {
+        backpressure_notify.notify_waiters();
+    }
+    // INV-STREAM-03: Verify backpressure was signaled
+    #[cfg(debug_assertions)]
+    debug_assert_backpressure_signaled!(drained, true);
+
+    if quiet {
+        // Nothing can be committed any more, and this drain saw everything.
+        *drain_complete = true;
+        // INV-STREAM-04: Verify drain complete before returning None
+        #[cfg(debug_assertions)]
+        debug_assert_shutdown_drained!(true, *drain_complete);
+    }
+    if let Some(item) = buffer.pop_front() {
+        return Poll::Ready(Some(item));
+    }
+    if quiet {
+        return Poll::Ready(None);
+    }
+    // A send section is still open; it ends within a reserve and a commit.
+    cx.waker().wake_by_ref();
+    Poll::Pending
 }

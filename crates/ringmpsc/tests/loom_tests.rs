@@ -432,7 +432,9 @@ fn loom_producer_count_synchronizes_with_register() {
 
         let (r, c) = (Arc::clone(&registry), Arc::clone(&config));
         let registrar = thread::spawn(move || {
-            // Safety: only this thread writes, and only before its claim.
+            // Safety: only this thread writes, and only before its claim, which
+            // publishes it (INV-CH-04: producer_count() synchronizes with
+            // register()); loom checks the access.
             c.with_mut(|p| unsafe { *p = 42 });
             r.claim(1).expect("the only claim");
         });
@@ -443,7 +445,7 @@ fn loom_producer_count_synchronizes_with_register() {
         while registry.count_acquire() == 0 {
             thread::yield_now();
         }
-        // Safety: ordered after the write by the claim's Release and the
+        // Safety (INV-CH-04): ordered after the write by the claim's Release and the
         // count's Acquire; loom checks that.
         let seen = config.with(|p| unsafe { *p });
         assert_eq!(seen, 42);

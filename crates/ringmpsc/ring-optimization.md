@@ -305,7 +305,7 @@ The `Release` store on `tail` acts as a **memory fence** that ensures all buffer
 
 ### 5.3 No SeqCst
 
-`SeqCst` (sequentially consistent) ordering is never used on the data path. The only `SeqCst` operation in the entire codebase is `producer_count.fetch_add(1, SeqCst)` in `Channel::register()` — a lifecycle operation called once per producer, not on the hot path.
+`SeqCst` (sequentially consistent) ordering is not used anywhere in the crate. Producer registration and channel close share one atomic word (`src/registry.rs`, INV-CH-04): `register()` claims an id with a compare-and-swap (`AcqRel` on success) and `close()` sets a closed bit with one `fetch_or` (`Release`). Because both are read-modify-writes on the same word, they fall in one total order without `SeqCst`.
 
 `SeqCst` is expensive because it requires a **full memory barrier** (`mfence` on x86, `dmb ish` on ARM), which stalls the store buffer. The Release/Acquire pair is sufficient for the SPSC protocol and compiles to zero extra instructions on x86-64 (where all stores are already release and all loads are already acquire by the hardware memory model).
 

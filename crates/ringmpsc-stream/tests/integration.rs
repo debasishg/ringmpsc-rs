@@ -411,3 +411,129 @@ async fn test_send_after_factory_close_is_closed() {
         .expect("send must not hang after close");
     assert!(matches!(result, Err(ringmpsc_stream::StreamError::Closed)));
 }
+
+/// Fills a 2-slot ring and returns how many items it took.
+fn fill(tx: &mut ringmpsc_stream::RingSender<u64>) -> u64 {
+    let mut n = 0;
+    while tx.try_send(n).is_ok() {
+        n += 1;
+    }
+    assert!(n > 0, "the ring took at least one item");
+    n
+}
+
+/// #47: a `SinkExt::send` waiting on a full ring completes once the receiver
+/// drains. It used to drop its `Notified` on `Pending`, so nothing woke it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sink_send_wakes_after_drain() {
+    let (factory, mut rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    let n = fill(&mut tx);
+
+    let sender = tokio::spawn(async move { SinkExt::send(&mut tx, 99).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..n {
+        rx.next().await.expect("a filled item");
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("SinkExt::send must complete after the drain")
+        .expect("sender task")
+        .expect("send succeeds");
+    assert_eq!(rx.next().await, Some(99));
+}
+
+/// #47, `feed` + `flush`: the pending item goes through `poll_flush`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sink_flush_wakes_after_drain() {
+    let (factory, mut rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    let n = fill(&mut tx);
+
+    let sender = tokio::spawn(async move {
+        tx.feed(99).await?;
+        tx.flush().await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..n {
+        rx.next().await.expect("a filled item");
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("flush must complete after the drain")
+        .expect("sender task")
+        .expect("flush succeeds");
+    assert_eq!(rx.next().await, Some(99));
+}
+
+/// A `Sink` sender waiting on a full ring returns `Closed` when the factory
+/// closes, instead of waiting forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_waiting_sink_returns_closed_on_factory_close() {
+    let (factory, _rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    fill(&mut tx);
+
+    let sender = tokio::spawn(async move { SinkExt::send(&mut tx, 99).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    factory.close();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("SinkExt::send must not hang after close")
+        .expect("sender task");
+    assert!(
+        matches!(result, Err(ringmpsc_stream::StreamError::Closed)),
+        "got {result:?}"
+    );
+}
+
+/// INV-SHUT-04: every send that returns `Ok` is received, even when it races
+/// the close. Senders push as fast as they can while another task closes the
+/// factory; the receiver must yield exactly as many items as succeeded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_every_ok_send_is_received_across_close() {
+    const SENDERS: usize = 4;
+    for round in 0..50u64 {
+        let (factory, rx) = channel::<u64>(Config::new(4, SENDERS, false));
+        let senders: Vec<_> = (0..SENDERS)
+            .map(|_| {
+                let mut tx = factory.register().expect("sender");
+                tokio::spawn(async move {
+                    let mut ok = 0u64;
+                    while tx.send(ok).await.is_ok() {
+                        ok += 1;
+                    }
+                    ok
+                })
+            })
+            .collect();
+        let mut rx = rx;
+        let receiver = tokio::spawn(async move {
+            let mut n = 0u64;
+            while rx.next().await.is_some() {
+                n += 1;
+            }
+            n
+        });
+
+        // Close after a varying delay, so it lands in different places.
+        tokio::time::sleep(Duration::from_micros(200 + 37 * round)).await;
+        factory.close();
+
+        let mut sent = 0;
+        for s in senders {
+            sent += tokio::time::timeout(Duration::from_secs(5), s)
+                .await
+                .expect("senders stop after close")
+                .expect("sender task");
+        }
+        let received = tokio::time::timeout(Duration::from_secs(5), receiver)
+            .await
+            .expect("receiver ends after close")
+            .expect("receiver task");
+        assert_eq!(received, sent, "round {round}: an Ok send was not received");
+    }
+}
