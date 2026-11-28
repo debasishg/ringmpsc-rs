@@ -66,7 +66,7 @@ impl<W: AtomicWord> GatesImpl<W> {
             Err(_prev) => {
                 // A section already open for this id would fail here too and
                 // look like a close; catch that misuse in debug builds.
-                debug_assert_gate_not_reentered!(_prev, CLOSED);
+                debug_assert_gate_not_reentered!(_prev, CLOSED, IN_SECTION);
                 None
             }
         }
@@ -268,6 +268,17 @@ mod tests {
     fn second_section_for_one_id_is_caught() {
         let gates = SendGates::new(1);
         let _first = gates.begin(0).expect("open");
+        let _second = gates.begin(0);
+    }
+
+    /// A second section while the first is open is caught even after a close.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "INV-CH-05 violated: a second send section")]
+    fn second_section_after_close_is_caught() {
+        let gates = SendGates::new(1);
+        let _first = gates.begin(0).expect("open");
+        gates.close();
         let _second = gates.begin(0);
     }
 

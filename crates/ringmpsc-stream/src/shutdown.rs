@@ -59,10 +59,6 @@ impl ShutdownState {
     /// afterwards fail with `Closed`; sends already in a section finish
     /// first, and the receiver waits for them. Idempotent.
     pub(crate) fn close(&self) {
-        // Every close is a shutdown, whichever path started it, so
-        // `is_shutdown()` reports it for a factory close and a receiver drop
-        // too.
-        self.initiate_shutdown();
         // Gates first: no send section opens after this.
         self.gates.close();
         // Then the core channel: its registry refuses new producers and its
@@ -70,6 +66,11 @@ impl ShutdownState {
         (self.close_channel)();
         // Release: a thread that sees `closed` also sees the above.
         self.closed.store(true, Ordering::Release);
+        // Every close is a shutdown, whichever path started it, so
+        // `is_shutdown()` reports it for a factory close and a receiver drop
+        // too. Set last, so `is_shutdown() == true` means the close is done,
+        // never that it is still under way.
+        self.initiate_shutdown();
         // Wake the receiver so it ends the stream promptly, and senders
         // waiting for space so they return `Closed`.
         self.data_notify.notify_one();
@@ -145,7 +146,7 @@ impl ShutdownHandle {
     /// 2. Signal the consumer loop to drain remaining items
     /// 3. Wake any blocked senders so they can observe the closed state
     pub(crate) fn trigger(&mut self) {
-        self.state.initiate_shutdown();
+        // Closes everything (and marks shutdown as initiated, last).
         self.state.close();
 
         // Signal consumer loop to drain
@@ -199,20 +200,72 @@ impl ShutdownSignal {
     /// 3. Wake any blocked senders so they can observe the closed state
     ///
     /// This method is idempotent - calling it multiple times has no
-    /// additional effect after the first call.
+    /// additional effect after the first call. When it returns, the channel
+    /// is closed, even if another close was racing it.
     pub fn shutdown(&self) {
-        if !self.state.is_shutdown_initiated() {
-            self.state.initiate_shutdown();
-            // Closes everything and wakes the receiver and blocked senders.
-            self.state.close();
-            // Kept for INV-SHUT-02's explicit wake (close already did it).
-            self.backpressure_notify.notify_waiters();
-        }
+        // Always run the close, even if another path started one: it is
+        // idempotent, and returning early could let this call return before
+        // a racing close has finished. When this returns, the channel is
+        // closed.
+        self.state.close();
+        // Kept for INV-SHUT-02's explicit wake (close already did it).
+        self.backpressure_notify.notify_waiters();
     }
 
     /// Returns `true` if shutdown has been initiated.
     #[must_use] 
     pub fn is_shutdown(&self) -> bool {
         self.state.is_shutdown_initiated()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShutdownSignal, ShutdownState};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, OnceLock, Weak};
+    use tokio::sync::Notify;
+
+    /// A state whose "core channel close" records whether shutdown was
+    /// already marked at that moment.
+    fn state_recording_order() -> (Arc<ShutdownState>, Arc<AtomicBool>) {
+        let me: Arc<OnceLock<Weak<ShutdownState>>> = Arc::new(OnceLock::new());
+        let marked_before_channel_close = Arc::new(AtomicBool::new(false));
+        let (me2, seen) = (Arc::clone(&me), Arc::clone(&marked_before_channel_close));
+        let state = Arc::new(ShutdownState::new(
+            1,
+            Box::new(move || {
+                if let Some(state) = me2.get().and_then(Weak::upgrade) {
+                    seen.store(state.is_shutdown_initiated(), Ordering::SeqCst);
+                }
+            }),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+        ));
+        me.set(Arc::downgrade(&state)).expect("set once");
+        (state, marked_before_channel_close)
+    }
+
+    /// `is_shutdown()` turns true only after the close is done, never while
+    /// the gates and the core channel are still being closed.
+    #[test]
+    fn shutdown_is_marked_after_the_close() {
+        let (state, marked_early) = state_recording_order();
+        state.close();
+        assert!(!marked_early.load(Ordering::SeqCst), "marked before the channel closed");
+        assert!(state.is_shutdown_initiated() && state.is_closed());
+    }
+
+    /// `ShutdownSignal::shutdown()` closes even if another close already
+    /// marked shutdown, so it never returns before the channel is closed.
+    #[test]
+    fn signal_shutdown_closes_even_if_already_marked() {
+        let (state, _) = state_recording_order();
+        // As if a racing close had marked shutdown but not finished.
+        state.initiate_shutdown();
+        let signal = ShutdownSignal::new(Arc::clone(&state), Arc::new(Notify::new()));
+        signal.shutdown();
+        assert!(state.is_closed(), "shutdown() returned before the channel closed");
+        assert!(state.begin_send(0).is_none(), "the gates are closed");
     }
 }

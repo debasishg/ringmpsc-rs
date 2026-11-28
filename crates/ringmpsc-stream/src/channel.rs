@@ -51,10 +51,17 @@ pub fn channel_with_stream_config<T: Send + 'static>(
     let channel = Arc::new(Channel::new(config));
     let data_notify = Arc::new(Notify::new());
     let backpressure_notify = Arc::new(Notify::new());
-    let close_target = Arc::clone(&channel);
+    // Weak: a long-lived `ShutdownSignal` must not keep the channel's ring
+    // buffers alive. If the channel is already gone there is nothing to
+    // close.
+    let close_target = Arc::downgrade(&channel);
     let shutdown_state = Arc::new(ShutdownState::new(
         config.max_producers,
-        Box::new(move || close_target.close()),
+        Box::new(move || {
+            if let Some(channel) = close_target.upgrade() {
+                channel.close();
+            }
+        }),
         Arc::clone(&data_notify),
         Arc::clone(&backpressure_notify),
     ));

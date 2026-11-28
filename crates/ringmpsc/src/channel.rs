@@ -118,6 +118,12 @@ impl<T, A: BufferAllocator + Clone> Channel<T, A> {
 
 impl<T, A: BufferAllocator> Channel<T, A> {
     /// Register a new producer. Returns an error if too many producers or closed.
+    ///
+    /// `close()` stops registrations first and sets the flag `is_closed()`
+    /// reads last, after every ring is closed. So while a close is under way,
+    /// `register()` can already fail with `Closed` although `is_closed()`
+    /// still returns `false`: `Err(Closed)` does not imply `is_closed()`
+    /// (INV-CH-04).
     pub fn register(&self) -> Result<Producer<T, A>, ChannelError> {
         let max = self.inner.config.max_producers;
         let id = self.inner.registry.claim(max).map_err(|e| match e {
@@ -188,6 +194,9 @@ impl<T, A: BufferAllocator> Channel<T, A> {
     }
 
     /// Returns true if the channel is closed.
+    ///
+    /// True only once `close()` has closed every ring, so it can lag a
+    /// `register()` that already failed with `Closed` (INV-CH-04).
     #[must_use] 
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::Acquire)

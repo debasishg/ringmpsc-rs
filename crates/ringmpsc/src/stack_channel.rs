@@ -220,6 +220,9 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     }
 
     /// Returns true if the channel is closed.
+    ///
+    /// True only once `close()` has closed every ring, so it can lag a
+    /// `register()` that already failed with `Closed` (INV-CH-04).
     #[inline]
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
@@ -233,6 +236,12 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     ///
     /// Returns a [`StackProducer`] handle that can write to a dedicated ring.
     /// Fails if too many producers are registered or the channel is closed.
+    ///
+    /// `close()` stops registrations first and sets the flag `is_closed()`
+    /// reads last, after every ring is closed. So while a close is under way,
+    /// `register()` can already fail with `Closed` although `is_closed()`
+    /// still returns `false`: `Err(Closed)` does not imply `is_closed()`
+    /// (INV-CH-04).
     ///
     /// # Errors
     ///

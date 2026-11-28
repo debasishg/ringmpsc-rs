@@ -215,9 +215,9 @@ macro_rules! debug_assert_max_fits {
 ///
 /// Used in: `GatesImpl::begin()` (`gate.rs`)
 macro_rules! debug_assert_gate_not_reentered {
-    ($prev:expr, $closed_bit:expr) => {
+    ($prev:expr, $closed_bit:expr, $in_section_bit:expr) => {
         debug_assert!(
-            $prev & $closed_bit != 0,
+            $prev & $closed_bit != 0 && $prev & $in_section_bit == 0,
             "INV-CH-05 violated: a second send section opened for one producer id"
         )
     };

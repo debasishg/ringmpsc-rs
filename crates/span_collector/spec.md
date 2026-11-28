@@ -104,15 +104,12 @@ Batches are flushed when either:
 2. Timeout elapsed (default: 5 seconds)
 
 ### INV-BATCH-03: Drain on Shutdown
-On shutdown, all remaining spans are consumed and exported:
+On shutdown, all remaining spans are consumed and exported, after every in-progress submit has committed:
 ```rust
 // In shutdown handler
+collector.close();                              // idempotent
+while !collector.is_quiescent() { /* yield, then sleep 1 ms */ }
 consumer.consume_all(|span| batch_processor.add(span));
-if let Some(batch) = batch_processor.take_batch() {
-    exporter.export_boxed(batch).await;  // Final flush is sequential
-}
-// Wait for in-flight exports to complete
-while let Some(result) = export_tasks.join_next().await { ... }
 ```
 
 **Location**: [src/async_bridge.rs](src/async_bridge.rs)
@@ -199,15 +196,21 @@ Metrics use `Relaxed` ordering because:
 ### INV-ASYNC-01: Consumer Task Lifecycle
 ```
 new() → spawns consumer task
-shutdown() → signals task, awaits completion
-drop() → consumer task stops (may not fully drain)
+shutdown() → closes the collector, signals task, awaits completion
+drop() → task sees the dropped signal, closes the collector, drains, stops
 ```
+Either way the task closes the collector before its final drain, so producers' submits return `Closed` afterwards and the task can't wait forever.
 
 ### INV-ASYNC-02: Graceful Shutdown Protocol
 ```rust
-shutdown_tx.send(())          // 1. Signal shutdown
-consumer_task.await           // 2. Wait for drain + final flush
+collector.close()             // 1. Close the gates and the channel
+shutdown_tx.send(())          // 2. Signal the consumer task
+// task: close() again (idempotent), wake waiting producers,
+//       wait until is_quiescent() (yield, then 1 ms sleeps),
+//       then drain and flush
+consumer_task.await           // 3. Wait for drain + final flush
 ```
+Every submit commits inside its producer's send section (ringmpsc INV-CH-05), so waiting for `is_quiescent()` before the drain means every submit that returned `Ok` is exported. Each submit attempt is its own section; the backoff runs between sections.
 
 ### INV-ASYNC-03: Tokio Integration
 The bridge uses `tokio::sync::Notify` (not `std::sync::Condvar`) for async-aware signaling.

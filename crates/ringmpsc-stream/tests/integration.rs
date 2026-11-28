@@ -695,3 +695,68 @@ async fn test_receiver_drop_unblocks_senders() {
     );
     assert!(start.elapsed() < Duration::from_secs(1), "took {:?}", start.elapsed());
 }
+
+/// `ShutdownSignal::shutdown()` returns only once the channel is closed,
+/// even when it races another close: a `register()` right after it fails.
+/// And `is_shutdown() == true` means the close is done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_shutdown_racing_close_has_closed_on_return() {
+    for _ in 0..300 {
+        let (factory, rx) = channel::<u64>(Config::new(2, 2, false));
+        let factory = std::sync::Arc::new(factory);
+        let signal = rx.shutdown_signal();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        let (f1, s1) = (std::sync::Arc::clone(&factory), std::sync::Arc::clone(&start));
+        let closer = std::thread::spawn(move || {
+            s1.wait();
+            f1.close();
+        });
+        let (f2, s2, sig2) = (std::sync::Arc::clone(&factory), std::sync::Arc::clone(&start), signal.clone());
+        let shutter = std::thread::spawn(move || {
+            s2.wait();
+            sig2.shutdown();
+            assert!(
+                matches!(f2.register(), Err(ringmpsc_stream::StreamError::Closed)),
+                "register succeeded right after shutdown() returned"
+            );
+        });
+        let (f3, sig3) = (std::sync::Arc::clone(&factory), signal.clone());
+        let watcher = std::thread::spawn(move || {
+            start.wait();
+            while !sig3.is_shutdown() {
+                std::thread::yield_now();
+            }
+            assert!(
+                matches!(f3.register(), Err(ringmpsc_stream::StreamError::Closed)),
+                "is_shutdown() was true but register still succeeded"
+            );
+        });
+        closer.join().expect("closer");
+        shutter.join().expect("shutter");
+        watcher.join().expect("watcher");
+        drop(rx);
+    }
+}
+
+/// A `ShutdownSignal` doesn't keep the channel (and items left in its rings)
+/// alive after the factory, senders and receiver are gone.
+#[tokio::test]
+async fn test_shutdown_signal_does_not_keep_channel_alive() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Tracked;
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let (factory, rx) = channel::<Tracked>(Config::new(3, 1, false));
+    let signal = rx.shutdown_signal();
+    let mut tx = factory.register().expect("one sender");
+    assert!(tx.try_send(Tracked).is_ok());
+    drop((tx, factory, rx));
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1, "the queued item is freed with the channel");
+    signal.shutdown(); // nothing left to close; must not panic
+}

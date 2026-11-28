@@ -170,6 +170,13 @@ impl SpanCollector {
     /// whose submit returned `Ok` (ringmpsc INV-CH-05).
     #[must_use]
     pub fn is_quiescent(&self) -> bool {
+        // The core channel can also be closed directly through `channel()`,
+        // which doesn't touch the gates. Close them here too (idempotent):
+        // no new submit can then open a section, the ones already open end
+        // after one reserve and commit, and the gates go quiet.
+        if self.channel.is_closed() {
+            self.gates.close();
+        }
         self.gates.is_quiet()
     }
 }
@@ -381,6 +388,18 @@ impl SpanProducer {
 mod tests {
     use super::*;
     use crate::span::SpanKind;
+
+    /// Closing the core channel directly through `channel()` still lets
+    /// `is_quiescent()` turn true, instead of waiting on gates nobody closed.
+    #[test]
+    fn quiescent_after_direct_channel_close() {
+        let collector = SpanCollector::new(CollectorConfig::default());
+        let mut producer = collector.register().expect("one producer");
+        collector.channel().close();
+        assert!(collector.is_quiescent());
+        let span = Span::new(1, 1, 0, "op".to_string(), SpanKind::Internal);
+        assert_eq!(producer.try_submit_span(span), Err(SubmitError::Closed));
+    }
 
     /// INV-CH-05, deterministically: a submit that reserved before the close
     /// and commits after it is still drained, because `is_quiescent()` stays

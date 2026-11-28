@@ -445,7 +445,7 @@ fn loom_producer_count_synchronizes_with_register() {
         while registry.count_acquire() == 0 {
             thread::yield_now();
         }
-        // Safety (INV-CH-04): ordered after the write by the claim's Release and the
+        // Safety: (INV-CH-04) ordered after the write by the claim's Release and the
         // count's Acquire; loom checks that.
         let seen = config.with(|p| unsafe { *p });
         assert_eq!(seen, 42);
@@ -471,7 +471,7 @@ fn loom_gate_section_before_close_is_drained() {
         let (g, s) = (Arc::clone(&gates), Arc::clone(&slot));
         let sender = thread::spawn(move || {
             if let Some(section) = g.begin(0) {
-                // Safety (INV-CH-05): written only inside the section, which
+                // Safety: (INV-CH-05) written only inside the section, which
                 // the consumer waits for before reading.
                 s.with_mut(|p| unsafe { *p = 42 });
                 let _ = section.end();
@@ -486,7 +486,7 @@ fn loom_gate_section_before_close_is_drained() {
         while !gates.is_quiet() {
             thread::yield_now();
         }
-        // Safety (INV-CH-05): every section that wrote has ended, and
+        // Safety: (INV-CH-05) every section that wrote has ended, and
         // `is_quiet()`'s Acquire orders that write before this read; loom
         // checks it.
         let seen = slot.with(|p| unsafe { *p });
