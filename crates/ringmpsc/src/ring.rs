@@ -374,7 +374,11 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// is `!Sync`, so its calls stay on one thread.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) unsafe fn reserve_shared(&self, n: usize) -> Option<Reservation<'_, T, A>> {
-        if n == 0 || n > self.capacity() {
+        // A closed ring accepts no new writes, as `StackRing::reserve` already
+        // does (#45). Relaxed is enough: this only decides whether to write,
+        // and no data the closer wrote is read here. A `close()` that races
+        // with this call may or may not be seen, as for any concurrent close.
+        if n == 0 || n > self.capacity() || self.closed.load(Ordering::Relaxed) {
             return None;
         }
 

@@ -350,3 +350,72 @@ fn loom_len_snapshot_from_observer() {
         consumer.join().expect("consumer panicked");
     });
 }
+
+// =============================================================================
+// Registration vs close (#45, INV-CH-04)
+//
+// These run the real `Registry` from `src/registry.rs` over loom's atomic,
+// not a copy, so a change to its orderings or its CAS loop is what loom sees.
+// =============================================================================
+
+type LoomRegistry = ringmpsc_rs::Registry<AtomicUsize>;
+
+fn loom_registry() -> LoomRegistry {
+    ringmpsc_rs::Registry::from_word(AtomicUsize::new(0))
+}
+
+/// A `register()` racing `close()` either gets an id that `close()` counted,
+/// so its ring is closed, or fails with `Closed`. It never gets an id that
+/// `close()` missed (bug 3 of #45).
+#[test]
+fn loom_register_vs_close() {
+    loom::model(|| {
+        let registry = Arc::new(loom_registry());
+        let r = Arc::clone(&registry);
+        let registrar = thread::spawn(move || r.claim(2));
+
+        let closed_count = registry.close();
+        let claimed = registrar.join().expect("registrar thread");
+
+        match claimed {
+            Ok(id) => assert!(
+                id < closed_count,
+                "id {id} registered but close() only saw {closed_count}"
+            ),
+            Err(e) => assert_eq!(e, ringmpsc_rs::ClaimError::Closed),
+        }
+        assert!(registry.is_closed());
+        assert_eq!(registry.claim(2), Err(ringmpsc_rs::ClaimError::Closed));
+    });
+}
+
+/// Two `register()`s race for the last slot while a reader checks the count.
+/// The count never passes the limit, not even for an instant, so a reader
+/// slicing `rings[..count]` stays in bounds (bug 2 of #45).
+#[test]
+fn loom_register_never_exceeds_max() {
+    loom::model(|| {
+        let registry = Arc::new(loom_registry());
+        let claimers: Vec<_> = (0..2)
+            .map(|_| {
+                let r = Arc::clone(&registry);
+                thread::spawn(move || r.claim(1))
+            })
+            .collect();
+
+        for _ in 0..2 {
+            let count = registry.count();
+            assert!(count <= 1, "count {count} passed the limit 1");
+        }
+
+        let results: Vec<_> = claimers
+            .into_iter()
+            .map(|h| h.join().expect("claimer thread"))
+            .collect();
+        let won = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(won, 1, "exactly one claim gets the one slot: {results:?}");
+        assert!(results.contains(&Ok(0)));
+        assert!(results.contains(&Err(ringmpsc_rs::ClaimError::Full)));
+        assert_eq!(registry.count(), 1);
+    });
+}

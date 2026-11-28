@@ -167,6 +167,27 @@ macro_rules! debug_assert_fifo_count {
 }
 
 // =============================================================================
+// INV-CH-04: Registration Bound and Close
+// =============================================================================
+
+/// Assert that the registered producer count is within the limit.
+///
+/// **Invariant**: the count never exceeds `max_producers`, not even for an
+/// instant, so `rings[..count]` is always in bounds.
+///
+/// Used in: `Registry::claim()`
+macro_rules! debug_assert_registered_bound {
+    ($count:expr, $max:expr) => {
+        debug_assert!(
+            $count <= $max,
+            "INV-CH-04 violated: {} producers registered, limit {}",
+            $count,
+            $max
+        )
+    };
+}
+
+// =============================================================================
 // INV-ALLOC-01: Alignment Guarantee
 // =============================================================================
 
@@ -240,6 +261,7 @@ pub(crate) use assert_head_not_past_tail;
 pub(crate) use debug_assert_initialized_read;
 pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;
+pub(crate) use debug_assert_registered_bound;
 pub(crate) use debug_assert_slot_in_bounds;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_aligned;

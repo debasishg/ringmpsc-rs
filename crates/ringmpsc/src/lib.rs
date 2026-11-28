@@ -47,6 +47,7 @@ mod channel;
 mod config;
 mod invariants;
 mod metrics;
+mod registry;
 mod reservation;
 mod ring;
 
@@ -70,6 +71,12 @@ pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use reservation::{CommitError, Reservation};
 pub use ring::Ring;
+
+/// The registration/close word, exported only for the loom tests so they run
+/// the real code (`tests/loom_tests.rs`). Not part of the public API.
+#[cfg(feature = "loom")]
+#[doc(hidden)]
+pub use registry::{AtomicWord, ClaimError, Registry};
 
 #[cfg(feature = "stack-ring")]
 pub use stack_ring::{StackRing, StackRing4K, StackRing8K, StackRing16K, StackRing64K};
