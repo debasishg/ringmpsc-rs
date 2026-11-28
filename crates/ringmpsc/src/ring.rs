@@ -1112,12 +1112,12 @@ impl<T, A: BufferAllocator> Drop for Ring<T, A> {
 /// Wrapper type that ensures 128-byte alignment to prevent prefetcher-induced
 /// false sharing on Intel/AMD CPUs (which may prefetch adjacent cache lines).
 #[repr(align(128))]
-struct CacheAligned<T> {
+pub(crate) struct CacheAligned<T> {
     value: T,
 }
 
 impl<T> CacheAligned<T> {
-    const fn new(value: T) -> Self {
+    pub(crate) const fn new(value: T) -> Self {
         Self { value }
     }
 }

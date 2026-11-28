@@ -150,6 +150,7 @@ impl AsyncSpanCollector {
             .expect("a new collector has no consumer");
         let backpressure_clone = Arc::clone(&backpressure_notify);
         let metrics_clone = Arc::clone(&export_metrics);
+        let collector_clone = Arc::clone(&collector);
         let consumer_interval = config.consumer_interval;
         let max_consume = config.max_consume_per_poll;
         let max_concurrent = config.max_concurrent_exports;
@@ -214,6 +215,21 @@ impl AsyncSpanCollector {
                     }
 
                     _ = &mut shutdown_rx => {
+                        // `shutdown()` closed the collector before signaling.
+                        // A submit already in its send section may not have
+                        // committed yet; wait for those (each is one reserve
+                        // and commit) so the drain below sees every span
+                        // whose submit returned `Ok` (ringmpsc INV-CH-05).
+                        let mut waits = 0u32;
+                        while !collector_clone.is_quiescent() {
+                            if waits < 16 {
+                                tokio::task::yield_now().await;
+                            } else {
+                                tokio::time::sleep(Duration::from_millis(1)).await;
+                            }
+                            waits += 1;
+                        }
+
                         // Drain remaining spans (zero-copy transfer)
                         span_consumer.consume_all(|span| {
                             batch_processor.add(span);
@@ -402,6 +418,55 @@ mod tests {
         collector.shutdown().await.unwrap();
 
         assert_eq!(exporter.exported_count(), 400);
+    }
+
+    /// INV-CH-05: every submit that returns `Ok` is exported, even one that
+    /// races `shutdown()`. Producers submit as fast as they can while the
+    /// collector shuts down; the exporter must see exactly the `Ok` count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_every_ok_submit_is_exported_across_shutdown() {
+        for round in 0..20u64 {
+            let exporter = Arc::new(TestExporter::new());
+            let config = AsyncCollectorConfig {
+                consumer_interval: Duration::from_millis(1),
+                ..Default::default()
+            };
+            let collector = AsyncSpanCollector::new(config, exporter.clone()).await;
+            let producers: Vec<_> = (0..3)
+                .map(|_| {
+                    let producer = collector.register_producer();
+                    async move { producer.await.expect("producer") }
+                })
+                .collect();
+            let mut handles = Vec::new();
+            for (p, producer) in producers.into_iter().enumerate() {
+                let mut producer = producer.await;
+                handles.push(tokio::spawn(async move {
+                    let mut ok = 0u64;
+                    loop {
+                        let span = Span::new(1, ok, 0, format!("p{p}"), SpanKind::Internal);
+                        match producer.try_submit_span(span) {
+                            Ok(()) => ok += 1,
+                            Err(SubmitError::Full) => tokio::task::yield_now().await,
+                            Err(SubmitError::Closed) => return ok,
+                        }
+                    }
+                }));
+            }
+
+            tokio::time::sleep(Duration::from_micros(300 + 41 * round)).await;
+            collector.shutdown().await.expect("shutdown");
+
+            let mut ok = 0;
+            for h in handles {
+                ok += h.await.expect("producer task");
+            }
+            assert_eq!(
+                exporter.exported_count() as u64,
+                ok,
+                "round {round}: an Ok submit was not exported"
+            );
+        }
     }
 
     /// #45 follow-up: after `shutdown()`, `submit_span` returns `Closed`

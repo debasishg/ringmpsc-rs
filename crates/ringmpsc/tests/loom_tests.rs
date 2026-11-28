@@ -452,3 +452,47 @@ fn loom_producer_count_synchronizes_with_register() {
         registrar.join().expect("registrar thread");
     });
 }
+
+// =============================================================================
+// Send gates (INV-CH-05), on the real `GatesImpl` over loom's AtomicUsize.
+// =============================================================================
+
+/// A send that opened its section before the close commits before the
+/// consumer's final drain; one that opens after the close sends nothing.
+/// The "commit" is a write to a loom `UnsafeCell`, and the final drain reads
+/// it once the gates are quiet, so loom reports a race if the drain could run
+/// before an open section's commit.
+#[test]
+fn loom_gate_section_before_close_is_drained() {
+    loom::model(|| {
+        let gates = Arc::new(ringmpsc_rs::GatesImpl::from_words([AtomicUsize::new(0)]));
+        let slot = Arc::new(loom::cell::UnsafeCell::new(0u64));
+
+        let (g, s) = (Arc::clone(&gates), Arc::clone(&slot));
+        let sender = thread::spawn(move || {
+            if let Some(section) = g.begin(0) {
+                // Safety (INV-CH-05): written only inside the section, which
+                // the consumer waits for before reading.
+                s.with_mut(|p| unsafe { *p = 42 });
+                let _ = section.end();
+                true
+            } else {
+                false
+            }
+        });
+
+        gates.close();
+        // Wait for quiet, as the consumer's final drain does.
+        while !gates.is_quiet() {
+            thread::yield_now();
+        }
+        // Safety (INV-CH-05): every section that wrote has ended, and
+        // `is_quiet()`'s Acquire orders that write before this read; loom
+        // checks it.
+        let seen = slot.with(|p| unsafe { *p });
+
+        let sent = sender.join().expect("sender thread");
+        assert_eq!(seen, if sent { 42 } else { 0 }, "a sent item was missed");
+        assert!(gates.begin(0).is_none(), "closed gates refuse sections");
+    });
+}

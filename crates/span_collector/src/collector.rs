@@ -1,5 +1,5 @@
 use crate::span::Span;
-use ringmpsc_rs::{Channel, ChannelError, Config, Consumer};
+use ringmpsc_rs::{Channel, ChannelError, Config, Consumer, SendGates};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -95,6 +95,8 @@ pub enum SubmitError {
 /// Core synchronous span collector using lock-free MPSC channels
 pub struct SpanCollector {
     channel: Arc<Channel<Span>>,
+    /// One send gate per producer, for a lossless close (ringmpsc INV-CH-05).
+    gates: Arc<SendGates>,
     config: CollectorConfig,
     metrics: Arc<CollectorMetrics>,
 }
@@ -106,6 +108,7 @@ impl SpanCollector {
         let channel = Channel::new(config.clone().into());
         Self {
             channel: Arc::new(channel),
+            gates: Arc::new(SendGates::new(usize::from(config.max_producers))),
             config,
             metrics: Arc::new(CollectorMetrics::new()),
         }
@@ -116,6 +119,7 @@ impl SpanCollector {
         let producer = self.channel.register()?;
         Ok(SpanProducer {
             producer: ExclusiveProducer::new(producer),
+            gates: Arc::clone(&self.gates),
             metrics: Arc::clone(&self.metrics),
         })
     }
@@ -152,9 +156,21 @@ impl SpanCollector {
     /// Closes the collector: new `register()` calls fail, and every existing
     /// producer's ring refuses new spans, so their submits return
     /// [`SubmitError::Closed`]. Spans submitted before the close can still be
-    /// consumed.
+    /// consumed: drain for the last time once [`is_quiescent`](Self::is_quiescent)
+    /// returns `true`, and every submit that returned `Ok` is in the drain.
     pub fn close(&self) {
+        // Gates first: a submit that starts after this fails, and one already
+        // in its section finishes before `is_quiescent()` turns true.
+        self.gates.close();
         self.channel.close();
+    }
+
+    /// `true` once the collector is closed and no submit is still between
+    /// its closed check and its commit. A drain after this sees every span
+    /// whose submit returned `Ok` (ringmpsc INV-CH-05).
+    #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        self.gates.is_quiet()
     }
 }
 
@@ -228,6 +244,7 @@ impl SpanConsumer {
 /// Handle for submitting spans to the collector
 pub struct SpanProducer {
     producer: ExclusiveProducer<Span>,
+    gates: Arc<SendGates>,
     metrics: Arc<CollectorMetrics>,
 }
 
@@ -242,12 +259,12 @@ mod exclusive {
     /// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
     /// wrapper doesn't expose them: it forwards `reserve` and
     /// `reserve_with_backoff` through `&mut self`, and through `&self` only
-    /// `is_closed`, an atomic load. So it is safe to share, and `SpanProducer`
+    /// `is_closed`, an atomic load, and `id`, a plain read. So it is safe to share, and `SpanProducer`
     /// gets its `Sync` from the compiler, which still checks every other field.
     pub(super) struct ExclusiveProducer<T>(Producer<T>);
 
     // Safety: a shared `&ExclusiveProducer` can only call `is_closed`, an atomic
-    // load. Every write to the ring goes through `&mut self`, so it stays on one thread at a time and
+    // load, and `id`, a read of a plain id. Every write to the ring goes through `&mut self`, so it stays on one thread at a time and
     // the ring keeps a single producer (ringmpsc INV-SW-01). Keep it that way:
     // never add a `&self` method that reserves, pushes or sends, and never hand
     // out `&Producer`. `T: Send` matches `Producer`'s own `Send` bound.
@@ -273,58 +290,74 @@ mod exclusive {
         pub(super) fn is_closed(&self) -> bool {
             self.0.is_closed()
         }
+
+        /// The producer's id, which picks its send gate.
+        #[inline]
+        pub(super) fn id(&self) -> usize {
+            self.0.id()
+        }
     }
 }
 use exclusive::ExclusiveProducer;
 
-impl SpanProducer {
-    /// Why a `reserve` returned `None`: a closed ring always refuses, and
-    /// that isn't backpressure, so it doesn't count as a full event.
-    fn reserve_failed(&self) -> SubmitError {
-        if self.producer.is_closed() {
-            SubmitError::Closed
-        } else {
-            self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
-            SubmitError::Full
-        }
+/// Why a `reserve` returned `None`: a closed ring always refuses, and that
+/// isn't backpressure, so it doesn't count as a full event.
+fn reserve_failed(producer: &ExclusiveProducer<Span>, metrics: &CollectorMetrics) -> SubmitError {
+    if producer.is_closed() {
+        SubmitError::Closed
+    } else {
+        metrics.full_events.fetch_add(1, Ordering::Relaxed);
+        SubmitError::Full
     }
+}
 
+/// Reserves (with or without backoff), commits and records metrics. Call
+/// only inside the producer's open send section. A free function over the
+/// two fields, so the section's borrow of the gates can stay alive.
+fn submit_in_section(
+    producer: &mut ExclusiveProducer<Span>,
+    metrics: &CollectorMetrics,
+    span: Span,
+    backoff: bool,
+) -> Result<(), SubmitError> {
+    let reservation = if backoff {
+        producer.reserve_with_backoff(1)
+    } else {
+        producer.reserve(1)
+    };
+    let Some(mut reservation) = reservation else {
+        return Err(reserve_failed(producer, metrics));
+    };
+    if reservation.push(span).is_err() {
+        unreachable!("a one-slot reservation has room for one item");
+    }
+    reservation.commit();
+    metrics.spans_submitted.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+impl SpanProducer {
     /// Submits a span with retry and backoff
     pub fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
-        // Try to reserve with backoff
-        if let Some(mut reservation) = self.producer.reserve_with_backoff(1) {
-            // Write span to reservation
-            if reservation.push(span).is_err() {
-                unreachable!("a one-slot reservation has room for one item");
-            }
-            reservation.commit();
-            
-            self.metrics
-                .spans_submitted
-                .fetch_add(1, Ordering::Relaxed);
-            
-            Ok(())
-        } else {
-            Err(self.reserve_failed())
-        }
+        // Commit only inside this producer's send section, so a close can't
+        // drain past a submit that returns `Ok` (ringmpsc INV-CH-05). The
+        // backoff inside is bounded (spin, yield, give up).
+        let Some(section) = self.gates.begin(self.producer.id()) else {
+            return Err(SubmitError::Closed);
+        };
+        let result = submit_in_section(&mut self.producer, &self.metrics, span, true);
+        let _ = section.end();
+        result
     }
 
     /// Tries to submit a span without blocking
     pub fn try_submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
-        if let Some(mut reservation) = self.producer.reserve(1) {
-            if reservation.push(span).is_err() {
-                unreachable!("a one-slot reservation has room for one item");
-            }
-            reservation.commit();
-            
-            self.metrics
-                .spans_submitted
-                .fetch_add(1, Ordering::Relaxed);
-            
-            Ok(())
-        } else {
-            Err(self.reserve_failed())
-        }
+        let Some(section) = self.gates.begin(self.producer.id()) else {
+            return Err(SubmitError::Closed);
+        };
+        let result = submit_in_section(&mut self.producer, &self.metrics, span, false);
+        let _ = section.end();
+        result
     }
 }
 
@@ -332,6 +365,39 @@ impl SpanProducer {
 mod tests {
     use super::*;
     use crate::span::SpanKind;
+
+    /// INV-CH-05, deterministically: a submit that reserved before the close
+    /// and commits after it is still drained, because `is_quiescent()` stays
+    /// false until its section ends.
+    #[test]
+    fn close_waits_for_an_open_submit() {
+        let collector = SpanCollector::new(CollectorConfig::default());
+        let mut producer = collector.register().expect("one producer");
+
+        // Mid-submit: section open, slot reserved and written.
+        let section = producer
+            .gates
+            .begin(producer.producer.id())
+            .expect("collector is open");
+        let mut reservation = producer.producer.reserve(1).expect("empty ring has room");
+        assert!(reservation
+            .push(Span::new(1, 7, 0, "in-flight".to_string(), SpanKind::Internal))
+            .is_ok());
+
+        collector.close();
+        assert!(!collector.is_quiescent(), "a submit is still committing");
+
+        reservation.commit();
+        let _ = section.end();
+        assert!(collector.is_quiescent());
+
+        let mut ids = Vec::new();
+        collector
+            .consumer()
+            .expect("one consumer")
+            .consume_all(|span| ids.push(span.span_id));
+        assert_eq!(ids, vec![7], "the in-flight span is drained");
+    }
 
     /// #45 follow-up: on a closed collector, submits report `Closed`, not
     /// `Full`, and don't count as full events.

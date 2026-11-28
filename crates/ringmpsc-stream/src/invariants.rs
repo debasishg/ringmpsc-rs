@@ -198,26 +198,6 @@ macro_rules! debug_assert_senders_woken {
 }
 
 // =============================================================================
-// INV-SHUT-04: Sent Implies Received
-// =============================================================================
-
-/// Assert that ending a send section matches one that was open.
-///
-/// **Invariant**: every commit happens inside a send section, and the
-/// receiver ends the stream only when none is open. A count that was already
-/// zero would mean a section ended twice, so the receiver could stop early.
-// Used only in debug builds (`#[cfg(debug_assertions)]` call site).
-#[allow(unused_macros)]
-macro_rules! debug_assert_section_open {
-    ($open_before:expr) => {
-        debug_assert!(
-            $open_before > 0,
-            "INV-SHUT-04 violated: a send section ended with none open"
-        )
-    };
-}
-
-// =============================================================================
 // Re-exports for crate-internal use
 // =============================================================================
 
@@ -227,8 +207,6 @@ pub(crate) use debug_assert_recheck_after_register;
 pub(crate) use debug_assert_explicit_registration;
 pub(crate) use debug_assert_item_preserved;
 pub(crate) use debug_assert_senders_woken;
-#[allow(unused_imports)]
-pub(crate) use debug_assert_section_open;
 pub(crate) use debug_assert_shutdown_drained;
 pub(crate) use debug_assert_shutdown_signaled;
 // debug_assert_single_producer is not exported - it's compile-time enforced via !Clone

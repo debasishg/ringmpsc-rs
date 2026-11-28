@@ -45,6 +45,7 @@ pub mod allocator;
 mod backoff;
 mod channel;
 mod config;
+mod gate;
 mod invariants;
 mod metrics;
 mod registry;
@@ -71,12 +72,17 @@ pub use config::{Config, HIGH_THROUGHPUT_CONFIG, LOW_LATENCY_CONFIG};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use reservation::{CommitError, Reservation};
 pub use ring::Ring;
+pub use gate::{SendGates, SendSection};
 
 /// The registration/close word, exported only for the loom tests so they run
 /// the real code (`tests/loom_tests.rs`). Not part of the public API.
 #[cfg(feature = "loom")]
 #[doc(hidden)]
 pub use registry::{AtomicWord, ClaimError, Registry};
+/// The send gates over any atomic word, for the loom tests. Not public API.
+#[cfg(feature = "loom")]
+#[doc(hidden)]
+pub use gate::{GatesImpl, SectionImpl};
 
 #[cfg(feature = "stack-ring")]
 pub use stack_ring::{StackRing, StackRing4K, StackRing8K, StackRing16K, StackRing64K};

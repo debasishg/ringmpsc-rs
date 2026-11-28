@@ -256,6 +256,11 @@ The registered producer count never exceeds `max_producers` (`P` for `StackChann
 
 **Enforced by**: the count and a closed bit share one atomic word (`src/registry.rs`). `register()` claims an id with a CAS loop that fails instead of passing the limit, and `close()` sets the bit with one `fetch_or`, which returns the count at that moment, closes those rings, and only then sets the channel flag that `is_closed()` reads (Release / Acquire). All the claims and the `fetch_or` are read-modify-writes on the same word, so they fall in one total order without `SeqCst`. A successful claim is AcqRel and `producer_count()` loads with Acquire. `Ring::reserve_shared` and `StackRing::reserve` check the ring's closed flag.
 
+### INV-CH-05: Lossless Close (send gates)
+For code that sends through producers and reports success to its callers: every send that got a section from `SendGates::begin` commits before the consumer's final drain, so that drain sees its item. A send whose `begin` comes after `SendGates::close` gets `None` and sends nothing.
+
+**Enforced by**: `src/gate.rs`. One word per producer id, each on its own cache line, so a send touches only its own producer's line. `begin` is `compare_exchange(0, IN_SECTION)` (Acquire), the section's end is `fetch_and(!IN_SECTION)` (Release), and `close` is `fetch_or(CLOSED)` (Release) on every gate. These are read-modify-writes on one word per gate, so for each gate the open and the close are ordered: an open after the close fails, and an open before it shows `IN_SECTION` until its end. The consumer's final drain waits for `is_quiet()` (every gate exactly `CLOSED`, Acquire), which reads from a release sequence headed by each section's end, so it sees every commit. Sections are one non-blocking reserve and commit, never a wait for space.
+
 ---
 
 ## Verification
@@ -282,6 +287,7 @@ The registered producer count never exceeds `max_producers` (`P` for `StackChann
 | INV-CH-01 | Config validation | `config.rs` assertions |
 | INV-CH-02 | Structural (single consumer API) | N/A (structural) |
 | INV-CH-03 | [tests/integration_tests.rs](tests/integration_tests.rs), [tests/miri_stack_overlap_test.rs](tests/miri_stack_overlap_test.rs) (concurrent, under Miri) | `invariants.rs` → `channel.rs`, `stack_channel.rs` |
+| INV-CH-05 | [tests/loom_tests.rs](tests/loom_tests.rs) (`loom_gate_section_before_close_is_drained`, on the real gates), `gate.rs` unit tests | `invariants.rs` → `gate.rs` |
 | INV-CH-04 | [tests/loom_tests.rs](tests/loom_tests.rs) (`loom_register_vs_close`, `loom_register_never_exceeds_max`, on the real `Registry`), [tests/close_register_tests.rs](tests/close_register_tests.rs) | `invariants.rs` → `registry.rs` |
 | INV-MEM-04 | `unsafe trait` contract, [tla/RingSPSC.qnt](tla/RingSPSC.qnt) (`allocatorCapacityCorrect`) | N/A (proof obligation on implementor) |
 | INV-NUMA-02 | Non-Linux fallback path | `invariants.rs` → `numa.rs` non-Linux `allocate()` |

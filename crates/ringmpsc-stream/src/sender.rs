@@ -55,13 +55,13 @@ mod exclusive {
     ///
     /// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
     /// wrapper doesn't expose them: it forwards `reserve` through `&mut self`, and
-    /// through `&self` only `is_closed` and `close`, which touch nothing but
-    /// atomics. So it is safe to share, and `RingSender` gets its `Sync` from the
+    /// through `&self` only `is_closed`, `close` and `id`, which touch nothing
+    /// but atomics and a plain id. So it is safe to share, and `RingSender` gets its `Sync` from the
     /// compiler, which still checks every other field.
     pub(super) struct ExclusiveProducer<T>(Producer<T>);
 
-    // Safety: a shared `&ExclusiveProducer` can only call `is_closed` and `close`,
-    // which are atomic loads and stores. Every write to the ring goes through
+    // Safety: a shared `&ExclusiveProducer` can only call `is_closed`, `close`
+    // and `id`, which are atomic loads and stores and a read of a plain id. Every write to the ring goes through
     // `&mut self`, so it stays on one thread at a time and the ring keeps a single
     // producer (ringmpsc INV-SW-01). Keep it that way: never add a `&self` method
     // that reserves, pushes or sends, and never hand out `&Producer`. `T: Send`
@@ -84,6 +84,12 @@ mod exclusive {
             self.0.is_closed()
         }
 
+        /// The producer's id, which picks its send gate.
+        #[inline]
+        pub(super) fn id(&self) -> usize {
+            self.0.id()
+        }
+
         #[inline]
         pub(super) fn close(&self) {
             self.0.close();
@@ -103,18 +109,19 @@ enum Push<T> {
 }
 
 /// One non-blocking attempt to commit `item`. Every send path goes through
-/// here, so every commit happens inside a `ShutdownState` send section: the
-/// receiver doesn't end the stream while one is open, so an item this
-/// reports as `Sent` is always received (INV-SHUT-04).
+/// here, so every commit happens inside a send section of this producer's
+/// gate: the receiver doesn't end the stream while one is open, so an item
+/// this reports as `Sent` is always received (INV-SHUT-04). The gate is this
+/// producer's own cache line, so senders don't contend with each other.
 fn push_one<T>(
     producer: &mut ExclusiveProducer<T>,
     shutdown_state: &ShutdownState,
     data_notify: &Notify,
     item: T,
 ) -> Push<T> {
-    // Fails once the channel is closed. While the guard lives, the receiver
-    // waits before its final drain.
-    let Some(section) = shutdown_state.begin_send() else {
+    // Fails once the channel is closed. While the section is open, the
+    // receiver waits before its final drain.
+    let Some(section) = shutdown_state.begin_send(producer.id()) else {
         #[cfg(debug_assertions)]
         debug_assert_item_preserved!(true, true);
         return Push::Closed(item);
@@ -125,15 +132,20 @@ fn push_one<T>(
         }
         reservation.commit();
         // End the section after the commit: its Release publishes the item
-        // to a receiver that sees the section count reach zero.
-        drop(section);
+        // to a receiver that sees the gates quiet. The notify below also
+        // wakes a receiver waiting for that.
+        let _ = section.end();
         data_notify.notify_one();
         // INV-SINK-03: Verify data notification sent
         #[cfg(debug_assertions)]
         debug_assert_data_notified!(true, true);
         return Push::Sent;
     }
-    drop(section);
+    if section.end() {
+        // The channel closed while this section was open; wake a receiver
+        // waiting for the gates to go quiet.
+        data_notify.notify_one();
+    }
     // INV-SINK-01: the item was not consumed, since reserve() returned None.
     #[cfg(debug_assertions)]
     debug_assert_item_preserved!(true, true);
@@ -149,9 +161,10 @@ fn push_one<T>(
 /// The `Sink` path: commit `pending_item`, or wait for space without losing
 /// the wake-up (#47).
 ///
-/// The wait is created and polled once (which registers this task) before
-/// the item is tried again, so a drain or close that lands between a failed
-/// try and the registration is still seen.
+/// Every new wait is polled once (which registers this task) and then the
+/// item is tried again, so a drain or close that lands between a failed try
+/// and the registration is still seen. That retry happens for each new wait,
+/// not just the first in a call.
 fn poll_pending<T>(
     producer: &mut ExclusiveProducer<T>,
     shutdown_state: &ShutdownState,
@@ -161,7 +174,6 @@ fn poll_pending<T>(
     space_wait: &mut Option<SpaceWait>,
     cx: &mut Context<'_>,
 ) -> Poll<Result<(), StreamError>> {
-    let mut rechecked = false;
     loop {
         let Some(item) = pending_item.take() else {
             *space_wait = None;
@@ -188,9 +200,11 @@ fn poll_pending<T>(
                 match wait.as_mut().poll(cx) {
                     // Woken by a drain or a close: try again.
                     Poll::Ready(()) => *space_wait = None,
-                    // Just registered: try once more, in case the wake-up
-                    // came before the registration.
-                    Poll::Pending if created && !rechecked => rechecked = true,
+                    // Just registered: try again, in case the wake-up came
+                    // between the failed try and the registration.
+                    Poll::Pending if created => {}
+                    // Registered on an earlier pass, and the try after it
+                    // failed too: wait.
                     Poll::Pending => return Poll::Pending,
                 }
             }
@@ -467,7 +481,10 @@ mod sync_tests {
         let mut tx = factory.register().expect("one sender");
 
         // The sender is mid-send: section open, slot reserved and written.
-        let section = tx.shutdown_state.begin_send().expect("channel is open");
+        let section = tx
+            .shutdown_state
+            .begin_send(tx.producer.id())
+            .expect("channel is open");
         let mut reservation = tx.producer.reserve(1).expect("empty ring has room");
         assert!(reservation.push(7).is_ok());
 
@@ -478,7 +495,7 @@ mod sync_tests {
         );
 
         reservation.commit();
-        drop(section);
+        let _ = section.end();
 
         assert_eq!(rx.next().await, Some(7), "the in-flight send is received");
         assert_eq!(rx.next().await, None);

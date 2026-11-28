@@ -176,7 +176,7 @@ The internal oneshot handles programmatic shutdown; external `take_until` enable
 ```
 send returns Ok  →  the receiver yields the item before it returns None
 ```
-Every send commits inside a *send section*: it opens one before reserving (failing if the channel is closed) and ends it after committing. The closed flag and the open-section count share one atomic word in `ShutdownState`, so the close and every section fall in one order. The receiver returns `None` only after it sees the flag set with no section open (`is_closed_and_quiet()`, Acquire) and drains once more; each section's end is a Release, so that drain sees every commit. Sections are a single non-blocking reserve and commit, never a wait for space, so the receiver only spins briefly.
+Every send commits inside a *send section* of its producer's gate (`ringmpsc_rs::SendGates`, ringmpsc INV-CH-05): it opens one before reserving (failing if the channel is closed) and ends it after committing. Each producer has its own gate on its own cache line, so senders don't contend with each other; the only other writer is the close, once. The receiver returns `None` only after it sees the channel closed and every gate quiet (`is_closed_and_quiet()`, Acquire) and drains once more; each section's end is a Release, so that drain sees every commit. Sections are a single non-blocking reserve and commit, never a wait for space. While one is open after the close, the receiver waits on `data_notify` (a sender ending a section after the close calls `notify_one`), in a wait stored across polls, with the poll timer as a fallback; it doesn't spin.
 
 ## 5. Memory Ordering
 
@@ -190,13 +190,13 @@ receiver: notified().await → read_from_ring
 
 ### INV-ORD-02: Shutdown State
 ```
-shutdown_state (one word: CLOSED bit + open send-section count):
-  - close(): fetch_or, Release
-  - is_closed(), is_closed_and_quiet(): Acquire
-  - begin_send(): fetch_add, Acquire (pairs with close)
-  - end of a send section: fetch_sub, Release (publishes its commit)
+shutdown_state (per-producer send gates + closed flag):
+  - close(): every gate fetch_or(CLOSED), Release; then closed.store, Release
+  - is_closed(): Acquire; is_closed_and_quiet(): Acquire on the flag and each gate
+  - begin_send(id): compare_exchange(0, IN_SECTION) on gate id, Acquire
+  - end of a send section: fetch_and(!IN_SECTION), Release (publishes its commit)
 ```
-Every change is a read-modify-write on the same word, so each section's Release heads a release sequence that the receiver's Acquire load reads from (INV-SHUT-04).
+Per gate, every change is a read-modify-write on one word, so each section's Release heads a release sequence that the receiver's Acquire load reads from (INV-SHUT-04, ringmpsc INV-CH-05).
 
 ## 6. Configuration
 
@@ -248,7 +248,7 @@ is_terminal(Closed | ShutDown) = true
 | INV-CH-03 | Close/shutdown tests (`test_waiting_sender_returns_closed_on_factory_close`, `test_send_after_factory_close_is_closed`) | N/A (behavioral) |
 | INV-SHUT-01 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_shutdown_signaled!` |
 | INV-SHUT-02 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_senders_woken!` |
-| INV-SHUT-04 | `receiver_waits_for_an_open_send_section` (deterministic, `sender.rs`), `test_every_ok_send_is_received_across_close` (concurrent senders vs close) | `shutdown.rs` → `debug_assert_section_open!` |
+| INV-SHUT-04 | `receiver_waits_for_an_open_send_section` (deterministic, `sender.rs`), `test_every_ok_send_is_received_across_close` (concurrent senders vs close); the gates themselves: ringmpsc `loom_gate_section_before_close_is_drained` | ringmpsc `invariants.rs` → `gate.rs` (`debug_assert_section_was_open!`) |
 
 ## debug_assert! Macros
 
@@ -265,7 +265,6 @@ All runtime invariant checks are in [src/invariants.rs](src/invariants.rs):
 | `debug_assert_explicit_registration!` | INV-CH-01 | Document explicit registration via factory |
 | `debug_assert_shutdown_signaled!` | INV-SHUT-01 | Verify shutdown oneshot sent |
 | `debug_assert_senders_woken!` | INV-SHUT-02 | Verify blocked senders woken on shutdown |
-| `debug_assert_section_open!` | INV-SHUT-04 | Verify a send section's end matches an open section |
 
 ## Related Specifications
 

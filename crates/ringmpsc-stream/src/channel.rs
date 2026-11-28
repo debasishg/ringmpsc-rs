@@ -5,7 +5,7 @@ use crate::error::StreamError;
 use crate::receiver::RingReceiver;
 use crate::sender::RingSender;
 use crate::shutdown::ShutdownState;
-use ringmpsc_rs::{Channel, Config};
+use ringmpsc_rs::{Channel, ChannelError, Config};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
@@ -51,7 +51,7 @@ pub fn channel_with_stream_config<T: Send + 'static>(
     let channel = Arc::new(Channel::new(config));
     let data_notify = Arc::new(Notify::new());
     let backpressure_notify = Arc::new(Notify::new());
-    let shutdown_state = Arc::new(ShutdownState::new());
+    let shutdown_state = Arc::new(ShutdownState::new(config.max_producers));
 
     // A fresh channel has no consumer yet, so this cannot fail.
     let consumer = channel.consumer().expect("a new channel has no consumer");
@@ -111,7 +111,13 @@ impl<T: Send + 'static> SenderFactory<T> {
             return Err(StreamError::Closed);
         }
 
-        let producer = self.channel.register()?;
+        // A close can land between the check above and this call; the core
+        // channel then reports `ChannelError::Closed`, which is the same
+        // terminal condition, so report it as `StreamError::Closed`.
+        let producer = self.channel.register().map_err(|e| match e {
+            ChannelError::Closed => StreamError::Closed,
+            other => StreamError::RegistrationFailed(other),
+        })?;
 
         // INV-CH-01: Explicit registration creates unique sender per ring
         #[cfg(debug_assertions)]

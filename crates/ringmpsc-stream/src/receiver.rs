@@ -48,8 +48,16 @@ pin_project! {
         buffer: VecDeque<T>,
         data_pending: bool,
         drain_complete: bool,
+        // After a close: the wait for the last open send sections to end.
+        quiet_wait: Option<QuietWait>,
     }
 }
+
+/// The receiver's wait for open send sections to end after a close, kept
+/// across polls. A sender that ends a section after the close calls
+/// `data_notify.notify_one()`, which completes this (or leaves a permit for
+/// it), so the receiver sleeps instead of spinning.
+type QuietWait = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
 
 impl<T: Send + 'static> RingReceiver<T> {
     /// Creates a new receiver draining through the channel's consumer handle.
@@ -79,6 +87,7 @@ impl<T: Send + 'static> RingReceiver<T> {
             buffer: VecDeque::with_capacity(config.batch_hint),
             data_pending: false,
             drain_complete: false,
+            quiet_wait: None,
         }
     }
 
@@ -166,8 +175,11 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                         this.consumer,
                         this.buffer,
                         this.backpressure_notify,
+                        this.data_notify,
                         this.shutdown_state,
                         this.drain_complete,
+                        this.quiet_wait,
+                        this.poll_timer.as_mut(),
                         cx,
                     );
                 }
@@ -286,8 +298,11 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                 this.consumer,
                 this.buffer,
                 this.backpressure_notify,
+                this.data_notify,
                 this.shutdown_state,
                 this.drain_complete,
+                this.quiet_wait,
+                this.poll_timer.as_mut(),
                 cx,
             );
         }
@@ -299,46 +314,72 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
 /// End of stream after a close: yield what is left, and return `None` only
 /// once no send can still commit (INV-SHUT-04, INV-STREAM-04).
 ///
-/// A sender that passed its closed check before the close may not have
-/// committed yet. `is_closed_and_quiet()` is true only once every such send
-/// section has ended, and its Acquire makes their commits visible, so the
-/// drain after it sees every item a send reported as `Ok`. Sections are short
-/// and non-blocking (one reserve and commit), so until then this re-polls.
+/// A sender that opened its send section before the close may not have
+/// committed yet. `is_closed_and_quiet()` is true only once every section
+/// has ended, and its Acquire makes their commits visible, so the drain
+/// after it sees every item a send reported as `Ok`. Until then this waits
+/// on `data_notify`, which a sender ending a section after the close
+/// signals, in a wait stored across polls; each new wait is followed by one
+/// more check, so a section that ends before the wait registers isn't missed.
+/// The poll timer is a fallback, for a section ended by a panicking sender.
+#[allow(clippy::too_many_arguments)]
 fn finish<T>(
     consumer: &mut Consumer<T>,
     buffer: &mut VecDeque<T>,
     backpressure_notify: &Notify,
+    data_notify: &Arc<Notify>,
     shutdown_state: &ShutdownState,
     drain_complete: &mut bool,
+    quiet_wait: &mut Option<QuietWait>,
+    mut poll_timer: Pin<&mut Interval>,
     cx: &mut Context<'_>,
 ) -> Poll<Option<T>> {
-    let quiet = shutdown_state.is_closed_and_quiet();
-    let mut drained = 0usize;
-    consumer.consume_all_owned(|item| {
-        buffer.push_back(item);
-        drained += 1;
-    });
-    if drained > 0 {
-        backpressure_notify.notify_waiters();
-    }
-    // INV-STREAM-03: Verify backpressure was signaled
-    #[cfg(debug_assertions)]
-    debug_assert_backpressure_signaled!(drained, true);
-
-    if quiet {
-        // Nothing can be committed any more, and this drain saw everything.
-        *drain_complete = true;
-        // INV-STREAM-04: Verify drain complete before returning None
+    loop {
+        let quiet = shutdown_state.is_closed_and_quiet();
+        let mut drained = 0usize;
+        consumer.consume_all_owned(|item| {
+            buffer.push_back(item);
+            drained += 1;
+        });
+        if drained > 0 {
+            backpressure_notify.notify_waiters();
+        }
+        // INV-STREAM-03: Verify backpressure was signaled
         #[cfg(debug_assertions)]
-        debug_assert_shutdown_drained!(true, *drain_complete);
+        debug_assert_backpressure_signaled!(drained, true);
+
+        if quiet {
+            // Nothing can be committed any more, and this drain saw everything.
+            *quiet_wait = None;
+            *drain_complete = true;
+            // INV-STREAM-04: Verify drain complete before returning None
+            #[cfg(debug_assertions)]
+            debug_assert_shutdown_drained!(true, *drain_complete);
+            return Poll::Ready(buffer.pop_front());
+        }
+        if let Some(item) = buffer.pop_front() {
+            return Poll::Ready(Some(item));
+        }
+
+        // A send section is still open: wait for its end to notify us.
+        let created = quiet_wait.is_none();
+        let wait = quiet_wait.get_or_insert_with(|| {
+            let notify = Arc::clone(data_notify);
+            Box::pin(async move { notify.notified().await })
+        });
+        match wait.as_mut().poll(cx) {
+            // Woken: check again.
+            Poll::Ready(()) => *quiet_wait = None,
+            // Just registered: check again, in case the section ended first.
+            Poll::Pending if created => {}
+            Poll::Pending => {
+                // Fallback wake-up: a section ended by a panicking sender
+                // (its guard's Drop) can't notify, so also wait for the next
+                // poll tick (INV-STREAM-06: loop until Pending registers it).
+                while poll_timer.as_mut().poll_tick(cx).is_ready() {}
+                return Poll::Pending;
+            }
+        }
     }
-    if let Some(item) = buffer.pop_front() {
-        return Poll::Ready(Some(item));
-    }
-    if quiet {
-        return Poll::Ready(None);
-    }
-    // A send section is still open; it ends within a reserve and a commit.
-    cx.waker().wake_by_ref();
-    Poll::Pending
 }
+

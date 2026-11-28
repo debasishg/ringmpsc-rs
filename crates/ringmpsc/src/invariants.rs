@@ -188,6 +188,27 @@ macro_rules! debug_assert_registered_bound {
 }
 
 // =============================================================================
+// INV-CH-05: Lossless Close (send gates)
+// =============================================================================
+
+/// Assert that ending a send section matches one that was open.
+///
+/// **Invariant**: a gate shows a section from its open until its end, and the
+/// consumer's final drain waits for every gate to show none. Ending a section
+/// that wasn't open would mean a double end, which could let the consumer
+/// drain before a commit.
+///
+/// Used in: `SectionImpl::release()` (`gate.rs`)
+macro_rules! debug_assert_section_was_open {
+    ($in_section_bit:expr) => {
+        debug_assert!(
+            $in_section_bit != 0,
+            "INV-CH-05 violated: a send section ended while none was open"
+        )
+    };
+}
+
+// =============================================================================
 // INV-ALLOC-01: Alignment Guarantee
 // =============================================================================
 
@@ -262,6 +283,7 @@ pub(crate) use debug_assert_initialized_read;
 pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;
 pub(crate) use debug_assert_registered_bound;
+pub(crate) use debug_assert_section_was_open;
 pub(crate) use debug_assert_slot_in_bounds;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_aligned;

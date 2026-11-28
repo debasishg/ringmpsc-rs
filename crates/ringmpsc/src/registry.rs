@@ -41,6 +41,10 @@ pub trait AtomicWord {
     fn cas_weak_acq_rel(&self, current: usize, new: usize) -> Result<usize, usize>;
     /// `fetch_or` with Release.
     fn fetch_or_release(&self, v: usize) -> usize;
+    /// Strong `compare_exchange` with Acquire on success and on failure.
+    fn cas_acquire(&self, current: usize, new: usize) -> Result<usize, usize>;
+    /// `fetch_and` with Release.
+    fn fetch_and_release(&self, v: usize) -> usize;
 }
 
 macro_rules! impl_atomic_word {
@@ -66,6 +70,19 @@ macro_rules! impl_atomic_word {
             #[inline]
             fn fetch_or_release(&self, v: usize) -> usize {
                 self.fetch_or(v, std::sync::atomic::Ordering::Release)
+            }
+            #[inline]
+            fn cas_acquire(&self, current: usize, new: usize) -> Result<usize, usize> {
+                self.compare_exchange(
+                    current,
+                    new,
+                    std::sync::atomic::Ordering::Acquire,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+            }
+            #[inline]
+            fn fetch_and_release(&self, v: usize) -> usize {
+                self.fetch_and(v, std::sync::atomic::Ordering::Release)
             }
         }
     };
