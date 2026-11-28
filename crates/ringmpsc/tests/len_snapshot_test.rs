@@ -20,6 +20,8 @@ use std::thread;
 /// Items pushed through the ring per test. Enough for the observer to
 /// catch the producer and consumer mid-move many times.
 const ITEMS: u64 = 200_000;
+/// The observer yields once every this many observations.
+const OBSERVER_YIELD_EVERY: u64 = 64;
 
 /// Stores `true` when dropped, including while unwinding from a panic.
 struct SetOnDrop<'a>(&'a AtomicBool);
@@ -68,6 +70,12 @@ fn race(
                 if done.load(Ordering::Acquire) {
                     break;
                 }
+                // Yield now and then so the producer and consumer get CPU
+                // time on a machine with few cores, while still observing
+                // often enough to land in the middle of their updates.
+                if observations.is_multiple_of(OBSERVER_YIELD_EVERY) {
+                    thread::yield_now();
+                }
             }
             observations
         });
@@ -114,7 +122,12 @@ fn ring_len_stays_within_capacity_under_concurrency() {
             let mut consumer = channel.consumer().expect("one consumer");
             let mut seen = 0u64;
             while seen < ITEMS && !abort.load(Ordering::Acquire) {
-                seen += consumer.consume_all(|_| {}) as u64;
+                let n = consumer.consume_all(|_| {}) as u64;
+                if n == 0 {
+                    // Let the producer run on a machine with few cores.
+                    thread::yield_now();
+                }
+                seen += n;
             }
         },
         || {
@@ -146,7 +159,12 @@ fn stack_ring_len_stays_within_capacity_under_concurrency() {
             let mut consumer = channel.consumer().expect("one consumer");
             let mut seen = 0u64;
             while seen < ITEMS && !abort.load(Ordering::Acquire) {
-                seen += consumer.consume_all(|_| {}) as u64;
+                let n = consumer.consume_all(|_| {}) as u64;
+                if n == 0 {
+                    // Let the producer run on a machine with few cores.
+                    thread::yield_now();
+                }
+                seen += n;
             }
         },
         || {

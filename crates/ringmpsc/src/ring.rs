@@ -259,8 +259,9 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// `occupancy_snapshot` in `ring.rs`).
     ///
     /// It retries if the consumer advances in the middle of reading, so
-    /// while the consumer is very busy a call can take several attempts. The
-    /// producer and consumer calling it on their own ring almost never retry.
+    /// while the consumer is very busy a call can take several attempts. That
+    /// includes calls from the producer. Only the consumer's own calls never
+    /// retry, since it is the only thread that moves `head`.
     #[inline]
     pub fn len(&self) -> usize {
         occupancy_snapshot(&self.head, &self.tail) as usize
@@ -275,16 +276,19 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         // Load head first, with Acquire, then tail. As in `occupancy_snapshot`,
-        // the consumer stores `head = h` only after reading some `tail >= h`,
-        // so the tail loaded here is at least that tail, and `tail == h` means
-        // the consumer saw the ring empty when it stored `h`. Loading tail first,
-        // or with Relaxed loads, could pair a stale tail with a head that had
-        // caught up to it, and report queued items as empty.
+        // the consumer stores `head = h` only after reading some `tail >= h`.
+        // The Acquire load of head synchronizes with that store, so the
+        // consumer's tail read happens-before the tail load here, which by
+        // read-read coherence returns at least that tail whatever its own
+        // ordering: Relaxed is enough for it. So `tail == h` means the consumer
+        // saw the ring empty when it stored `h`. Loading tail first, or head
+        // with Relaxed, could pair a stale tail with a head that had caught up
+        // to it, and report queued items as empty.
         //
         // No retry is needed: a stale answer is fine for an emptiness hint,
         // only a wrong one isn't. Two loads, so it stays cheap for polling.
         let head = self.head.load(Ordering::Acquire);
-        self.tail.load(Ordering::Acquire) == head
+        self.tail.load(Ordering::Relaxed) == head
     }
 
     /// Returns true if the ring is full.
