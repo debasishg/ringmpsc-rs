@@ -292,6 +292,12 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// this channel's [`StackConsumer`] exists, or from two threads without a
     /// happens-before ordering between the calls, is undefined behavior.
     ///
+    /// Its producer methods (`reserve`, `commit`) are `unsafe` too, and require
+    /// the caller to be the ring's only producer (INV-SW-01). Calling them
+    /// while a [`StackProducer`] for `ring_id` exists, or from two threads at
+    /// once, is undefined behavior: both writers would fill the same slots and
+    /// store the same `tail`.
+    ///
     /// Returns `None` if `ring_id >= P`.
     #[inline]
     pub fn get_ring(&self, ring_id: usize) -> Option<&StackRing<T, N>> {
@@ -599,9 +605,11 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub unsafe fn commit(&self, n: usize) {
-        // SAFETY: forwarded from this function's own contract. A
-        // `StackProducer` is its ring's only producer: ids are unique per
-        // `register()` and `StackProducer` is not `Clone`.
+        // SAFETY: the written-slots requirement is forwarded from this
+        // function's own contract (INV-INIT-01). A `StackProducer` is its
+        // ring's only producer (INV-SW-01, INV-CH-01): ids are unique per
+        // `register()`, `StackProducer` is not `Clone`, and it is not `Sync`,
+        // so its `&self` methods never run on two threads at once.
         unsafe { self.channel.rings[self.id].commit(n) }
     }
 
@@ -618,7 +626,10 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub fn push(&self, item: T) -> bool {
-        // SAFETY: We write exactly 1 item and commit 1
+        // SAFETY: this `StackProducer` is the ring's only producer and is not
+        // `Sync`, so no other thread reserves or commits on it (INV-SW-01,
+        // INV-CH-01). `reserve(1)` returns at least the one slot asked for,
+        // which is written before `commit(1)` publishes it (INV-INIT-01).
         unsafe {
             if let Some((ptr, len)) = self.reserve(1) {
                 debug_assert!(len >= 1);
@@ -641,6 +652,12 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     {
         let mut sent = 0;
         while sent < items.len() {
+            // SAFETY: only producer, not `Sync` (INV-SW-01, INV-CH-01), as in
+            // `push`. `to_copy <= len`, so the copy stays inside the reserved
+            // window, and `sent + to_copy <= items.len()` keeps the source in
+            // bounds. All `to_copy` slots are written before `commit(to_copy)`
+            // publishes them (INV-INIT-01). `T: Copy`, so the copy can't
+            // double-drop.
             unsafe {
                 if let Some((ptr, len)) = self.reserve(items.len() - sent) {
                     let to_copy = len.min(items.len() - sent);

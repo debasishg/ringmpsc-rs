@@ -228,6 +228,25 @@ pub struct SpanProducer {
     metrics: Arc<CollectorMetrics>,
 }
 
+// Safety: `Producer` is `!Sync` because its `push`/`send` take `&self`
+// (ringmpsc INV-SW-01). `SpanProducer` only writes through `&mut self`
+// (`submit_span`, `try_submit_span`) and has no `&self` method, so a shared
+// `&SpanProducer` can't push. `Span` and `CollectorMetrics` are `Sync`. Keep
+// every write behind `&mut self`.
+unsafe impl Sync for SpanProducer {}
+
+// The impl above skips the compiler's field check, so check the other fields
+// by hand: if one stops being `Sync`, this fails to compile.
+// Never called: the fns only need to type-check.
+#[allow(dead_code)]
+const _: () = {
+    fn assert_sync<S: Sync>() {}
+    fn fields_are_sync() {
+        assert_sync::<Span>();
+        assert_sync::<Arc<CollectorMetrics>>();
+    }
+};
+
 impl SpanProducer {
     /// Submits a span with retry and backoff
     pub fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
@@ -274,6 +293,12 @@ impl SpanProducer {
 mod tests {
     use super::*;
     use crate::span::SpanKind;
+
+    #[test]
+    fn span_producer_is_send_and_sync() {
+        fn assert_send_sync<S: Send + Sync>() {}
+        assert_send_sync::<SpanProducer>();
+    }
 
     #[test]
     fn test_submit_and_consume_span() {

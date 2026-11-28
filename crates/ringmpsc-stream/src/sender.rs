@@ -35,6 +35,28 @@ pin_project! {
     }
 }
 
+// Safety: `Producer` is `!Sync` because its `push`/`send` take `&self`
+// (ringmpsc INV-SW-01). `RingSender` never calls them through `&self`: every
+// write (`try_send`, `send`, `send_cloned`, the `Sink` methods) takes
+// `&mut self` or `Pin<&mut Self>`, which is exclusive. Its `&self` methods,
+// `is_closed` and `close`, only touch atomics. So a shared `&RingSender` can't
+// push. `T: Sync` is required, as it was when this impl was automatic, for
+// the `pending_item: Option<T>` field. Keep every write behind `&mut self`.
+unsafe impl<T: Send + Sync> Sync for RingSender<T> {}
+
+// The impl above skips the compiler's field check, so check the other fields
+// by hand: if one stops being `Sync`, this fails to compile.
+// Never called: the fns only need to type-check.
+#[allow(dead_code)]
+const _: () = {
+    fn assert_sync<S: Sync>() {}
+    fn fields_are_sync<T: Sync>() {
+        assert_sync::<Arc<Notify>>();
+        assert_sync::<Arc<ShutdownState>>();
+        assert_sync::<Option<T>>();
+    }
+};
+
 impl<T: Send + 'static> RingSender<T> {
     /// Creates a new sender wrapping the given producer.
     pub(crate) fn new(
@@ -402,5 +424,16 @@ impl<T: Send + Clone + 'static> RingSender<T> {
 
             // Retry - item is cloned on each attempt
         }
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::RingSender;
+
+    #[test]
+    fn ring_sender_is_send_and_sync() {
+        fn assert_send_sync<S: Send + Sync>() {}
+        assert_send_sync::<RingSender<u64>>();
     }
 }

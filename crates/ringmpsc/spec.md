@@ -233,7 +233,7 @@ Each item is dropped exactly once:
 ### INV-CH-01: One Ring Per Producer
 Each `Producer<T>` is assigned a unique `Ring<T>`. No two producers share a ring.
 
-**Enforced by**: `register()` hands out each ring id once. `Producer` and `StackProducer` are not `Clone`, and they are `Send` but not `Sync`, so their `&self` methods (`push`, `send`) can't run on two threads at once (INV-SW-01).
+**Enforced by**: `register()` hands out each ring id once. `Producer` and `StackProducer` are not `Clone`, and they are `Send` but not `Sync`, so their `&self` methods (`push`, `send`) can't run on two threads at once (INV-SW-01). Safe code has no other way to write a ring: `Channel::get_ring` hands out `&Ring`, which can't reserve. `StackChannel::get_ring` hands out `&StackRing`, whose `reserve` / `commit` are `unsafe fn`s, and calling them while a `StackProducer` for that ring exists breaks their contract.
 
 ### INV-CH-02: Single Consumer
 At most one consumer drains a channel's rings at any time. No concurrent consumption of the same ring.
