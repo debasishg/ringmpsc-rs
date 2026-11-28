@@ -160,8 +160,8 @@ While maintaining the same algorithm and design principles, this Rust implementa
 1. **Memory Safety**: Uses `MaybeUninit<T>` for uninitialized buffer slots with proper Drop handling
 2. **Type Safety**: Strongly typed `Result` for error handling instead of Zig's error unions
 3. **Lifetime Management**: Explicit lifetime annotations for `Reservation` references
-4. **Trait System**: Implements `Send + Sync` traits with proper safety bounds
-5. **Arc-based Sharing**: Uses `Arc` for cloning channels and producers instead of raw pointers
+4. **Trait System**: `Channel` is `Send + Sync`. `Producer` is `Send` but neither `Sync` nor `Clone`: move it to the thread that uses it, and call `register()` once per producer thread. Sharing one producer between threads (`&Producer`, `Arc<Producer>`) doesn't compile, since two threads writing one ring would race
+5. **Arc-based Sharing**: Uses `Arc` for cloning channels (and producers hold one to the channel) instead of raw pointers
 6. **Compile-Time Capacity**: `StackRing<T, N>` provides compile-time capacity (analogous to Zig's comptime generics); heap `Ring<T>` uses runtime configuration
 
 ## Building

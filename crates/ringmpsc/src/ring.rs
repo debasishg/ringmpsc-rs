@@ -91,9 +91,12 @@ pub(crate) fn occupancy_snapshot(head: &AtomicU64, tail: &AtomicU64) -> u64 {
 // - `buffer[idx]`: Written by producer (between tail reservation and commit),
 //                  read by consumer (between head load and advance)
 //
-// These invariants are enforced by the type system: producer methods need
-// `&mut Ring` or `&mut Producer`, consumer methods need `&mut Ring` or
-// `&mut Consumer`, and a channel hands out at most one `Consumer` at a time.
+// These invariants are enforced by the type system. Producer methods need
+// `&mut Ring` or a `Producer`: `Producer::reserve` takes `&mut self`, and
+// `Producer::push` / `send` take `&self` but `Producer` is neither `Clone`
+// nor `Sync`, so they stay on the one thread that owns it. Consumer methods
+// need `&mut Ring` or `&mut Consumer`, and a channel hands out at most one
+// `Consumer` at a time.
 //
 // =============================================================================
 
@@ -356,10 +359,19 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     ///
     /// # Safety
     ///
-    /// No other `Reservation` for this ring may be outstanding when this is
-    /// called, and none may be created until the returned one is committed or
-    /// dropped. Callers holding a unique handle to the ring - `&mut Ring`, or
-    /// `&mut Producer`, which is the only route to its ring - discharge this.
+    /// - Every producer call on this ring (`reserve_shared`,
+    ///   `reserve_with_backoff_shared`, `push_shared`, `send_shared`, and the
+    ///   `&mut self` methods) must be ordered by happens-before with every
+    ///   other (INV-SW-01). Calls that merely don't overlap in time are not
+    ///   enough: `cached_head` is a plain cell and `tail` is read `Relaxed`.
+    /// - No other `Reservation` for this ring may be outstanding when this is
+    ///   called, and none may be created until the returned one is committed
+    ///   or dropped.
+    ///
+    /// A caller holding `&mut Ring` or `&mut Producer` discharges both. So
+    /// does `&Producer` for `push_shared` / `send_shared`, which leave no
+    /// reservation outstanding: `Producer` is the only route to its ring and
+    /// is `!Sync`, so its calls stay on one thread.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) unsafe fn reserve_shared(&self, n: usize) -> Option<Reservation<'_, T, A>> {
         if n == 0 || n > self.capacity() {

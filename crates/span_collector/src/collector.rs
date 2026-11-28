@@ -1,5 +1,5 @@
 use crate::span::Span;
-use ringmpsc_rs::{Channel, ChannelError, Config, Consumer, Producer, Reservation};
+use ringmpsc_rs::{Channel, ChannelError, Config, Consumer};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -115,7 +115,7 @@ impl SpanCollector {
     pub fn register(&self) -> Result<SpanProducer, ChannelError> {
         let producer = self.channel.register()?;
         Ok(SpanProducer {
-            producer: ExclusiveProducer(producer),
+            producer: ExclusiveProducer::new(producer),
             metrics: Arc::clone(&self.metrics),
         })
     }
@@ -228,33 +228,46 @@ pub struct SpanProducer {
     metrics: Arc<CollectorMetrics>,
 }
 
-/// A [`Producer`] reached only through `&mut self` for writes.
-///
-/// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
-/// wrapper doesn't expose them: it forwards `reserve` and
-/// `reserve_with_backoff` through `&mut self`, and nothing through `&self`.
-/// So it is safe to share, and `SpanProducer` gets its `Sync` from the
-/// compiler, which still checks every other field.
-struct ExclusiveProducer<T>(Producer<T>);
+/// Holds the `Producer` in its own module, so the tuple field is private to
+/// it: nothing else in this file can reach `Producer::push` / `send` through
+/// `&self`, and the `unsafe impl Sync` below stays true by construction.
+mod exclusive {
+    use ringmpsc_rs::{Producer, Reservation};
 
-// Safety: a shared `&ExclusiveProducer` has no methods to call. Every write
-// to the ring goes through `&mut self`, so it stays on one thread at a time
-// and the ring keeps a single producer (ringmpsc INV-SW-01). Keep it that way: never add a
-// `&self` method that reserves, pushes or sends, and never hand out
-// `&Producer`. `T: Send` matches `Producer`'s own `Send` bound.
-unsafe impl<T: Send> Sync for ExclusiveProducer<T> {}
+    /// A `Producer` reached only through `&mut self` for writes.
+    ///
+    /// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
+    /// wrapper doesn't expose them: it forwards `reserve` and
+    /// `reserve_with_backoff` through `&mut self`, and nothing through `&self`. So
+    /// it is safe to share, and `SpanProducer` gets its `Sync` from the compiler,
+    /// which still checks every other field.
+    pub(super) struct ExclusiveProducer<T>(Producer<T>);
 
-impl<T> ExclusiveProducer<T> {
-    #[inline]
-    fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T>> {
-        self.0.reserve(n)
-    }
+    // Safety: a shared `&ExclusiveProducer` has no methods to call. Every write to
+    // the ring goes through `&mut self`, so it stays on one thread at a time and
+    // the ring keeps a single producer (ringmpsc INV-SW-01). Keep it that way:
+    // never add a `&self` method that reserves, pushes or sends, and never hand
+    // out `&Producer`. `T: Send` matches `Producer`'s own `Send` bound.
+    unsafe impl<T: Send> Sync for ExclusiveProducer<T> {}
 
-    #[inline]
-    fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T>> {
-        self.0.reserve_with_backoff(n)
+    impl<T> ExclusiveProducer<T> {
+        #[inline]
+        pub(super) fn new(producer: Producer<T>) -> Self {
+            Self(producer)
+        }
+
+        #[inline]
+        pub(super) fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T>> {
+            self.0.reserve(n)
+        }
+
+        #[inline]
+        pub(super) fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T>> {
+            self.0.reserve_with_backoff(n)
+        }
     }
 }
+use exclusive::ExclusiveProducer;
 
 impl SpanProducer {
     /// Submits a span with retry and backoff

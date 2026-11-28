@@ -568,14 +568,11 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     ///
     /// # Safety
     ///
-    /// The caller must:
-    /// - Write the first `n <= len` slots starting at `ptr` before calling
-    ///   `commit(n)` (INV-INIT-01)
-    /// - Until that `commit`, make no other `reserve`, `push`, `send` or
-    ///   `commit` call on this producer. `tail` hasn't moved yet, so any of
-    ///   them would reuse the same slots (INV-SW-01)
-    /// - Not use the pointer after that `commit()`, which publishes the
-    ///   slots to the consumer
+    /// The caller must follow `StackRing`'s [producer contract](StackRing#producer-contract), which
+    /// applies to this producer's ring: a `Some` result opens a reservation
+    /// (rule 2), and `ptr` may be used only while it is open (rule 4). `push`
+    /// and `send` close it, so after either one the pointer is dead and
+    /// `commit` must not be called for it.
     ///
     /// # Example
     ///
@@ -591,10 +588,10 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub unsafe fn reserve(&self, n: usize) -> Option<(*mut T, usize)> {
-        // SAFETY: the caller's obligations are forwarded from this function's
-        // contract, which covers `StackRing::reserve`'s. This `StackProducer`
-        // is the ring's only producer (INV-SW-01, INV-CH-01): ids are unique
-        // per `register()`, and it is neither `Clone` nor `Sync`.
+        // SAFETY: rules 2-4 of the producer contract are forwarded to the
+        // caller. Rule 1 holds because this `StackProducer` is the ring's only
+        // producer (INV-SW-01, INV-CH-01): ids are unique per `register()`,
+        // and it is neither `Clone` nor `Sync`.
         unsafe { self.channel.rings[self.id].reserve(n) }
     }
 
@@ -602,9 +599,10 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     ///
     /// # Safety
     ///
-    /// - `n` must be at most the length returned by the preceding `reserve()`.
-    /// - The caller must have written `n` initialized values to the first `n`
-    ///   slots that `reserve()` returned.
+    /// The caller must follow `StackRing`'s [producer contract](StackRing#producer-contract): a
+    /// reservation from this producer's `reserve` must be open (no `commit`,
+    /// `push` or `send` since), `n` must be at most its length, and its first
+    /// `n` slots must be written (rule 3).
     ///
     /// Without that, the consumer would read unwritten slots as `T`s (#15).
     /// Calling it without `unsafe` does not compile:
