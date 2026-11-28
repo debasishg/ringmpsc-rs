@@ -9,6 +9,48 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// `tail - head`, read from any thread as one consistent snapshot.
+///
+/// `head` and `tail` are separate atomics, and both can move between the
+/// two loads. A thread that is neither the producer nor the consumer could
+/// otherwise pair an old `tail` with a newer `head` (the difference wraps to
+/// about 2^64), or a new `tail` with an old `head` (more than the capacity).
+///
+/// This loads `head`, then `tail`, then `head` again, and retries until the
+/// two `head` loads agree. Such a pair is consistent:
+///
+/// - **`head <= tail`.** The consumer stores `head = h` (Release) only after
+///   reading some `tail >= h`. The first, Acquire, load of `head` synchronizes
+///   with that store, so the consumer's `tail` read happens-before the `tail`
+///   load here, which by read-read coherence returns at least that value.
+/// - **`tail <= head + capacity`.** The producer stores `tail = t` (Release)
+///   only after reading some `head = h'` with `t <= h' + capacity`. The
+///   Acquire load of `tail` synchronizes with that store, so the producer's
+///   `head` read happens-before the second `head` load, which therefore
+///   returns at least `h'`. If both `head` loads return `h`, then `h' <= h`.
+///
+/// So the result is exact, with no clamp: while INV-SEQ-01 holds it is in
+/// `0..=capacity`, and a violation still shows up as a larger value.
+///
+/// Lock-free, not wait-free: a retry means the consumer advanced between
+/// the loads, so it only repeats while the consumer makes progress. There is
+/// deliberately no retry cap: a fallback value would be approximate again.
+#[inline]
+pub(crate) fn occupancy_snapshot(head: &AtomicU64, tail: &AtomicU64) -> u64 {
+    loop {
+        let h1 = head.load(Ordering::Acquire);
+        let t = tail.load(Ordering::Acquire);
+        // Relaxed is enough: the upper bound comes from the Acquire on `tail`.
+        let h2 = head.load(Ordering::Relaxed);
+        if h1 == h2 {
+            return t.wrapping_sub(h1);
+        }
+        // The consumer advanced between the loads. Not backpressure: the
+        // retry just re-reads, and each one means the consumer made progress.
+        std::hint::spin_loop();
+    }
+}
+
 // =============================================================================
 // MEMORY ORDERING & SYNCHRONIZATION STRATEGY
 // =============================================================================
@@ -209,20 +251,50 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     }
 
     /// Returns the current number of items in the ring.
+    ///
+    /// Safe to call from any thread. Called from a thread other than the
+    /// producer or consumer, it is a snapshot that may already be stale, but
+    /// it is a consistent one: some `tail - head` the ring actually had, so it
+    /// is at most `capacity()` while INV-SEQ-01 holds (see
+    /// `occupancy_snapshot` in `ring.rs`).
+    ///
+    /// It retries if the consumer advances in the middle of reading, so
+    /// while the consumer is very busy a call can take several attempts. That
+    /// includes calls from the producer. Only the consumer's own calls never
+    /// retry, since it is the only thread that moves `head`.
     #[inline]
     pub fn len(&self) -> usize {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Relaxed);
-        tail.wrapping_sub(head) as usize
+        occupancy_snapshot(&self.head, &self.tail) as usize
     }
 
     /// Returns true if the ring is empty.
+    ///
+    /// Safe to call from any thread. Called from a thread other than the
+    /// producer or consumer, the answer may already be stale. But `true`
+    /// never pairs a stale `tail` with a newer `head`: it means the consumer
+    /// itself saw `tail == head` when it last moved `head`.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.tail.load(Ordering::Relaxed) == self.head.load(Ordering::Relaxed)
+        // Load head first, with Acquire, then tail. As in `occupancy_snapshot`,
+        // the consumer stores `head = h` only after reading some `tail >= h`.
+        // The Acquire load of head synchronizes with that store, so the
+        // consumer's tail read happens-before the tail load here, which by
+        // read-read coherence returns at least that tail whatever its own
+        // ordering: Relaxed is enough for it. So `tail == h` means the consumer
+        // saw the ring empty when it stored `h`. Loading tail first, or head
+        // with Relaxed, could pair a stale tail with a head that had caught up
+        // to it, and report queued items as empty.
+        //
+        // No retry is needed: a stale answer is fine for an emptiness hint,
+        // only a wrong one isn't. Two loads, so it stays cheap for polling.
+        let head = self.head.load(Ordering::Acquire);
+        self.tail.load(Ordering::Relaxed) == head
     }
 
     /// Returns true if the ring is full.
+    ///
+    /// `len() >= capacity()`, so like `len()` it may retry while the
+    /// consumer keeps advancing.
     #[inline]
     pub fn is_full(&self) -> bool {
         self.len() >= self.capacity()

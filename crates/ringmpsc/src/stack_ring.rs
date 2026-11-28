@@ -257,20 +257,50 @@ impl<T, const N: usize> StackRing<T, N> {
     }
 
     /// Returns the current number of items in the ring.
+    ///
+    /// Safe to call from any thread. Called from a thread other than the
+    /// producer or consumer, it is a snapshot that may already be stale, but
+    /// it is a consistent one: some `tail - head` the ring actually had, so it
+    /// is at most `capacity()` while INV-SEQ-01 holds (see
+    /// `occupancy_snapshot` in `ring.rs`).
+    ///
+    /// It retries if the consumer advances in the middle of reading, so
+    /// while the consumer is very busy a call can take several attempts. That
+    /// includes calls from the producer. Only the consumer's own calls never
+    /// retry, since it is the only thread that moves `head`.
     #[inline]
     pub fn len(&self) -> usize {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Relaxed);
-        tail.wrapping_sub(head) as usize
+        crate::ring::occupancy_snapshot(&self.head, &self.tail) as usize
     }
 
     /// Returns true if the ring is empty.
+    ///
+    /// Safe to call from any thread. Called from a thread other than the
+    /// producer or consumer, the answer may already be stale. But `true`
+    /// never pairs a stale `tail` with a newer `head`: it means the consumer
+    /// itself saw `tail == head` when it last moved `head`.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.tail.load(Ordering::Relaxed) == self.head.load(Ordering::Relaxed)
+        // Load head first, with Acquire, then tail. As in `occupancy_snapshot`,
+        // the consumer stores `head = h` only after reading some `tail >= h`.
+        // The Acquire load of head synchronizes with that store, so the
+        // consumer's tail read happens-before the tail load here, which by
+        // read-read coherence returns at least that tail whatever its own
+        // ordering: Relaxed is enough for it. So `tail == h` means the consumer
+        // saw the ring empty when it stored `h`. Loading tail first, or head
+        // with Relaxed, could pair a stale tail with a head that had caught up
+        // to it, and report queued items as empty.
+        //
+        // No retry is needed: a stale answer is fine for an emptiness hint,
+        // only a wrong one isn't. Two loads, so it stays cheap for polling.
+        let head = self.head.load(Ordering::Acquire);
+        self.tail.load(Ordering::Relaxed) == head
     }
 
     /// Returns true if the ring is full.
+    ///
+    /// `len() >= capacity()`, so like `len()` it may retry while the
+    /// consumer keeps advancing.
     #[inline]
     pub fn is_full(&self) -> bool {
         self.len() >= N
