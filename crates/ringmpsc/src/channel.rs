@@ -2,7 +2,8 @@
 use crate::invariants::debug_assert_fifo_count;
 use crate::allocator::{BufferAllocator, HeapAllocator};
 use crate::{Config, Reservation, Ring};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use crate::registry::{ClaimError, Registry};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
 use std::cell::Cell;
@@ -41,7 +42,11 @@ pub struct Channel<T, A: BufferAllocator = HeapAllocator> {
 
 struct ChannelInner<T, A: BufferAllocator = HeapAllocator> {
     rings: Vec<Ring<T, A>>,
-    producer_count: AtomicUsize,
+    /// Producer count and closed bit in one word (INV-CH-04). Its bit stops
+    /// registrations; `closed` below is what `is_closed()` reports.
+    registry: Registry,
+    /// Set by `close()` after every ring is closed, so `is_closed() == true`
+    /// means no ring still accepts new writes (INV-CH-04).
     closed: AtomicBool,
     /// Set while a [`Consumer`] exists. At most one can, which is what makes
     /// the rings single-consumer.
@@ -100,7 +105,7 @@ impl<T, A: BufferAllocator + Clone> Channel<T, A> {
         Self {
             inner: Arc::new(ChannelInner {
                 rings,
-                producer_count: AtomicUsize::new(0),
+                registry: Registry::new(),
                 closed: AtomicBool::new(false),
                 consumer_taken: AtomicBool::new(false),
                 config,
@@ -113,18 +118,18 @@ impl<T, A: BufferAllocator + Clone> Channel<T, A> {
 
 impl<T, A: BufferAllocator> Channel<T, A> {
     /// Register a new producer. Returns an error if too many producers or closed.
+    ///
+    /// `close()` stops registrations first and sets the flag `is_closed()`
+    /// reads last, after every ring is closed. So while a close is under way,
+    /// `register()` can already fail with `Closed` although `is_closed()`
+    /// still returns `false`: `Err(Closed)` does not imply `is_closed()`
+    /// (INV-CH-04).
     pub fn register(&self) -> Result<Producer<T, A>, ChannelError> {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(ChannelError::Closed);
-        }
-
-        let id = self.inner.producer_count.fetch_add(1, Ordering::SeqCst);
-        if id >= self.inner.config.max_producers {
-            self.inner.producer_count.fetch_sub(1, Ordering::SeqCst);
-            return Err(ChannelError::TooManyProducers {
-                max: self.inner.config.max_producers,
-            });
-        }
+        let max = self.inner.config.max_producers;
+        let id = self.inner.registry.claim(max).map_err(|e| match e {
+            ClaimError::Closed => ChannelError::Closed,
+            ClaimError::Full => ChannelError::TooManyProducers { max },
+        })?;
 
         self.inner.rings[id].set_active(true);
 
@@ -167,32 +172,52 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         })
     }
 
-    /// Close the channel, preventing further operations.
+    /// Close the channel.
+    ///
+    /// After this returns, `register()` fails with `Closed`, and every
+    /// existing producer's ring is closed: a `reserve` / `push` / `send` that
+    /// starts after `close()` returns fails. One already in progress on
+    /// another thread may still commit, since `close()` doesn't wait for it,
+    /// so drain for the last time only after the producers are done (joined
+    /// or dropped). `is_closed()` turns true only after every ring is closed
+    /// (INV-CH-04). Items committed before the close can still be consumed.
     pub fn close(&self) {
-        self.inner.closed.store(true, Ordering::Release);
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        // Every producer that registered got an id below `count`, and every
+        // later `register()` fails (INV-CH-04), so this closes all their rings.
+        let count = self.inner.registry.close();
         for ring in &self.inner.rings[..count] {
             ring.close();
         }
+        // Release: a thread that sees `is_closed()` also sees every ring
+        // closed.
+        self.inner.closed.store(true, Ordering::Release);
     }
 
     /// Returns true if the channel is closed.
+    ///
+    /// True only once `close()` has closed every ring, so it can lag a
+    /// `register()` that already failed with `Closed` (INV-CH-04).
     #[must_use] 
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::Acquire)
     }
 
     /// Returns the number of registered producers.
+    ///
+    /// Synchronizes with `register()`: a thread that sees `k` here also sees
+    /// everything the first `k` registering threads did before registering.
     #[must_use] 
     pub fn producer_count(&self) -> usize {
-        self.inner.producer_count.load(Ordering::Acquire)
+        // Acquire: seeing `k` producers means seeing what each of them did
+        // before `register()`.
+        self.inner.registry.count_acquire()
     }
 
     /// Get aggregated metrics snapshot from all rings if enabled.
     #[must_use] 
     pub fn metrics(&self) -> crate::MetricsSnapshot {
         let mut m = crate::MetricsSnapshot::default();
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        let count = self.inner.registry.count();
 
         for ring in &self.inner.rings[..count] {
             let rm = ring.metrics();
@@ -286,7 +311,7 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         T: Copy,
     {
         let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        let count = self.inner.registry.count();
 
         for ring in &self.inner.rings[..count] {
             if total >= out.len() {
@@ -317,7 +342,7 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         F: FnMut(&T),
     {
         let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        let count = self.inner.registry.count();
 
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             // SAFETY: `&mut self` is exclusive and a channel has at most one
@@ -356,7 +381,7 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         F: FnMut(&T),
     {
         let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        let count = self.inner.registry.count();
 
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             if total >= max_total {
@@ -404,7 +429,7 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         F: FnMut(T),
     {
         let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        let count = self.inner.registry.count();
 
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             // SAFETY: `&mut self` is exclusive and a channel has at most one
@@ -436,7 +461,7 @@ impl<T, A: BufferAllocator> Consumer<T, A> {
         F: FnMut(T),
     {
         let mut total = 0;
-        let count = self.inner.producer_count.load(Ordering::Acquire);
+        let count = self.inner.registry.count();
 
         for (_producer_id, ring) in self.inner.rings[..count].iter().enumerate() {
             if total >= max_total {

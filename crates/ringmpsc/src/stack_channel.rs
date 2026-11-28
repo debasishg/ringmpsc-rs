@@ -63,7 +63,8 @@ use crate::stack_ring::StackRing;
 use crate::invariants::debug_assert_fifo_count;
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use crate::registry::{ClaimError, Registry};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
 use thiserror::Error;
@@ -109,8 +110,8 @@ pub enum StackChannelError {
 /// ```text
 /// ┌────────────────────────────────────────────────────────┐
 /// │ Atomic state                                           │
-/// │   producer_count: AtomicUsize                          │
-/// │   closed: AtomicBool                                   │
+/// │   registry: Registry (count + closed bit)              │
+/// │   closed: AtomicBool (set after rings close)           │
 /// ├────────────────────────────────────────────────────────┤
 /// │ Ring array (inline, P × StackRing<T, N>)               │
 /// │   rings[0]: StackRing<T, N>                            │
@@ -121,9 +122,10 @@ pub enum StackChannelError {
 /// ```
 #[repr(C)]
 pub struct StackChannel<T, const N: usize, const P: usize> {
-    /// Number of registered producers
-    producer_count: AtomicUsize,
-    /// Whether the channel is closed
+    /// Producer count and closed bit in one word (INV-CH-04). Its bit stops
+    /// registrations; `closed` below is what `is_closed()` reports.
+    registry: Registry,
+    /// Set by `close()` after every ring is closed (INV-CH-04).
     closed: AtomicBool,
     /// Set while a [`StackConsumer`] exists. At most one can, which is what
     /// makes the rings single-consumer.
@@ -179,7 +181,7 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
         let () = Self::ASSERT_PARAMS;
 
         Self {
-            producer_count: AtomicUsize::new(0),
+            registry: Registry::new(),
             closed: AtomicBool::new(false),
             consumer_taken: AtomicBool::new(false),
             // Initialize P rings using const evaluation
@@ -207,12 +209,20 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     }
 
     /// Returns the number of registered producers.
+    ///
+    /// Synchronizes with `register()`: a thread that sees `k` here also sees
+    /// everything the first `k` registering threads did before registering.
     #[inline]
     pub fn producer_count(&self) -> usize {
-        self.producer_count.load(Ordering::Acquire)
+        // Acquire: seeing `k` producers means seeing what each of them did
+        // before `register()`.
+        self.registry.count_acquire()
     }
 
     /// Returns true if the channel is closed.
+    ///
+    /// True only once `close()` has closed every ring, so it can lag a
+    /// `register()` that already failed with `Closed` (INV-CH-04).
     #[inline]
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
@@ -227,6 +237,12 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// Returns a [`StackProducer`] handle that can write to a dedicated ring.
     /// Fails if too many producers are registered or the channel is closed.
     ///
+    /// `close()` stops registrations first and sets the flag `is_closed()`
+    /// reads last, after every ring is closed. So while a close is under way,
+    /// `register()` can already fail with `Closed` although `is_closed()`
+    /// still returns `false`: `Err(Closed)` does not imply `is_closed()`
+    /// (INV-CH-04).
+    ///
     /// # Errors
     ///
     /// - [`StackChannelError::TooManyProducers`] if `P` producers already registered
@@ -240,18 +256,11 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// producer.push(42);
     /// ```
     pub fn register(&self) -> Result<StackProducer<'_, T, N, P>, StackChannelError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(StackChannelError::Closed);
-        }
-
-        // Atomically claim a slot
-        let id = self.producer_count.fetch_add(1, Ordering::SeqCst);
-
-        if id >= P {
-            // Roll back - too many producers
-            self.producer_count.fetch_sub(1, Ordering::SeqCst);
-            return Err(StackChannelError::TooManyProducers { max: P });
-        }
+        // Claim an id below P, or fail; the count never passes P (INV-CH-04).
+        let id = self.registry.claim(P).map_err(|e| match e {
+            ClaimError::Closed => StackChannelError::Closed,
+            ClaimError::Full => StackChannelError::TooManyProducers { max: P },
+        })?;
 
         Ok(StackProducer {
             channel: self,
@@ -316,16 +325,24 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
 
     /// Close the channel and all rings.
     ///
-    /// After closing:
+    /// After this returns:
     /// - `register()` returns `Err(Closed)`
-    /// - Existing producers' `push()` returns `false`
-    /// - Consumers can still drain remaining items
+    /// - an existing producer's `push()` / `send()` / `reserve()` that starts
+    ///   now fails. One already in progress on another thread may still
+    ///   commit, since `close()` doesn't wait for it, so drain for the last
+    ///   time only after the producers are done
+    /// - `is_closed()` is true, and only once every ring is closed (INV-CH-04)
+    /// - consumers can still drain remaining items
     pub fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        let count = self.producer_count.load(Ordering::Acquire);
+        // Every producer that registered got an id below `count`, and every
+        // later `register()` fails (INV-CH-04), so this closes all their rings.
+        let count = self.registry.close();
         for ring in &self.rings[..count] {
             ring.close();
         }
+        // Release: a thread that sees `is_closed()` also sees every ring
+        // closed.
+        self.closed.store(true, Ordering::Release);
     }
 }
 
@@ -385,7 +402,7 @@ impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
     where
         F: FnMut(&T),
     {
-        let count = self.channel.producer_count.load(Ordering::Acquire);
+        let count = self.channel.registry.count();
         let mut total = 0;
 
         for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
@@ -424,7 +441,7 @@ impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
     where
         F: FnMut(T),
     {
-        let count = self.channel.producer_count.load(Ordering::Acquire);
+        let count = self.channel.registry.count();
         let mut total = 0;
 
         for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {
@@ -464,7 +481,7 @@ impl<T, const N: usize, const P: usize> StackConsumer<'_, T, N, P> {
     where
         F: FnMut(&T),
     {
-        let count = self.channel.producer_count.load(Ordering::Acquire);
+        let count = self.channel.registry.count();
         let mut total = 0;
 
         for (producer_id, ring) in self.channel.rings[..count].iter().enumerate() {

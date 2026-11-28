@@ -439,3 +439,21 @@ async fn pipelined_dedicated_multi_writer_commits() {
     assert_eq!(stats.aborted, 0);
     assert_eq!(committed_insert_keys(&recovered).len(), 200);
 }
+
+/// The writer limit is reported as `MaxWriters { max }`, not `Closed`.
+#[tokio::test]
+async fn register_beyond_max_writers_is_max_writers() {
+    let tmp = TempDir::new().expect("temp dir");
+    let config = test_config(tmp.path()).with_max_writers(2);
+    let (mut wal, factory) = Wal::open::<String, Vec<u8>>(config, RealIo).expect("open WAL");
+    let _a = factory.register().expect("first writer");
+    let _b = factory.register().expect("second writer");
+    match factory.register() {
+        Err(ringwal::WalError::MaxWriters { max }) => assert_eq!(max, 2),
+        Err(e) => panic!("expected MaxWriters, got {e:?}"),
+        Ok(_) => panic!("a third writer must not register"),
+    }
+    factory.close();
+    assert!(matches!(factory.register(), Err(ringwal::WalError::Closed)));
+    wal.shutdown().await.expect("shutdown WAL");
+}

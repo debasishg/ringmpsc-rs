@@ -3,8 +3,8 @@
 use crate::config::StreamConfig;
 #[cfg(debug_assertions)]
 use crate::invariants::{
-    debug_assert_backpressure_signaled, debug_assert_recheck_after_register,
-    debug_assert_shutdown_drained,
+    debug_assert_backpressure_signaled, debug_assert_quiet_at_end,
+    debug_assert_recheck_after_register, debug_assert_shutdown_drained,
 };
 use crate::shutdown::{ShutdownHandle, ShutdownSignal, ShutdownState};
 use ringmpsc_rs::Consumer;
@@ -32,7 +32,8 @@ pin_project! {
     /// # Shutdown
     ///
     /// Call `shutdown()` for graceful termination which drains remaining items
-    /// before returning `None`. Can also be composed with `StreamExt::take_until`
+    /// before returning `None`. Dropping the receiver also closes the channel,
+    /// so blocked senders return `Closed`. Can also be composed with `StreamExt::take_until`
     /// for external cancellation control.
     pub struct RingReceiver<T> {
         // The channel's one consumer handle. Every drain goes through it.
@@ -48,7 +49,37 @@ pin_project! {
         buffer: VecDeque<T>,
         data_pending: bool,
         drain_complete: bool,
+        // The wait for new data (or a close), kept across polls.
+        data_wait: Option<NotifyWait>,
+        // After a close: the wait for the last open send sections to end.
+        quiet_wait: Option<NotifyWait>,
     }
+
+    // Dropping the receiver closes the channel (the same close as
+    // `SenderFactory::close`), so senders waiting for space are woken and
+    // return `Closed` instead of waiting for a drain that will never come.
+    // Idempotent, so a receiver that already shut down is fine.
+    impl<T> PinnedDrop for RingReceiver<T> {
+        fn drop(this: Pin<&mut Self>) {
+            this.project().shutdown_state.close();
+        }
+    }
+}
+
+/// A wait on `data_notify`, kept across polls.
+///
+/// A `Notified` that is dropped while pending leaves the waiter list, so a
+/// wait made of a local `Notified` registers nothing once `poll_next`
+/// returns `Pending`: the receiver would only wake on its poll tick. This
+/// future owns its `Arc<Notify>`, so the receiver stores it and a sender's
+/// `notify_one()` (after a send, or after ending a section past a close) or
+/// a close's notify wakes the task.
+type NotifyWait = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
+
+/// A new wait on `notify`, created unpolled.
+fn notify_wait(notify: &Arc<Notify>) -> NotifyWait {
+    let notify = Arc::clone(notify);
+    Box::pin(async move { notify.notified().await })
 }
 
 impl<T: Send + 'static> RingReceiver<T> {
@@ -79,13 +110,16 @@ impl<T: Send + 'static> RingReceiver<T> {
             buffer: VecDeque::with_capacity(config.batch_hint),
             data_pending: false,
             drain_complete: false,
+            data_wait: None,
+            quiet_wait: None,
         }
     }
 
     /// Initiates graceful shutdown.
     ///
     /// This will:
-    /// 1. Close the channel for new registrations
+    /// 1. Close the channel: new registrations and every sender's next send
+    ///    fail with `Closed`
     /// 2. Signal internal consumer to drain remaining items
     /// 3. Continue yielding items until all are consumed
     /// 4. Return `None` when fully drained
@@ -161,29 +195,17 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
                 Poll::Ready(_) => {
                     // Shutdown signaled - perform final drain
                     *this.shutdown_rx = None;
-
-                    // Drain all remaining items
-                    let mut drained = 0usize;
-                    this.consumer.consume_all_owned(|item| {
-                        this.buffer.push_back(item);
-                        drained += 1;
-                    });
-                    this.backpressure_notify.notify_waiters();
-                    *this.drain_complete = true;
-
-                    // INV-STREAM-03: Verify backpressure was signaled
-                    #[cfg(debug_assertions)]
-                    debug_assert_backpressure_signaled!(drained, true);
-
-                    // INV-STREAM-04: Verify drain complete before returning None
-                    #[cfg(debug_assertions)]
-                    debug_assert_shutdown_drained!(true, *this.drain_complete);
-
-                    // Yield buffered item if any
-                    if let Some(item) = this.buffer.pop_front() {
-                        return Poll::Ready(Some(item));
-                    }
-                    return Poll::Ready(None);
+                    return finish(
+                        this.consumer,
+                        this.buffer,
+                        this.backpressure_notify,
+                        this.data_notify,
+                        this.shutdown_state,
+                        this.drain_complete,
+                        this.quiet_wait,
+                        this.poll_timer.as_mut(),
+                        cx,
+                    );
                 }
                 Poll::Pending => {}
             }
@@ -214,13 +236,16 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
             return Poll::Ready(Some(item));
         }
 
-        // Register for data notification
-        let data_notified = this.data_notify.notified();
-        tokio::pin!(data_notified);
+        // Register for data notification, in a wait kept across polls so a
+        // later `notify_one()` reaches this task (not just the poll tick).
+        let wait = this
+            .data_wait
+            .get_or_insert_with(|| notify_wait(this.data_notify));
 
         // Check if data arrived while we were setting up
-        match data_notified.as_mut().poll(cx) {
+        match wait.as_mut().poll(cx) {
             Poll::Ready(()) => {
+                *this.data_wait = None;
                 *this.data_pending = true;
                 // Re-poll to process the notification
                 cx.waker().wake_by_ref();
@@ -296,24 +321,92 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
 
         // Check if channel is closed
         if this.shutdown_state.is_closed() {
-            // Try one more drain to ensure we got everything
-            let mut found_any = false;
-            this.consumer.consume_all_owned(|item| {
-                this.buffer.push_back(item);
-                found_any = true;
-            });
-            if found_any {
-                this.backpressure_notify.notify_waiters();
-                // INV-STREAM-03: Verify backpressure signaled
-                #[cfg(debug_assertions)]
-                debug_assert_backpressure_signaled!(1, true);
-                if let Some(item) = this.buffer.pop_front() {
-                    return Poll::Ready(Some(item));
-                }
-            }
-            return Poll::Ready(None);
+            return finish(
+                this.consumer,
+                this.buffer,
+                this.backpressure_notify,
+                this.data_notify,
+                this.shutdown_state,
+                this.drain_complete,
+                this.quiet_wait,
+                this.poll_timer.as_mut(),
+                cx,
+            );
         }
 
         Poll::Pending
     }
 }
+
+/// End of stream after a close: yield what is left, and return `None` only
+/// once no send can still commit (INV-SHUT-04, INV-STREAM-04).
+///
+/// A sender that opened its send section before the close may not have
+/// committed yet. `is_closed_and_quiet()` is true only once every section
+/// has ended, and its Acquire makes their commits visible, so the drain
+/// after it sees every item a send reported as `Ok`. Until then this waits
+/// on `data_notify`, which a sender ending a section after the close
+/// signals, in a wait stored across polls; each new wait is followed by one
+/// more check, so a section that ends before the wait registers isn't missed.
+/// The poll timer is a fallback, for a section ended by a panicking sender.
+#[allow(clippy::too_many_arguments)]
+fn finish<T>(
+    consumer: &mut Consumer<T>,
+    buffer: &mut VecDeque<T>,
+    backpressure_notify: &Notify,
+    data_notify: &Arc<Notify>,
+    shutdown_state: &ShutdownState,
+    drain_complete: &mut bool,
+    quiet_wait: &mut Option<NotifyWait>,
+    mut poll_timer: Pin<&mut Interval>,
+    cx: &mut Context<'_>,
+) -> Poll<Option<T>> {
+    loop {
+        let quiet = shutdown_state.is_closed_and_quiet();
+        let mut drained = 0usize;
+        consumer.consume_all_owned(|item| {
+            buffer.push_back(item);
+            drained += 1;
+        });
+        if drained > 0 {
+            backpressure_notify.notify_waiters();
+        }
+        // INV-STREAM-03: Verify backpressure was signaled
+        #[cfg(debug_assertions)]
+        debug_assert_backpressure_signaled!(drained, true);
+
+        if quiet {
+            // Nothing can be committed any more, and this drain saw everything.
+            *quiet_wait = None;
+            *drain_complete = true;
+            // INV-STREAM-04: Verify drain complete before returning None
+            #[cfg(debug_assertions)]
+            debug_assert_shutdown_drained!(true, *drain_complete);
+            // INV-SHUT-04: still closed and quiet now that the stream ends.
+            #[cfg(debug_assertions)]
+            debug_assert_quiet_at_end!(shutdown_state.is_closed_and_quiet());
+            return Poll::Ready(buffer.pop_front());
+        }
+        if let Some(item) = buffer.pop_front() {
+            return Poll::Ready(Some(item));
+        }
+
+        // A send section is still open: wait for its end to notify us.
+        let created = quiet_wait.is_none();
+        let wait = quiet_wait.get_or_insert_with(|| notify_wait(data_notify));
+        match wait.as_mut().poll(cx) {
+            // Woken: check again.
+            Poll::Ready(()) => *quiet_wait = None,
+            // Just registered: check again, in case the section ended first.
+            Poll::Pending if created => {}
+            Poll::Pending => {
+                // Fallback wake-up: a section ended by a panicking sender
+                // (its guard's Drop) can't notify, so also wait for the next
+                // poll tick (INV-STREAM-06: loop until Pending registers it).
+                while poll_timer.as_mut().poll_tick(cx).is_ready() {}
+                return Poll::Pending;
+            }
+        }
+    }
+}
+

@@ -128,8 +128,10 @@ pub struct Ring<T, A: BufferAllocator = HeapAllocator> {
     // === COLD STATE === (rarely accessed)
     /// Whether this ring is active
     active: CacheAligned<AtomicBool>,
-    /// Whether this ring is closed
-    closed: AtomicBool,
+    /// Whether this ring is closed. Read by the producer on every `reserve`,
+    /// so it gets its own cache line, apart from the consumer-written metrics
+    /// that follow it (INV-MEM-01).
+    closed: CacheAligned<AtomicBool>,
     /// Thread-safe metrics (uses atomics internally)
     metrics: Metrics,
 
@@ -211,7 +213,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             head: CacheAligned::new(AtomicU64::new(0)),
             cached_tail: CacheAligned::new(UnsafeCell::new(0)),
             active: CacheAligned::new(AtomicBool::new(false)),
-            closed: AtomicBool::new(false),
+            closed: CacheAligned::new(AtomicBool::new(false)),
             metrics: Metrics::new(),
             config,
             buffer,
@@ -374,7 +376,11 @@ impl<T, A: BufferAllocator> Ring<T, A> {
     /// is `!Sync`, so its calls stay on one thread.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) unsafe fn reserve_shared(&self, n: usize) -> Option<Reservation<'_, T, A>> {
-        if n == 0 || n > self.capacity() {
+        // A closed ring accepts no new writes, as `StackRing::reserve` already
+        // does (#45). Relaxed is enough: this only decides whether to write,
+        // and no data the closer wrote is read here. A `close()` that races
+        // with this call may or may not be seen, as for any concurrent close.
+        if n == 0 || n > self.capacity() || self.closed.load(Ordering::Relaxed) {
             return None;
         }
 
@@ -1106,12 +1112,12 @@ impl<T, A: BufferAllocator> Drop for Ring<T, A> {
 /// Wrapper type that ensures 128-byte alignment to prevent prefetcher-induced
 /// false sharing on Intel/AMD CPUs (which may prefetch adjacent cache lines).
 #[repr(align(128))]
-struct CacheAligned<T> {
+pub(crate) struct CacheAligned<T> {
     value: T,
 }
 
 impl<T> CacheAligned<T> {
-    const fn new(value: T) -> Self {
+    pub(crate) const fn new(value: T) -> Self {
         Self { value }
     }
 }

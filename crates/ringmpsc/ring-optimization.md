@@ -73,9 +73,13 @@ pub struct Ring<T, A: BufferAllocator = HeapAllocator> {
     head:        CacheAligned<AtomicU64>,
     cached_tail: CacheAligned<UnsafeCell<u64>>,
 
-    // Cold state (rarely accessed)
+    // Cold state (rarely accessed by the producer)
     active:      CacheAligned<AtomicBool>,
-    closed:      AtomicBool,
+
+    // Producer-read flag (read on every reserve; written once by close)
+    closed:      CacheAligned<AtomicBool>,
+
+    // Cold state, continued (metrics are written by the consumer if enabled)
     metrics:     Metrics,
     config:      Config,
     buffer:      UnsafeCell<A::Buffer<T>>,
@@ -96,7 +100,8 @@ Fields are grouped by access frequency and access pattern:
 |------|--------|-------------|-----------|
 | Producer hot | `tail`, `cached_head` | Producer only | Every `reserve()`/`commit()` |
 | Consumer hot | `head`, `cached_tail` | Consumer only | `head`: every `consume_batch()`/`advance()`; `cached_tail`: every `readable()` (fast path) |
-| Cold | `active`, `closed`, `metrics`, `config` | Rare | Lifecycle events; metrics every batch if enabled |
+| Producer-read flag | `closed` (own 128-byte line) | Producer reads, `close()` writes once | Every `reserve()` (Relaxed load); kept off the consumer-written metrics line |
+| Cold | `active`, `metrics`, `config` | Rare | Lifecycle events; metrics written by the consumer every batch if enabled |
 
 The `#[repr(C)]` attribute ensures the compiler lays out fields in declaration order, making the zone layout deterministic. A producer in its tight loop never touches the consumer's cache lines, and vice versa.
 
@@ -285,7 +290,8 @@ Similarly, the consumer reads its own `head` with `Relaxed`. The only `Acquire` 
 | `head.store()` by consumer | `Release` | Publishes consumption to producer |
 | `cached_head` / `cached_tail` | None (UnsafeCell) | Single-writer, no ordering needed |
 | Metrics counters | `Relaxed` | Statistical only; no control flow depends on exact values |
-| `closed` flag | Acquire/Release | Lifecycle coordination, not hot path |
+| `closed` flag, read in `reserve()` | `Relaxed` | Hot path; only gates whether to write, publishes no data |
+| `closed` flag, `is_closed()` / `close()` | Acquire / Release | Lifecycle: what the closer did before `close()` is visible to a thread that sees it closed |
 
 ### 5.2 Happens-Before Chain
 
@@ -305,7 +311,7 @@ The `Release` store on `tail` acts as a **memory fence** that ensures all buffer
 
 ### 5.3 No SeqCst
 
-`SeqCst` (sequentially consistent) ordering is never used on the data path. The only `SeqCst` operation in the entire codebase is `producer_count.fetch_add(1, SeqCst)` in `Channel::register()` — a lifecycle operation called once per producer, not on the hot path.
+`SeqCst` (sequentially consistent) ordering is not used anywhere in the crate. Producer registration and channel close share one atomic word (`src/registry.rs`, INV-CH-04): `register()` claims an id with a compare-and-swap (`AcqRel` on success) and `close()` sets a closed bit with one `fetch_or` (`Release`). Because both are read-modify-writes on the same word, they fall in one total order without `SeqCst`.
 
 `SeqCst` is expensive because it requires a **full memory barrier** (`mfence` on x86, `dmb ish` on ARM), which stalls the store buffer. The Release/Acquire pair is sufficient for the SPSC protocol and compiles to zero extra instructions on x86-64 (where all stores are already release and all loads are already acquire by the hardware memory model).
 

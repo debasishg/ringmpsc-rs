@@ -216,13 +216,16 @@ let tx2 = factory.register()?;  // Gets Ring 1
 **Pattern**: Two-phase shutdown matching span_collector's design:
 
 ```
-Phase 1: Close for new registrations
+Phase 1: Close
 ┌─────────────────────────────────────────┐
 │ factory.close()                         │
 │   → shutdown_state.close()              │
 │   → channel.close()                     │
 │   → New register() calls return Closed  │
-│   → Existing senders continue working   │
+│   → Existing senders' sends return      │
+│     Closed (their rings are closed)     │
+│   → notify_waiters() wakes senders      │
+│     waiting for space                   │
 └─────────────────────────────────────────┘
 
 Phase 2: Drain and terminate

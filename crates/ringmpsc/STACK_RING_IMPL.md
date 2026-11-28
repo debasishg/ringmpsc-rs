@@ -77,7 +77,10 @@ A fully stack-allocated multi-producer single-consumer channel using ring decomp
 #[repr(C)]
 pub struct StackChannel<T, const N: usize, const P: usize> {
     rings: [StackRing<T, N>; P],
-    producer_count: AtomicUsize,
+    // Producer count + closed bit in one word: CAS claim, fetch_or close
+    // (INV-CH-04, src/registry.rs).
+    registry: Registry,
+    // Set by close() after every ring is closed; read by is_closed().
     closed: AtomicBool,
 }
 

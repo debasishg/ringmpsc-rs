@@ -26,6 +26,11 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 futures = "0.3"
+criterion.workspace = true
+
+[[bench]]
+name = "stream_throughput"
+harness = false
 
 [[bin]]
 name = "demo"

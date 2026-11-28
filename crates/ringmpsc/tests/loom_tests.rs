@@ -350,3 +350,149 @@ fn loom_len_snapshot_from_observer() {
         consumer.join().expect("consumer panicked");
     });
 }
+
+// =============================================================================
+// Registration vs close (#45, INV-CH-04)
+//
+// These run the real `Registry` from `src/registry.rs` over loom's atomic,
+// not a copy, so a change to its orderings or its CAS loop is what loom sees.
+// =============================================================================
+
+type LoomRegistry = ringmpsc_rs::Registry<AtomicUsize>;
+
+fn loom_registry() -> LoomRegistry {
+    ringmpsc_rs::Registry::from_word(AtomicUsize::new(0))
+}
+
+/// A `register()` racing `close()` either gets an id that `close()` counted,
+/// so its ring is closed, or fails with `Closed`. It never gets an id that
+/// `close()` missed (bug 3 of #45).
+#[test]
+fn loom_register_vs_close() {
+    loom::model(|| {
+        let registry = Arc::new(loom_registry());
+        let r = Arc::clone(&registry);
+        let registrar = thread::spawn(move || r.claim(2));
+
+        let closed_count = registry.close();
+        let claimed = registrar.join().expect("registrar thread");
+
+        match claimed {
+            Ok(id) => assert!(
+                id < closed_count,
+                "id {id} registered but close() only saw {closed_count}"
+            ),
+            Err(e) => assert_eq!(e, ringmpsc_rs::ClaimError::Closed),
+        }
+        assert!(registry.is_closed());
+        assert_eq!(registry.claim(2), Err(ringmpsc_rs::ClaimError::Closed));
+    });
+}
+
+/// Two `register()`s race for the last slot while a reader checks the count.
+/// The count never passes the limit, not even for an instant, so a reader
+/// slicing `rings[..count]` stays in bounds (bug 2 of #45).
+#[test]
+fn loom_register_never_exceeds_max() {
+    loom::model(|| {
+        let registry = Arc::new(loom_registry());
+        let claimers: Vec<_> = (0..2)
+            .map(|_| {
+                let r = Arc::clone(&registry);
+                thread::spawn(move || r.claim(1))
+            })
+            .collect();
+
+        for _ in 0..2 {
+            let count = registry.count();
+            assert!(count <= 1, "count {count} passed the limit 1");
+        }
+
+        let results: Vec<_> = claimers
+            .into_iter()
+            .map(|h| h.join().expect("claimer thread"))
+            .collect();
+        let won = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(won, 1, "exactly one claim gets the one slot: {results:?}");
+        assert!(results.contains(&Ok(0)));
+        assert!(results.contains(&Err(ringmpsc_rs::ClaimError::Full)));
+        assert_eq!(registry.count(), 1);
+    });
+}
+
+/// `producer_count()` synchronizes with `register()`: a thread that sees the
+/// new count also sees what the registering thread wrote before registering.
+/// The write is to a loom `UnsafeCell`, so loom reports a data race if the
+/// claim's Release or the count's Acquire is missing.
+#[test]
+fn loom_producer_count_synchronizes_with_register() {
+    loom::model(|| {
+        let registry = Arc::new(loom_registry());
+        let config = Arc::new(loom::cell::UnsafeCell::new(0u64));
+
+        let (r, c) = (Arc::clone(&registry), Arc::clone(&config));
+        let registrar = thread::spawn(move || {
+            // Safety: only this thread writes, and only before its claim, which
+            // publishes it (INV-CH-04: producer_count() synchronizes with
+            // register()); loom checks the access.
+            c.with_mut(|p| unsafe { *p = 42 });
+            r.claim(1).expect("the only claim");
+        });
+
+        // Wait to see the registration, as a coordinator polling
+        // `producer_count()` would. Without the wait, loom may never schedule
+        // the read after the claim, and the test would check nothing.
+        while registry.count_acquire() == 0 {
+            thread::yield_now();
+        }
+        // Safety: (INV-CH-04) ordered after the write by the claim's Release and the
+        // count's Acquire; loom checks that.
+        let seen = config.with(|p| unsafe { *p });
+        assert_eq!(seen, 42);
+        registrar.join().expect("registrar thread");
+    });
+}
+
+// =============================================================================
+// Send gates (INV-CH-05), on the real `GatesImpl` over loom's AtomicUsize.
+// =============================================================================
+
+/// A send that opened its section before the close commits before the
+/// consumer's final drain; one that opens after the close sends nothing.
+/// The "commit" is a write to a loom `UnsafeCell`, and the final drain reads
+/// it once the gates are quiet, so loom reports a race if the drain could run
+/// before an open section's commit.
+#[test]
+fn loom_gate_section_before_close_is_drained() {
+    loom::model(|| {
+        let gates = Arc::new(ringmpsc_rs::GatesImpl::from_words([AtomicUsize::new(0)]));
+        let slot = Arc::new(loom::cell::UnsafeCell::new(0u64));
+
+        let (g, s) = (Arc::clone(&gates), Arc::clone(&slot));
+        let sender = thread::spawn(move || {
+            if let Some(section) = g.begin(0) {
+                // Safety: (INV-CH-05) written only inside the section, which
+                // the consumer waits for before reading.
+                s.with_mut(|p| unsafe { *p = 42 });
+                let _ = section.end();
+                true
+            } else {
+                false
+            }
+        });
+
+        gates.close();
+        // Wait for quiet, as the consumer's final drain does.
+        while !gates.is_quiet() {
+            thread::yield_now();
+        }
+        // Safety: (INV-CH-05) every section that wrote has ended, and
+        // `is_quiet()`'s Acquire orders that write before this read; loom
+        // checks it.
+        let seen = slot.with(|p| unsafe { *p });
+
+        let sent = sender.join().expect("sender thread");
+        assert_eq!(seen, if sent { 42 } else { 0 }, "a sent item was missed");
+        assert!(gates.begin(0).is_none(), "closed gates refuse sections");
+    });
+}

@@ -55,6 +55,8 @@ pushed in the race window.
 
 **Assertion**: `debug_assert_recheck_after_register!` in [src/invariants.rs](src/invariants.rs)
 
+**Registration that lasts**: the wait on `data_notify` is stored in the receiver (`data_wait`) and kept across polls. A `Notified` dropped while pending leaves the waiter list, so a wait made of a local `Notified` registered nothing once `poll_next` returned `Pending`, and an idle receiver only woke on its poll tick. Tested with a 30 s poll interval by `test_idle_receiver_wakes_for_data_without_tick` and `test_shutdown_signal_wakes_idle_receiver`.
+
 ### INV-STREAM-06: Timer Tick Loop (Waker Registration Guarantee)
 ```
 loop { poll_tick(cx) → Ready: drain, continue; Pending: break }
@@ -143,11 +145,16 @@ The sender factory and receiver share notification handles for bidirectional sig
 
 ### INV-CH-03: Closure Semantics
 ```
-SenderFactory::close() → prevents new register() calls
-                       → existing senders continue until ring full or dropped
-RingReceiver::shutdown() → drains remaining items → returns None
+SenderFactory::close() → new register() calls return Closed
+                       → every existing sender's next send returns Closed
+                         (its ring is closed), and senders waiting for space
+                         are woken to see that
+RingReceiver::shutdown() → same close, then drains remaining items → returns None
+ShutdownSignal::shutdown() → same close
+dropping the RingReceiver → same close (blocked senders return Closed)
 ```
-Closure is two-phase: close prevents new registrations, shutdown drains existing items.
+Every close path goes through `ShutdownState::close()`: it marks shutdown as initiated (so `is_shutdown()` is true after any close), closes the send gates and then the core channel, and wakes the receiver and blocked senders. After a close, a `Sink` `flush` with nothing pending returns `Ok`: everything `start_send` accepted was committed and will be received.
+A send that returned `Ok` before the close is always received (INV-SHUT-04). For the `Sink` API, that means `poll_flush` / `flush` returning `Ok`: `start_send` / `feed` returning `Ok` only means the item was accepted, and it may still be pending. If the channel closes before it is flushed, `flush` returns `Closed` and `RingSender::take_pending()` returns the unsent item.
 
 ## 4. Shutdown Invariants
 
@@ -170,6 +177,13 @@ let stream = receiver.take_until(token.cancelled());
 ```
 The internal oneshot handles programmatic shutdown; external `take_until` enables hierarchical cancellation.
 
+### INV-SHUT-04: Sent Implies Received
+```
+send returns Ok  →  the receiver yields the item before it returns None
+```
+"Send returns `Ok`" means `try_send` / `send` / `send_cloned` returning `Ok`, or `Sink::poll_flush` (`flush`, `SinkExt::send`) returning `Ok`. A `start_send` / `feed` `Ok` is not covered on its own: the item may still be pending, and on a close it is handed back by `take_pending()` instead of being sent.
+Every send commits inside a *send section* of its producer's gate (`ringmpsc_rs::SendGates`, ringmpsc INV-CH-05): it opens one before reserving (failing if the channel is closed) and ends it after committing. Each producer has its own gate on its own cache line, so senders don't contend with each other; the only other writer is the close, once. The receiver returns `None` only after it sees the channel closed and every gate quiet (`is_closed_and_quiet()`, Acquire) and drains once more; each section's end is a Release, so that drain sees every commit. Sections are a single non-blocking reserve and commit, never a wait for space. While one is open after the close, the receiver waits on `data_notify` (a sender ending a section after the close calls `notify_one`), in a wait stored across polls, with the poll timer as a fallback; it doesn't spin.
+
 ## 5. Memory Ordering
 
 ### INV-ORD-01: Notify Synchronization
@@ -182,11 +196,13 @@ receiver: notified().await → read_from_ring
 
 ### INV-ORD-02: Shutdown State
 ```
-shutdown_state uses Acquire/Release ordering:
-  - is_closed(): Acquire
-  - close(): Release
+shutdown_state (per-producer send gates + closed flag):
+  - close(): every gate fetch_or(CLOSED), Release; then closed.store, Release
+  - is_closed(): Acquire; is_closed_and_quiet(): Acquire on the flag and each gate
+  - begin_send(id): compare_exchange(0, IN_SECTION) on gate id; Relaxed on success, Acquire on failure (pairs with close)
+  - end of a send section: fetch_and(!IN_SECTION), Release (publishes its commit)
 ```
-Ensures shutdown visibility across threads.
+Per gate, every change is a read-modify-write on one word, so each section's Release heads a release sequence that the receiver's Acquire load reads from (INV-SHUT-04, ringmpsc INV-CH-05).
 
 ## 6. Configuration
 
@@ -235,9 +251,10 @@ is_terminal(Closed | ShutDown) = true
 | INV-SINK-03 | Integration tests | `sender.rs` → `debug_assert_data_notified!` |
 | INV-CH-01 | Registration tests | `channel.rs` → `debug_assert_explicit_registration!` |
 | INV-CH-02 | Structural | N/A (structural - shared Arc) |
-| INV-CH-03 | Close/shutdown tests | N/A (structural - AtomicBool) |
+| INV-CH-03 | Close/shutdown tests (`test_waiting_sender_returns_closed_on_factory_close`, `test_send_after_factory_close_is_closed`) | N/A (behavioral) |
 | INV-SHUT-01 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_shutdown_signaled!` |
 | INV-SHUT-02 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_senders_woken!` |
+| INV-SHUT-04 | `receiver_waits_for_an_open_send_section` (deterministic, `sender.rs`), `test_every_ok_send_is_received_across_close` (concurrent senders vs close); the gates themselves: ringmpsc `loom_gate_section_before_close_is_drained` | `receiver.rs` → `debug_assert_quiet_at_end!`; ringmpsc `invariants.rs` → `gate.rs` (`debug_assert_section_was_open!`) |
 
 ## debug_assert! Macros
 
@@ -254,6 +271,7 @@ All runtime invariant checks are in [src/invariants.rs](src/invariants.rs):
 | `debug_assert_explicit_registration!` | INV-CH-01 | Document explicit registration via factory |
 | `debug_assert_shutdown_signaled!` | INV-SHUT-01 | Verify shutdown oneshot sent |
 | `debug_assert_senders_woken!` | INV-SHUT-02 | Verify blocked senders woken on shutdown |
+| `debug_assert_quiet_at_end!` | INV-SHUT-04 | Verify the stream ends only once closed and every send gate is quiet |
 
 ## Related Specifications
 

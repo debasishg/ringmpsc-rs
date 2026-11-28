@@ -371,3 +371,392 @@ async fn test_no_lost_wakeup_burst_pattern() {
     sender.await.expect("sender panicked");
     assert_eq!(received.len(), total as usize);
 }
+
+/// #45 follow-up: a sender waiting for space on a full ring must return
+/// `Closed` when the factory closes, not wait forever for a drain.
+#[tokio::test]
+async fn test_waiting_sender_returns_closed_on_factory_close() {
+    // 2-slot ring, and the receiver is never polled, so nothing drains it.
+    let (factory, _rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    let mut filled = 0;
+    while tx.try_send(filled).is_ok() {
+        filled += 1;
+    }
+    assert!(filled > 0, "the ring took at least one item");
+
+    let waiting = tokio::spawn(async move { tx.send(99).await });
+    // Let the sender reach its wait.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    factory.close();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .expect("send must not hang after close")
+        .expect("sender task");
+    assert!(
+        matches!(result, Err(ringmpsc_stream::StreamError::Closed)),
+        "got {result:?}"
+    );
+}
+
+/// A send after the factory closes fails at once.
+#[tokio::test]
+async fn test_send_after_factory_close_is_closed() {
+    let (factory, _rx) = channel::<u64>(Config::new(3, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    factory.close();
+    let result = tokio::time::timeout(Duration::from_secs(2), tx.send(1))
+        .await
+        .expect("send must not hang after close");
+    assert!(matches!(result, Err(ringmpsc_stream::StreamError::Closed)));
+}
+
+/// Fills a 2-slot ring and returns how many items it took.
+fn fill(tx: &mut ringmpsc_stream::RingSender<u64>) -> u64 {
+    let mut n = 0;
+    while tx.try_send(n).is_ok() {
+        n += 1;
+    }
+    assert!(n > 0, "the ring took at least one item");
+    n
+}
+
+/// #47: a `SinkExt::send` waiting on a full ring completes once the receiver
+/// drains. It used to drop its `Notified` on `Pending`, so nothing woke it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sink_send_wakes_after_drain() {
+    let (factory, mut rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    let n = fill(&mut tx);
+
+    let sender = tokio::spawn(async move { SinkExt::send(&mut tx, 99).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..n {
+        rx.next().await.expect("a filled item");
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("SinkExt::send must complete after the drain")
+        .expect("sender task")
+        .expect("send succeeds");
+    assert_eq!(rx.next().await, Some(99));
+}
+
+/// #47, `feed` + `flush`: the pending item goes through `poll_flush`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sink_flush_wakes_after_drain() {
+    let (factory, mut rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    let n = fill(&mut tx);
+
+    let sender = tokio::spawn(async move {
+        tx.feed(99).await?;
+        tx.flush().await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..n {
+        rx.next().await.expect("a filled item");
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("flush must complete after the drain")
+        .expect("sender task")
+        .expect("flush succeeds");
+    assert_eq!(rx.next().await, Some(99));
+}
+
+/// A `Sink` sender waiting on a full ring returns `Closed` when the factory
+/// closes, instead of waiting forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_waiting_sink_returns_closed_on_factory_close() {
+    let (factory, _rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    fill(&mut tx);
+
+    let sender = tokio::spawn(async move { SinkExt::send(&mut tx, 99).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    factory.close();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("SinkExt::send must not hang after close")
+        .expect("sender task");
+    assert!(
+        matches!(result, Err(ringmpsc_stream::StreamError::Closed)),
+        "got {result:?}"
+    );
+}
+
+/// INV-SHUT-04: every send that returns `Ok` is received, even when it races
+/// the close. Senders push as fast as they can while another task closes the
+/// factory; the receiver must yield exactly as many items as succeeded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_every_ok_send_is_received_across_close() {
+    const SENDERS: usize = 4;
+    for round in 0..50u64 {
+        let (factory, rx) = channel::<u64>(Config::new(4, SENDERS, false));
+        let senders: Vec<_> = (0..SENDERS)
+            .map(|_| {
+                let mut tx = factory.register().expect("sender");
+                tokio::spawn(async move {
+                    let mut ok = 0u64;
+                    while tx.send(ok).await.is_ok() {
+                        ok += 1;
+                    }
+                    ok
+                })
+            })
+            .collect();
+        let mut rx = rx;
+        let receiver = tokio::spawn(async move {
+            let mut n = 0u64;
+            while rx.next().await.is_some() {
+                n += 1;
+            }
+            n
+        });
+
+        // Close after a varying delay, so it lands in different places.
+        tokio::time::sleep(Duration::from_micros(200 + 37 * round)).await;
+        factory.close();
+
+        let mut sent = 0;
+        for s in senders {
+            sent += tokio::time::timeout(Duration::from_secs(5), s)
+                .await
+                .expect("senders stop after close")
+                .expect("sender task");
+        }
+        let received = tokio::time::timeout(Duration::from_secs(5), receiver)
+            .await
+            .expect("receiver ends after close")
+            .expect("receiver task");
+        assert_eq!(received, sent, "round {round}: an Ok send was not received");
+    }
+}
+
+/// An item `feed` accepted but couldn't commit before a close isn't lost
+/// silently: `flush` reports `Closed`, and `take_pending` returns it.
+#[tokio::test]
+async fn test_pending_item_is_recoverable_after_close() {
+    let (factory, _rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    fill(&mut tx);
+
+    // Ring full: `start_send` parks the item and `feed` returns Ok.
+    let parked = futures::future::poll_fn(|cx| {
+        use futures::Sink;
+        let mut pinned = std::pin::Pin::new(&mut tx);
+        match pinned.as_mut().poll_ready(cx) {
+            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(pinned.start_send(99)),
+            other => other,
+        }
+    })
+    .await;
+    assert!(parked.is_ok(), "accepted while the ring is full");
+
+    factory.close();
+    let flushed = tokio::time::timeout(Duration::from_secs(2), tx.flush())
+        .await
+        .expect("flush must not hang after close");
+    assert!(matches!(flushed, Err(ringmpsc_stream::StreamError::Closed)));
+    assert_eq!(tx.take_pending(), Some(99), "the unsent item is handed back");
+}
+
+/// An idle receiver ends the stream promptly after `ShutdownSignal::shutdown()`
+/// from another task, without waiting for its poll tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_shutdown_signal_wakes_idle_receiver() {
+    let config = StreamConfig {
+        poll_interval: Duration::from_secs(30),
+        ..StreamConfig::default()
+    };
+    let (_factory, mut rx) = channel_with_stream_config::<u64>(Config::new(3, 1, false), config);
+    let signal = rx.shutdown_signal();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        signal.shutdown();
+    });
+    // Measure, don't just bound: `timeout` re-polls the inner future when
+    // its deadline fires, which would itself wake the receiver.
+    let start = std::time::Instant::now();
+    let ended = tokio::time::timeout(Duration::from_secs(5), rx.next())
+        .await
+        .expect("receiver must notice the shutdown");
+    assert_eq!(ended, None);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "receiver noticed the shutdown only after {:?}",
+        start.elapsed()
+    );
+}
+
+/// An idle receiver wakes for new data on the sender's notify, not only on
+/// its poll tick: the wait on `data_notify` is kept across polls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_idle_receiver_wakes_for_data_without_tick() {
+    let config = StreamConfig {
+        poll_interval: Duration::from_secs(30),
+        ..StreamConfig::default()
+    };
+    let (factory, mut rx) = channel_with_stream_config::<u64>(Config::new(3, 1, false), config);
+    let mut tx = factory.register().expect("one sender");
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(5).await.expect("send");
+        tx
+    });
+    // Measure, don't just bound: `timeout` re-polls the inner future when
+    // its deadline fires, which would itself wake the receiver.
+    let start = std::time::Instant::now();
+    let got = tokio::time::timeout(Duration::from_secs(5), rx.next())
+        .await
+        .expect("receiver must wake for data");
+    assert_eq!(got, Some(5));
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "receiver woke for data only after {:?}",
+        start.elapsed()
+    );
+}
+
+/// A `Sink` send that `start_send` already committed is reported as `Ok` by
+/// `flush`, even if the channel closes in between: the item is received.
+#[tokio::test]
+async fn test_flush_after_close_is_ok_when_nothing_pending() {
+    use futures::Sink;
+    let (factory, mut rx) = channel::<u64>(Config::new(3, 1, false));
+    let mut tx = factory.register().expect("one sender");
+
+    // Commit through start_send directly (the ring has room).
+    futures::future::poll_fn(|cx| std::pin::Pin::new(&mut tx).poll_ready(cx))
+        .await
+        .expect("ready");
+    std::pin::Pin::new(&mut tx).start_send(42).expect("committed");
+
+    factory.close();
+    tx.flush().await.expect("nothing pending: the flush succeeds");
+    assert_eq!(tx.take_pending(), None);
+    assert_eq!(rx.next().await, Some(42), "the item is received");
+    assert_eq!(rx.next().await, None);
+}
+
+/// A close between `poll_ready` and `start_send` keeps the item for
+/// `take_pending`, instead of dropping it.
+#[tokio::test]
+async fn test_start_send_after_close_keeps_the_item() {
+    use futures::Sink;
+    let (factory, _rx) = channel::<u64>(Config::new(3, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    futures::future::poll_fn(|cx| std::pin::Pin::new(&mut tx).poll_ready(cx))
+        .await
+        .expect("ready");
+
+    factory.close();
+    assert!(matches!(
+        std::pin::Pin::new(&mut tx).start_send(7),
+        Err(ringmpsc_stream::StreamError::Closed)
+    ));
+    assert_eq!(tx.take_pending(), Some(7), "the unsent item is handed back");
+}
+
+/// `is_shutdown()` reports a close from any path, including a factory close.
+#[tokio::test]
+async fn test_factory_close_is_a_shutdown() {
+    let (factory, rx) = channel::<u64>(Config::new(3, 1, false));
+    let signal = rx.shutdown_signal();
+    factory.close();
+    assert!(rx.is_shutdown());
+    assert!(signal.is_shutdown());
+}
+
+/// Dropping the receiver wakes a sender blocked on a full ring with
+/// `Closed`, instead of leaving it waiting forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_receiver_drop_unblocks_senders() {
+    let (factory, rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    fill(&mut tx);
+    let waiting = tokio::spawn(async move { tx.send(99).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let start = std::time::Instant::now();
+    drop(rx);
+    let result = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the blocked send must end after the receiver is dropped")
+        .expect("sender task");
+    assert!(
+        matches!(result, Err(ringmpsc_stream::StreamError::Closed)),
+        "got {result:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(1), "took {:?}", start.elapsed());
+}
+
+/// `ShutdownSignal::shutdown()` returns only once the channel is closed,
+/// even when it races another close: a `register()` right after it fails.
+/// And `is_shutdown() == true` means the close is done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_shutdown_racing_close_has_closed_on_return() {
+    for _ in 0..300 {
+        let (factory, rx) = channel::<u64>(Config::new(2, 2, false));
+        let factory = std::sync::Arc::new(factory);
+        let signal = rx.shutdown_signal();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        let (f1, s1) = (std::sync::Arc::clone(&factory), std::sync::Arc::clone(&start));
+        let closer = std::thread::spawn(move || {
+            s1.wait();
+            f1.close();
+        });
+        let (f2, s2, sig2) = (std::sync::Arc::clone(&factory), std::sync::Arc::clone(&start), signal.clone());
+        let shutter = std::thread::spawn(move || {
+            s2.wait();
+            sig2.shutdown();
+            assert!(
+                matches!(f2.register(), Err(ringmpsc_stream::StreamError::Closed)),
+                "register succeeded right after shutdown() returned"
+            );
+        });
+        let (f3, sig3) = (std::sync::Arc::clone(&factory), signal.clone());
+        let watcher = std::thread::spawn(move || {
+            start.wait();
+            while !sig3.is_shutdown() {
+                std::thread::yield_now();
+            }
+            assert!(
+                matches!(f3.register(), Err(ringmpsc_stream::StreamError::Closed)),
+                "is_shutdown() was true but register still succeeded"
+            );
+        });
+        closer.join().expect("closer");
+        shutter.join().expect("shutter");
+        watcher.join().expect("watcher");
+        drop(rx);
+    }
+}
+
+/// A `ShutdownSignal` doesn't keep the channel (and items left in its rings)
+/// alive after the factory, senders and receiver are gone.
+#[tokio::test]
+async fn test_shutdown_signal_does_not_keep_channel_alive() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Tracked;
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let (factory, rx) = channel::<Tracked>(Config::new(3, 1, false));
+    let signal = rx.shutdown_signal();
+    let mut tx = factory.register().expect("one sender");
+    assert!(tx.try_send(Tracked).is_ok());
+    drop((tx, factory, rx));
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1, "the queued item is freed with the channel");
+    signal.shutdown(); // nothing left to close; must not panic
+}
