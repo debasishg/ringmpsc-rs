@@ -233,6 +233,8 @@ Each item is dropped exactly once:
 ### INV-CH-01: One Ring Per Producer
 Each `Producer<T>` is assigned a unique `Ring<T>`. No two producers share a ring.
 
+**Enforced by**: `register()` hands out each ring id once. `Producer` and `StackProducer` are not `Clone`, and they are `Send` but not `Sync`, so their `&self` methods (`push`, `send`) can't run on two threads at once (INV-SW-01).
+
 ### INV-CH-02: Single Consumer
 At most one consumer drains a channel's rings at any time. No concurrent consumption of the same ring.
 

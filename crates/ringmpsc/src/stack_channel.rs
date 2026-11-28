@@ -61,6 +61,8 @@
 use crate::stack_ring::StackRing;
 #[cfg(debug_assertions)]
 use crate::invariants::debug_assert_fifo_count;
+use std::cell::Cell;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
@@ -251,7 +253,11 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
             return Err(StackChannelError::TooManyProducers { max: P });
         }
 
-        Ok(StackProducer { channel: self, id })
+        Ok(StackProducer {
+            channel: self,
+            id,
+            _not_sync: PhantomData,
+        })
     }
 
     // =========================================================================
@@ -495,15 +501,43 @@ impl<T, const N: usize, const P: usize> Drop for StackConsumer<'_, T, N, P> {
 ///
 /// # Note
 ///
-/// `StackProducer` does NOT implement `Clone`. Cloning would allow multiple
-/// threads to write to the same ring, breaking the SPSC invariant.
+/// `StackProducer` does NOT implement `Clone` or `Sync`. Either would let
+/// two threads write to the same ring, breaking the SPSC invariant
+/// (INV-SW-01): `push` and `send` take `&self`.
+///
+/// ```compile_fail,E0277
+/// use ringmpsc_rs::StackChannel;
+///
+/// let channel: StackChannel<u64, 8, 1> = StackChannel::new();
+/// let producer = channel.register().expect("one producer");
+/// std::thread::scope(|s| {
+///     s.spawn(|| producer.push(1)); // ERROR: `StackProducer` is not `Sync`
+///     s.spawn(|| producer.push(2));
+/// });
+/// ```
+///
+/// Moving it to another thread is fine:
+///
+/// ```
+/// use ringmpsc_rs::StackChannel;
+///
+/// let channel: StackChannel<u64, 8, 1> = StackChannel::new();
+/// std::thread::scope(|s| {
+///     let producer = channel.register().expect("one producer");
+///     s.spawn(move || assert!(producer.push(1)));
+/// });
+/// ```
 pub struct StackProducer<'a, T, const N: usize, const P: usize> {
     channel: &'a StackChannel<T, N, P>,
     id: usize,
+    /// `Cell<()>` is `!Sync`, which makes `StackProducer` `!Sync` (INV-SW-01).
+    _not_sync: PhantomData<Cell<()>>,
 }
 
-// Safety: StackProducer is Send if T is Send.
-// Only this producer writes to its ring; the consumer reads.
+// Safety: moving a StackProducer to another thread moves its exclusive claim
+// on its ring with it, so the ring still has one producer (INV-SW-01,
+// INV-CH-01). Only this producer writes to its ring; the consumer reads.
+// StackProducer is deliberately not Sync.
 unsafe impl<T: Send, const N: usize, const P: usize> Send for StackProducer<'_, T, N, P> {}
 
 impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
