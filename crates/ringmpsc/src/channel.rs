@@ -563,7 +563,9 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     pub fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
         // SAFETY: `&mut self` is exclusive and a `Producer` is the only route
         // to its ring (ids are unique per `register()` and `Producer` is not
-        // `Clone`), so no other reservation on that ring can be outstanding.
+        // `Clone`; INV-CH-01), so no other reservation on that ring can be
+        // outstanding. `Producer` is not `Sync`, so every producer call on the
+        // ring stays on the thread that owns it (INV-SW-01).
         unsafe { self.channel.rings[self.id].reserve_shared(n) }
     }
 
@@ -573,7 +575,9 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     #[inline]
     #[must_use]
     pub fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
-        // SAFETY: as in `reserve`.
+        // SAFETY: as in `reserve`: `&mut self` is exclusive, this is the
+        // ring's only producer (INV-CH-01), and its calls stay on one thread
+        // (INV-SW-01).
         unsafe { self.channel.rings[self.id].reserve_with_backoff_shared(n) }
     }
 
@@ -608,7 +612,9 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     where
         T: Copy,
     {
-        // SAFETY: as in `push`.
+        // SAFETY: as in `push`: no `Reservation` can be alive while `&self` is
+        // usable, this is the ring's only producer (INV-CH-01), and `Producer`
+        // is not `Sync`, so its calls stay on one thread (INV-SW-01).
         unsafe { self.channel.rings[self.id].send_shared(items) }
     }
 

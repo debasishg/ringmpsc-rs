@@ -136,18 +136,15 @@ impl<T: Send + 'static> RingSender<T> {
     /// This is a convenience method for simple async sending.
     /// Uses reserve/commit internally to ensure no item loss.
     pub async fn send(&mut self, item: T) -> Result<(), StreamError> {
-
-        let mut item = Some(item);
-
         loop {
             if self.shutdown_state.is_closed() || self.producer.is_closed() {
                 return Err(StreamError::Closed);
             }
 
-            // Try to reserve space
+            // Try to reserve space. `item` is moved only on this branch,
+            // which always returns, so it is still here on the next attempt.
             if let Some(mut reservation) = self.producer.reserve(1) {
-                // Safety: item is Some here
-                if reservation.push(item.take().unwrap()).is_err() {
+                if reservation.push(item).is_err() {
                     unreachable!("a one-slot reservation has room for one item");
                 }
                 reservation.commit();
@@ -159,9 +156,10 @@ impl<T: Send + 'static> RingSender<T> {
             }
 
             // Ring is full - wait for backpressure relief
-            // INV-SINK-01: Item preserved (still in Option)
+            // INV-SINK-01: Item preserved. The compiler guarantees it here:
+            // `item` was not moved, or this line wouldn't compile.
             #[cfg(debug_assertions)]
-            debug_assert_item_preserved!(true, item.is_some());
+            debug_assert_item_preserved!(true, true);
 
             // BACKPRESSURE FLOW:
             // ==================

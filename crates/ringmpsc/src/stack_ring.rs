@@ -156,8 +156,8 @@ impl<T> std::ops::DerefMut for CacheAligned<T> {
 ///    after that producer is dropped with its last use.
 /// 2. **Open reservation.** A `reserve` that returns `Some((ptr, len))` opens
 ///    a reservation of those `len` slots. It replaces any reservation that was
-///    already open, which is abandoned: `tail` hasn't moved, so both cover the
-///    same slots. A `reserve` that returns `None` opens nothing and changes
+///    already open, which is abandoned: `tail` hasn't moved, so both start at
+///    `tail`. A `reserve` that returns `None` opens nothing and changes
 ///    nothing, so retrying it is always fine, and so is abandoning a
 ///    reservation by never committing it.
 /// 3. **Commit (INV-INIT-01).** Call `commit(n)` only while a reservation is
@@ -169,8 +169,11 @@ impl<T> std::ops::DerefMut for CacheAligned<T> {
 ///    its `commit`, which hands the slots to the consumer, and not after a
 ///    later successful `reserve` abandons it.
 ///
-/// `StackProducer::push` and `send` each count as a `reserve` followed by its
-/// `commit`, so they close any reservation that was open.
+/// A `StackProducer::push` that returns `true`, or a `send` that sends at
+/// least one item, counts as a successful `reserve` followed by its `commit`,
+/// so it closes any reservation that was open. A `push` that returns `false`,
+/// or a `send` that returns 0, is a `reserve` that returned `None` and
+/// changes nothing (rule 2).
 #[repr(C)]
 pub struct StackRing<T, const N: usize> {
     // === PRODUCER HOT === (128-byte aligned)

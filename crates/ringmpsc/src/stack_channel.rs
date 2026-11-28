@@ -570,9 +570,9 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     ///
     /// The caller must follow `StackRing`'s [producer contract](StackRing#producer-contract), which
     /// applies to this producer's ring: a `Some` result opens a reservation
-    /// (rule 2), and `ptr` may be used only while it is open (rule 4). `push`
-    /// and `send` close it, so after either one the pointer is dead and
-    /// `commit` must not be called for it.
+    /// (rule 2), and `ptr` may be used only while it is open (rule 4). A `push`
+    /// that returns `true`, or a `send` that sends anything, closes it: after
+    /// one, the pointer is dead and `commit` must not be called for it.
     ///
     /// # Example
     ///
@@ -601,8 +601,8 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     ///
     /// The caller must follow `StackRing`'s [producer contract](StackRing#producer-contract): a
     /// reservation from this producer's `reserve` must be open (no `commit`,
-    /// `push` or `send` since), `n` must be at most its length, and its first
-    /// `n` slots must be written (rule 3).
+    /// and no successful `push` or `send`, since), `n` must be at most its
+    /// length, and its first `n` slots must be written (rule 3).
     ///
     /// Without that, the consumer would read unwritten slots as `T`s (#15).
     /// Calling it without `unsafe` does not compile:
