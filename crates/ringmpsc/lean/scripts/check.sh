@@ -6,8 +6,11 @@
 #   2. Aeneas translates the LLBC to Lean in RingmpscRs/ (never edit by hand).
 #   3. `lake build` checks the proofs in RingLean/ against it.
 #   4. Fails if any theorem depends on an axiom beyond propext, Classical.choice
-#      and Quot.sound (scripts/Audit.lean).
-#   5. Fails if a `[lean: thm]` citation in src/ names no theorem in RingLean/.
+#      and Quot.sound (scripts/Audit.lean), if the build reports a `sorry`, or
+#      if a RingLean/ module isn't imported by scripts/Audit.lean (so it would
+#      be built but never audited).
+#   5. Fails if a `[lean: thm]` citation in src/ names no theorem in RingLean/,
+#      or isn't closed on its line.
 #
 # Needs the Aeneas release pinned in lakefile.toml, unpacked at $AENEAS_DIR
 # (default ~/tools/aeneas; it bundles `aeneas`, `charon` and `charon-driver`),
@@ -56,9 +59,25 @@ fi
 echo "==> lake build"
 cd "$lean_dir"
 lake build 2>&1 | tee "$tmp/build.log"
-if grep -q "declaration uses 'sorry'" "$tmp/build.log"; then
+# Lean prints ``declaration uses `sorry` `` (backticks; Lean/AddDecl.lean).
+# Accept straight quotes too, in case a toolchain changes the quoting.
+if grep -qE "declaration uses [\`']sorry[\`']" "$tmp/build.log"; then
     echo "error: a theorem uses sorry"; exit 1
 fi
+
+echo "==> audit coverage"
+# Audit.lean audits only the RingLean modules it imports, but `lake build`
+# builds every RingLean/*.lean. Require an import for each one, so a new proof
+# file can't be built without being audited.
+missing=0
+while IFS= read -r file; do
+    module="RingLean.$(echo "${file#RingLean/}" | sed -E 's/\.lean$//; s#/#.#g')"
+    if ! grep -qxE "import ${module//./\\.}" scripts/Audit.lean; then
+        echo "error: $file ($module) is built but not imported by scripts/Audit.lean, so it is never audited"
+        missing=1
+    fi
+done < <(find RingLean -name '*.lean' | sort)
+[[ $missing -eq 0 ]] || exit 1
 
 echo "==> axioms"
 # scripts/Audit.lean walks every theorem in RingLean.* and fails on any axiom
@@ -82,7 +101,9 @@ if unclosed="$(grep -rnE '\[lean:[^]]*$' "$crate_dir/src")"; then
     exit 1
 fi
 # Every `[lean: thm, ...]` cited in src/ must name an audited theorem.
-cited="$(grep -rhoE '\[lean: [^]]+\]' "$crate_dir/src" | sed -E 's/\[lean: (.*)\]/\1/' \
+# `[lean:` with any spacing after the colon, so `[lean:foo]` is checked too.
+cited="$(grep -rhoE '\[lean:[[:space:]]*[^]]+\]' "$crate_dir/src" \
+    | sed -E 's/\[lean:[[:space:]]*(.*)\]/\1/' \
     | tr ',' '\n' | tr -d ' ' | sort -u || true)"
 if [[ -z "$cited" ]]; then
     echo "error: no [lean: ...] citations found in $crate_dir/src; the Safety comments should cite the theorems they rely on"

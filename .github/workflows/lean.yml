@@ -39,6 +39,10 @@ env:
   # Keep in sync with `rev` in crates/ringmpsc/lean/lakefile.toml and with
   # crates/ringmpsc/lean/README.md.
   AENEAS_TAG: nightly-2026.11.24-fb44cb4
+  # SHA-256 of that release's aeneas-linux-x86_64.tar.gz (the bundled aeneas,
+  # charon and charon-driver binaries). Update it with AENEAS_TAG; GitHub
+  # shows it as the asset's `digest`.
+  AENEAS_SHA256: 165949cce8f8c2a55acee718579e2a7cfb58e72b48fc08159ad10c5418533542
   # Charon's toolchain: `channel` in the release's rust-toolchain file.
   CHARON_TOOLCHAIN: nightly-2026-09-17
   # elan (Lean's version manager), pinned by release and checksum. Its install
@@ -59,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .aeneas
-          key: aeneas-linux-x86_64-${{ env.AENEAS_TAG }}
+          key: aeneas-linux-x86_64-${{ env.AENEAS_TAG }}-${{ env.AENEAS_SHA256 }}
 
       - name: Download Aeneas release (bundles aeneas, charon, charon-driver)
         if: steps.aeneas-cache.outputs.cache-hit != 'true'
@@ -69,6 +73,7 @@ jobs:
           mkdir -p "$AENEAS_DIR"
           gh release download "$AENEAS_TAG" -R AeneasVerif/aeneas \
             -p 'aeneas-linux-x86_64.tar.gz' -D "$AENEAS_DIR"
+          echo "$AENEAS_SHA256  $AENEAS_DIR/aeneas-linux-x86_64.tar.gz" | sha256sum -c -
           tar xzf "$AENEAS_DIR/aeneas-linux-x86_64.tar.gz" -C "$AENEAS_DIR"
           rm "$AENEAS_DIR/aeneas-linux-x86_64.tar.gz"
 

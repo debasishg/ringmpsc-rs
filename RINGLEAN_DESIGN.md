@@ -307,7 +307,7 @@ scripts/Audit.lean    (only standard axioms; emits the list of proved theorems)
 
 **What a human still reviews.** Lean checks that each proof proves its statement. It doesn't check that the statement is the property the `unsafe` code needs. The theorem statements (the premises before the `:` and the conditions inside `⦃ ⦄`) are the trusted, reviewed part. The mutation check above is evidence that they are strong enough to catch the bugs that matter.
 
-**What the proofs assume.** The proofs cover index arithmetic. Premises such as `head ≤ tail` (INV-SEQ-03) and `tail - head ≤ cap` (INV-SEQ-01) are assumed here and checked elsewhere: by Verus and Quint for the protocol, and by loom and Miri for the memory orderings.
+**What the proofs assume.** The proofs cover index arithmetic. Premises such as `head ≤ tail` (INV-ORD-03, as plain `u64` values by INV-SEQ-03) and `tail - head ≤ cap` (INV-SEQ-01) are assumed here and checked elsewhere: by Verus and Quint for the protocol, and by loom and Miri for the memory orderings.
 
 ---
 
@@ -386,7 +386,7 @@ The new column is the only entry that says **production, all inputs**.
 
 1. **Toolchains.** ~~Can Charon's nightly pin coexist with the Verus pin (Rust 1.99.1)?~~ Yes: Charon runs on its own nightly with its own target directory, and `crates/ringmpsc/lean/` is a standalone Lake project outside the Cargo workspace.
 2. **Aeneas and `u64 → usize` casts.** ~~Should the theorems assume a 64-bit `usize`?~~ Resolved: Aeneas leaves the width abstract, and the theorems hold for both 32-bit and 64-bit.
-3. **CI cost.** Lean build time grows with the code verified. Should it run on every PR, or only on changes to `ring.rs`, `stack_ring.rs`, `reservation.rs` or `window.rs`?
+3. **CI cost.** ~~Should it run on every PR, or only on changes to `ring.rs`, `stack_ring.rs`, `reservation.rs` or `window.rs`?~~ Resolved: `.github/workflows/lean.yml` runs on changes under `crates/ringmpsc/src/**`, `crates/ringmpsc/lean/**` and the workflow itself (section 4), and is not a required check.
 4. **The verified ring.** If phase 7 (#26) replaces production with `verus/ringmpsc-verified`, most of this proposal's reason to exist goes away. Decide #26 first.
 
 ## References
