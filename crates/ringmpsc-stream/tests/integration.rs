@@ -537,3 +537,88 @@ async fn test_every_ok_send_is_received_across_close() {
         assert_eq!(received, sent, "round {round}: an Ok send was not received");
     }
 }
+
+/// An item `feed` accepted but couldn't commit before a close isn't lost
+/// silently: `flush` reports `Closed`, and `take_pending` returns it.
+#[tokio::test]
+async fn test_pending_item_is_recoverable_after_close() {
+    let (factory, _rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    fill(&mut tx);
+
+    // Ring full: `start_send` parks the item and `feed` returns Ok.
+    let parked = futures::future::poll_fn(|cx| {
+        use futures::Sink;
+        let mut pinned = std::pin::Pin::new(&mut tx);
+        match pinned.as_mut().poll_ready(cx) {
+            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(pinned.start_send(99)),
+            other => other,
+        }
+    })
+    .await;
+    assert!(parked.is_ok(), "accepted while the ring is full");
+
+    factory.close();
+    let flushed = tokio::time::timeout(Duration::from_secs(2), tx.flush())
+        .await
+        .expect("flush must not hang after close");
+    assert!(matches!(flushed, Err(ringmpsc_stream::StreamError::Closed)));
+    assert_eq!(tx.take_pending(), Some(99), "the unsent item is handed back");
+}
+
+/// An idle receiver ends the stream promptly after `ShutdownSignal::shutdown()`
+/// from another task, without waiting for its poll tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_shutdown_signal_wakes_idle_receiver() {
+    let config = StreamConfig {
+        poll_interval: Duration::from_secs(30),
+        ..StreamConfig::default()
+    };
+    let (_factory, mut rx) = channel_with_stream_config::<u64>(Config::new(3, 1, false), config);
+    let signal = rx.shutdown_signal();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        signal.shutdown();
+    });
+    // Measure, don't just bound: `timeout` re-polls the inner future when
+    // its deadline fires, which would itself wake the receiver.
+    let start = std::time::Instant::now();
+    let ended = tokio::time::timeout(Duration::from_secs(5), rx.next())
+        .await
+        .expect("receiver must notice the shutdown");
+    assert_eq!(ended, None);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "receiver noticed the shutdown only after {:?}",
+        start.elapsed()
+    );
+}
+
+/// An idle receiver wakes for new data on the sender's notify, not only on
+/// its poll tick: the wait on `data_notify` is kept across polls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_idle_receiver_wakes_for_data_without_tick() {
+    let config = StreamConfig {
+        poll_interval: Duration::from_secs(30),
+        ..StreamConfig::default()
+    };
+    let (factory, mut rx) = channel_with_stream_config::<u64>(Config::new(3, 1, false), config);
+    let mut tx = factory.register().expect("one sender");
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(5).await.expect("send");
+        tx
+    });
+    // Measure, don't just bound: `timeout` re-polls the inner future when
+    // its deadline fires, which would itself wake the receiver.
+    let start = std::time::Instant::now();
+    let got = tokio::time::timeout(Duration::from_secs(5), rx.next())
+        .await
+        .expect("receiver must wake for data");
+    assert_eq!(got, Some(5));
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "receiver woke for data only after {:?}",
+        start.elapsed()
+    );
+}

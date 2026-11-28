@@ -51,7 +51,13 @@ pub fn channel_with_stream_config<T: Send + 'static>(
     let channel = Arc::new(Channel::new(config));
     let data_notify = Arc::new(Notify::new());
     let backpressure_notify = Arc::new(Notify::new());
-    let shutdown_state = Arc::new(ShutdownState::new(config.max_producers));
+    let close_target = Arc::clone(&channel);
+    let shutdown_state = Arc::new(ShutdownState::new(
+        config.max_producers,
+        Box::new(move || close_target.close()),
+        Arc::clone(&data_notify),
+        Arc::clone(&backpressure_notify),
+    ));
 
     // A fresh channel has no consumer yet, so this cannot fail.
     let consumer = channel.consumer().expect("a new channel has no consumer");
@@ -118,6 +124,12 @@ impl<T: Send + 'static> SenderFactory<T> {
             ChannelError::Closed => StreamError::Closed,
             other => StreamError::RegistrationFailed(other),
         })?;
+        // A close can also land after the core registration: report it, so a
+        // caller never gets a sender on a closed channel. Dropping
+        // `producer` is enough; its ring is closed with the channel.
+        if self.shutdown_state.is_closed() {
+            return Err(StreamError::Closed);
+        }
 
         // INV-CH-01: Explicit registration creates unique sender per ring
         #[cfg(debug_assertions)]
@@ -139,11 +151,9 @@ impl<T: Send + 'static> SenderFactory<T> {
     /// send that returned `Ok` is still received, even one that raced the
     /// close (INV-SHUT-04).
     pub fn close(&self) {
+        // Closes the gates and the core channel, then wakes the receiver and
+        // senders waiting for space, which re-check and return `Closed`.
         self.shutdown_state.close();
-        self.channel.close();
-        // Wake senders waiting for space; they re-check, see the closed ring
-        // and return `Closed` instead of waiting for a drain.
-        self.backpressure_notify.notify_waiters();
     }
 
     /// Returns `true` once `close()` has run.
@@ -156,5 +166,34 @@ impl<T: Send + 'static> SenderFactory<T> {
     #[must_use] 
     pub fn producer_count(&self) -> usize {
         self.channel.producer_count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::channel;
+    use ringmpsc_rs::Config;
+
+    /// Receiver-side shutdown closes the core channel too (INV-CH-03), so a
+    /// `register()` racing it can't get a sender on a closed channel.
+    #[tokio::test]
+    async fn receiver_shutdown_closes_the_core_channel() {
+        let (factory, mut rx) = channel::<u64>(Config::new(3, 2, false));
+        let tx = factory.register().expect("one sender");
+        rx.shutdown();
+        assert!(factory.channel.is_closed(), "the core channel is closed");
+        assert!(tx.is_closed());
+        assert!(matches!(
+            factory.register(),
+            Err(crate::StreamError::Closed)
+        ));
+    }
+
+    /// `ShutdownSignal::shutdown()` does the same.
+    #[tokio::test]
+    async fn shutdown_signal_closes_the_core_channel() {
+        let (factory, rx) = channel::<u64>(Config::new(3, 2, false));
+        rx.shutdown_signal().shutdown();
+        assert!(factory.channel.is_closed());
     }
 }

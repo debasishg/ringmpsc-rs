@@ -14,10 +14,22 @@ use tokio::sync::{oneshot, Notify};
 /// gate in `gates` (ringmpsc INV-CH-05). Each gate is on its own cache line,
 /// so senders don't contend with each other. The receiver ends the stream
 /// only once `is_closed_and_quiet()`: closed, and no section open.
-#[derive(Debug)]
+///
+/// It owns the whole close, so every close path (`SenderFactory::close`,
+/// `RingReceiver::shutdown`, `ShutdownSignal::shutdown`) does the same:
+/// close the gates and the core channel, then wake the receiver and any
+/// senders waiting for space (INV-CH-03).
 pub(crate) struct ShutdownState {
     /// One send gate per producer id.
     gates: SendGates,
+    /// Closes the core `Channel` (its registry and rings). A closure, so
+    /// this state needn't be generic over the item type.
+    close_channel: Box<dyn Fn() + Send + Sync>,
+    /// Wakes the receiver, so it notices the close without waiting for a
+    /// poll tick.
+    data_notify: Arc<Notify>,
+    /// Wakes senders waiting for space, so they see the close.
+    backpressure_notify: Arc<Notify>,
     /// Set by `close()` after every gate is closed.
     closed: AtomicBool,
     /// Flag indicating shutdown has been initiated.
@@ -26,22 +38,38 @@ pub(crate) struct ShutdownState {
 
 impl ShutdownState {
     /// State for a channel with up to `max_producers` senders.
-    pub(crate) fn new(max_producers: usize) -> Self {
+    /// `close_channel` closes the core channel.
+    pub(crate) fn new(
+        max_producers: usize,
+        close_channel: Box<dyn Fn() + Send + Sync>,
+        data_notify: Arc<Notify>,
+        backpressure_notify: Arc<Notify>,
+    ) -> Self {
         Self {
             gates: SendGates::new(max_producers),
+            close_channel,
+            data_notify,
+            backpressure_notify,
             closed: AtomicBool::new(false),
             shutdown_initiated: AtomicBool::new(false),
         }
     }
 
-    /// Marks the channel closed. Sends that start afterwards fail; ones
-    /// already in a section finish first, and the receiver waits for them.
-    #[inline]
+    /// Closes the channel. New registrations and every send that starts
+    /// afterwards fail with `Closed`; sends already in a section finish
+    /// first, and the receiver waits for them. Idempotent.
     pub(crate) fn close(&self) {
-        // Gates first, so a thread that sees `closed` also sees every gate
-        // closed (Release / Acquire).
+        // Gates first: no send section opens after this.
         self.gates.close();
+        // Then the core channel: its registry refuses new producers and its
+        // rings refuse new reserves.
+        (self.close_channel)();
+        // Release: a thread that sees `closed` also sees the above.
         self.closed.store(true, Ordering::Release);
+        // Wake the receiver so it ends the stream promptly, and senders
+        // waiting for space so they return `Closed`.
+        self.data_notify.notify_one();
+        self.backpressure_notify.notify_waiters();
     }
 
     /// Returns `true` once `close` has run.
@@ -76,6 +104,16 @@ impl ShutdownState {
     #[inline]
     pub(crate) fn is_shutdown_initiated(&self) -> bool {
         self.shutdown_initiated.load(Ordering::Acquire)
+    }
+}
+
+impl std::fmt::Debug for ShutdownState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShutdownState")
+            .field("gates", &self.gates)
+            .field("closed", &self.is_closed())
+            .field("shutdown_initiated", &self.is_shutdown_initiated())
+            .finish_non_exhaustive()
     }
 }
 
@@ -144,9 +182,10 @@ impl ShutdownSignal {
     /// Triggers graceful shutdown.
     ///
     /// Calling this will:
-    /// 1. Close the channel: new registrations and every sender's next
-    ///    send fail with `Closed`
-    /// 2. Signal the consumer to drain remaining items
+    /// 1. Close the channel, including the core channel: new registrations
+    ///    and every sender's next send fail with `Closed`
+    /// 2. Wake the receiver, which drains the remaining items and then ends
+    ///    the stream
     /// 3. Wake any blocked senders so they can observe the closed state
     ///
     /// This method is idempotent - calling it multiple times has no
@@ -154,7 +193,9 @@ impl ShutdownSignal {
     pub fn shutdown(&self) {
         if !self.state.is_shutdown_initiated() {
             self.state.initiate_shutdown();
+            // Closes everything and wakes the receiver and blocked senders.
             self.state.close();
+            // Kept for INV-SHUT-02's explicit wake (close already did it).
             self.backpressure_notify.notify_waiters();
         }
     }

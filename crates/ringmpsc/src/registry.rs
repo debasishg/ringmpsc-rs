@@ -18,7 +18,7 @@
 //! comes before the `fetch_or`, whose result then includes its id, or after
 //! it, and sees the bit and fails. No `SeqCst` is needed for that.
 
-use crate::invariants::debug_assert_registered_bound;
+use crate::invariants::{debug_assert_max_fits, debug_assert_registered_bound};
 
 /// The closed flag: the top bit of the word. The count uses the bits below.
 const CLOSED: usize = 1 << (usize::BITS - 1);
@@ -142,7 +142,7 @@ impl<W: AtomicWord> Registry<W> {
     /// [`ClaimError::Full`] if `max` ids are taken. The count never goes
     /// past `max`, not even for an instant (INV-CH-04).
     pub fn claim(&self, max: usize) -> Result<usize, ClaimError> {
-        debug_assert!(max < CLOSED, "max_producers must leave the top bit free");
+        debug_assert_max_fits!(max, CLOSED);
         let mut current = self.state.load_acquire();
         loop {
             if current & CLOSED != 0 {

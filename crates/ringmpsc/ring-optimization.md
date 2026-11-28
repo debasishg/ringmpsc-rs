@@ -73,11 +73,13 @@ pub struct Ring<T, A: BufferAllocator = HeapAllocator> {
     head:        CacheAligned<AtomicU64>,
     cached_tail: CacheAligned<UnsafeCell<u64>>,
 
-    // Producer-read flag (read on every reserve; written once by close)
+    // Cold state (rarely accessed by the producer)
     active:      CacheAligned<AtomicBool>,
+
+    // Producer-read flag (read on every reserve; written once by close)
     closed:      CacheAligned<AtomicBool>,
 
-    // Cold state (rarely accessed by the producer)
+    // Cold state, continued (metrics are written by the consumer if enabled)
     metrics:     Metrics,
     config:      Config,
     buffer:      UnsafeCell<A::Buffer<T>>,

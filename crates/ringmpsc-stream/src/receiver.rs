@@ -48,16 +48,28 @@ pin_project! {
         buffer: VecDeque<T>,
         data_pending: bool,
         drain_complete: bool,
+        // The wait for new data (or a close), kept across polls.
+        data_wait: Option<NotifyWait>,
         // After a close: the wait for the last open send sections to end.
-        quiet_wait: Option<QuietWait>,
+        quiet_wait: Option<NotifyWait>,
     }
 }
 
-/// The receiver's wait for open send sections to end after a close, kept
-/// across polls. A sender that ends a section after the close calls
-/// `data_notify.notify_one()`, which completes this (or leaves a permit for
-/// it), so the receiver sleeps instead of spinning.
-type QuietWait = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
+/// A wait on `data_notify`, kept across polls.
+///
+/// A `Notified` that is dropped while pending leaves the waiter list, so a
+/// wait made of a local `Notified` registers nothing once `poll_next`
+/// returns `Pending`: the receiver would only wake on its poll tick. This
+/// future owns its `Arc<Notify>`, so the receiver stores it and a sender's
+/// `notify_one()` (after a send, or after ending a section past a close) or
+/// a close's notify wakes the task.
+type NotifyWait = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
+
+/// A new wait on `notify`, created unpolled.
+fn notify_wait(notify: &Arc<Notify>) -> NotifyWait {
+    let notify = Arc::clone(notify);
+    Box::pin(async move { notify.notified().await })
+}
 
 impl<T: Send + 'static> RingReceiver<T> {
     /// Creates a new receiver draining through the channel's consumer handle.
@@ -87,6 +99,7 @@ impl<T: Send + 'static> RingReceiver<T> {
             buffer: VecDeque::with_capacity(config.batch_hint),
             data_pending: false,
             drain_complete: false,
+            data_wait: None,
             quiet_wait: None,
         }
     }
@@ -212,13 +225,16 @@ impl<T: Send + 'static> Stream for RingReceiver<T> {
             return Poll::Ready(Some(item));
         }
 
-        // Register for data notification
-        let data_notified = this.data_notify.notified();
-        tokio::pin!(data_notified);
+        // Register for data notification, in a wait kept across polls so a
+        // later `notify_one()` reaches this task (not just the poll tick).
+        let wait = this
+            .data_wait
+            .get_or_insert_with(|| notify_wait(this.data_notify));
 
         // Check if data arrived while we were setting up
-        match data_notified.as_mut().poll(cx) {
+        match wait.as_mut().poll(cx) {
             Poll::Ready(()) => {
+                *this.data_wait = None;
                 *this.data_pending = true;
                 // Re-poll to process the notification
                 cx.waker().wake_by_ref();
@@ -330,7 +346,7 @@ fn finish<T>(
     data_notify: &Arc<Notify>,
     shutdown_state: &ShutdownState,
     drain_complete: &mut bool,
-    quiet_wait: &mut Option<QuietWait>,
+    quiet_wait: &mut Option<NotifyWait>,
     mut poll_timer: Pin<&mut Interval>,
     cx: &mut Context<'_>,
 ) -> Poll<Option<T>> {
@@ -366,10 +382,7 @@ fn finish<T>(
 
         // A send section is still open: wait for its end to notify us.
         let created = quiet_wait.is_none();
-        let wait = quiet_wait.get_or_insert_with(|| {
-            let notify = Arc::clone(data_notify);
-            Box::pin(async move { notify.notified().await })
-        });
+        let wait = quiet_wait.get_or_insert_with(|| notify_wait(data_notify));
         match wait.as_mut().poll(cx) {
             // Woken: check again.
             Poll::Ready(()) => *quiet_wait = None,

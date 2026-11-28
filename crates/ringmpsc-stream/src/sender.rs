@@ -283,6 +283,19 @@ impl<T: Send + 'static> RingSender<T> {
     pub fn close(&self) {
         self.producer.close();
     }
+
+    /// Takes back the item a `Sink` `start_send` / `feed` accepted but
+    /// couldn't commit yet, if any.
+    ///
+    /// `Ok` from `start_send` / `feed` means the item was *accepted*: it may
+    /// still be waiting here for ring space. It is delivered only once
+    /// `poll_flush` / `flush` returns `Ok`. If the channel closes first,
+    /// `flush` returns `Closed` and the item stays here, unsent; this
+    /// returns it, so it isn't lost silently (INV-SINK-01).
+    pub fn take_pending(&mut self) -> Option<T> {
+        self.space_wait = None;
+        self.pending_item.take()
+    }
 }
 
 impl<T: Send + 'static> Sink<T> for RingSender<T> {
@@ -347,7 +360,10 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
     /// # Note
     ///
     /// The item is NOT guaranteed to be in the ring after this call returns.
-    /// It may be buffered in `pending_item`. Call `poll_flush()` to ensure delivery.
+    /// It may be buffered in `pending_item`. Call `poll_flush()` to ensure delivery:
+    /// only its `Ok` means the item will be received (INV-SHUT-04). If the
+    /// channel closes first, `poll_flush()` returns `Closed` and the item can
+    /// be recovered with [`RingSender::take_pending`].
     fn start_send(self: Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
         let this = self.project();
         match push_one(this.producer, this.shutdown_state, this.data_notify, item) {

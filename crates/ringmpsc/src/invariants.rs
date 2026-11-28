@@ -187,9 +187,58 @@ macro_rules! debug_assert_registered_bound {
     };
 }
 
+/// Assert that `max_producers` leaves the registry's CLOSED bit free.
+///
+/// **Invariant (INV-CH-04)**: the count shares a word with the CLOSED bit, so
+/// it must stay below that bit or a full registry would read as closed.
+///
+/// Used in: `Registry::claim()`
+macro_rules! debug_assert_max_fits {
+    ($max:expr, $closed_bit:expr) => {
+        debug_assert!(
+            $max < $closed_bit,
+            "INV-CH-04 violated: max_producers {} reaches the CLOSED bit",
+            $max
+        )
+    };
+}
+
 // =============================================================================
 // INV-CH-05: Lossless Close (send gates)
 // =============================================================================
+
+/// Assert that a producer id has a send gate.
+///
+/// **Invariant**: `SendGates` has one gate per producer id, so every id a
+/// sender uses is below the gate count.
+///
+/// Used in: `GatesImpl::begin()` (`gate.rs`)
+macro_rules! debug_assert_gate_exists {
+    ($id:expr, $gates:expr) => {
+        debug_assert!(
+            $id < $gates,
+            "INV-CH-05 violated: producer id {} has no gate ({} gates)",
+            $id,
+            $gates
+        )
+    };
+}
+
+/// Assert that a failed `begin` failed because the gates are closed.
+///
+/// **Invariant**: at most one section per producer id at a time. Opening a
+/// second one would fail like a closed gate and be reported as a spurious
+/// `Closed` on an open channel, so catch that misuse here.
+///
+/// Used in: `GatesImpl::begin()` (`gate.rs`)
+macro_rules! debug_assert_gate_not_reentered {
+    ($prev:expr, $closed_bit:expr) => {
+        debug_assert!(
+            $prev & $closed_bit != 0,
+            "INV-CH-05 violated: a second send section opened for one producer id"
+        )
+    };
+}
 
 /// Assert that ending a send section matches one that was open.
 ///
@@ -284,6 +333,9 @@ pub(crate) use debug_assert_monotonic;
 pub(crate) use debug_assert_no_wrap;
 pub(crate) use debug_assert_registered_bound;
 pub(crate) use debug_assert_section_was_open;
+pub(crate) use debug_assert_gate_exists;
+pub(crate) use debug_assert_gate_not_reentered;
+pub(crate) use debug_assert_max_fits;
 pub(crate) use debug_assert_slot_in_bounds;
 #[allow(unused_imports)]
 pub(crate) use debug_assert_aligned;

@@ -55,6 +55,8 @@ pushed in the race window.
 
 **Assertion**: `debug_assert_recheck_after_register!` in [src/invariants.rs](src/invariants.rs)
 
+**Registration that lasts**: the wait on `data_notify` is stored in the receiver (`data_wait`) and kept across polls. A `Notified` dropped while pending leaves the waiter list, so a wait made of a local `Notified` registered nothing once `poll_next` returned `Pending`, and an idle receiver only woke on its poll tick. Tested with a 30 s poll interval by `test_idle_receiver_wakes_for_data_without_tick` and `test_shutdown_signal_wakes_idle_receiver`.
+
 ### INV-STREAM-06: Timer Tick Loop (Waker Registration Guarantee)
 ```
 loop { poll_tick(cx) → Ready: drain, continue; Pending: break }
@@ -149,7 +151,7 @@ SenderFactory::close() → new register() calls return Closed
                          are woken to see that
 RingReceiver::shutdown() → same close, then drains remaining items → returns None
 ```
-A send that returned `Ok` before the close is always received (INV-SHUT-04).
+A send that returned `Ok` before the close is always received (INV-SHUT-04). For the `Sink` API, that means `poll_flush` / `flush` returning `Ok`: `start_send` / `feed` returning `Ok` only means the item was accepted, and it may still be pending. If the channel closes before it is flushed, `flush` returns `Closed` and `RingSender::take_pending()` returns the unsent item.
 
 ## 4. Shutdown Invariants
 
@@ -176,6 +178,7 @@ The internal oneshot handles programmatic shutdown; external `take_until` enable
 ```
 send returns Ok  →  the receiver yields the item before it returns None
 ```
+"Send returns `Ok`" means `try_send` / `send` / `send_cloned` returning `Ok`, or `Sink::poll_flush` (`flush`, `SinkExt::send`) returning `Ok`. A `start_send` / `feed` `Ok` is not covered on its own: the item may still be pending, and on a close it is handed back by `take_pending()` instead of being sent.
 Every send commits inside a *send section* of its producer's gate (`ringmpsc_rs::SendGates`, ringmpsc INV-CH-05): it opens one before reserving (failing if the channel is closed) and ends it after committing. Each producer has its own gate on its own cache line, so senders don't contend with each other; the only other writer is the close, once. The receiver returns `None` only after it sees the channel closed and every gate quiet (`is_closed_and_quiet()`, Acquire) and drains once more; each section's end is a Release, so that drain sees every commit. Sections are a single non-blocking reserve and commit, never a wait for space. While one is open after the close, the receiver waits on `data_notify` (a sender ending a section after the close calls `notify_one`), in a wait stored across polls, with the poll timer as a fallback; it doesn't spin.
 
 ## 5. Memory Ordering

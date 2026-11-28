@@ -27,7 +27,9 @@
 //!   sees the gate back at `CLOSED` reads from a release sequence headed by
 //!   that end, so its drain afterwards sees the item.
 
-use crate::invariants::debug_assert_section_was_open;
+use crate::invariants::{
+    debug_assert_gate_exists, debug_assert_gate_not_reentered, debug_assert_section_was_open,
+};
 use crate::registry::AtomicWord;
 use crate::ring::CacheAligned;
 
@@ -54,14 +56,19 @@ impl<W: AtomicWord> GatesImpl<W> {
     /// closed (or `id` has no gate). Hold at most one section per id, and
     /// end it with [`SectionImpl::end`] after the commit.
     pub fn begin(&self, id: usize) -> Option<SectionImpl<'_, W>> {
-        debug_assert!(id < self.gates.len(), "producer id {id} has no gate");
+        debug_assert_gate_exists!(id, self.gates.len());
         let gate: &W = self.gates.get(id)?;
         // Only this producer sets IN_SECTION, and only `close` sets CLOSED,
         // so a failure means the gate is closed. Acquire pairs with
         // `close`'s Release.
         match gate.cas_acquire(0, IN_SECTION) {
             Ok(_) => Some(SectionImpl { gate, ended: false }),
-            Err(_) => None,
+            Err(_prev) => {
+                // A section already open for this id would fail here too and
+                // look like a close; catch that misuse in debug builds.
+                debug_assert_gate_not_reentered!(_prev, CLOSED);
+                None
+            }
         }
     }
 
@@ -230,6 +237,17 @@ mod tests {
         drop(gates.begin(0).expect("open"));
         gates.close();
         assert!(gates.is_quiet());
+    }
+
+    /// A second section for one id is misuse; debug builds catch it instead
+    /// of reporting a spurious close.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "INV-CH-05 violated: a second send section")]
+    fn second_section_for_one_id_is_caught() {
+        let gates = SendGates::new(1);
+        let _first = gates.begin(0).expect("open");
+        let _second = gates.begin(0);
     }
 
     #[test]
