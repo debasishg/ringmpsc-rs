@@ -1,5 +1,5 @@
 use crate::span::Span;
-use ringmpsc_rs::{Channel, ChannelError, Config, Consumer, SendGates};
+use ringmpsc_rs::{Backoff, Channel, ChannelError, Config, Consumer, SendGates};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -257,8 +257,8 @@ mod exclusive {
     /// A `Producer` reached only through `&mut self` for writes.
     ///
     /// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
-    /// wrapper doesn't expose them: it forwards `reserve` and
-    /// `reserve_with_backoff` through `&mut self`, and through `&self` only
+    /// wrapper doesn't expose them: it forwards `reserve` through `&mut self`,
+    /// and through `&self` only
     /// `is_closed`, an atomic load, and `id`, a plain read. So it is safe to share, and `SpanProducer`
     /// gets its `Sync` from the compiler, which still checks every other field.
     pub(super) struct ExclusiveProducer<T>(Producer<T>);
@@ -279,11 +279,6 @@ mod exclusive {
         #[inline]
         pub(super) fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T>> {
             self.0.reserve(n)
-        }
-
-        #[inline]
-        pub(super) fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T>> {
-            self.0.reserve_with_backoff(n)
         }
 
         #[inline]
@@ -311,53 +306,74 @@ fn reserve_failed(producer: &ExclusiveProducer<Span>, metrics: &CollectorMetrics
     }
 }
 
-/// Reserves (with or without backoff), commits and records metrics. Call
-/// only inside the producer's open send section. A free function over the
-/// two fields, so the section's borrow of the gates can stay alive.
-fn submit_in_section(
-    producer: &mut ExclusiveProducer<Span>,
-    metrics: &CollectorMetrics,
-    span: Span,
-    backoff: bool,
-) -> Result<(), SubmitError> {
-    let reservation = if backoff {
-        producer.reserve_with_backoff(1)
-    } else {
-        producer.reserve(1)
-    };
-    let Some(mut reservation) = reservation else {
-        return Err(reserve_failed(producer, metrics));
+/// One reserve and commit, with no waiting: the body of a send section.
+/// Hands the span back if the ring had no room (or is closed). A free
+/// function over the producer, so the section's borrow of the gates can stay
+/// alive while it runs.
+fn commit_once(producer: &mut ExclusiveProducer<Span>, span: Span) -> Result<(), Span> {
+    let Some(mut reservation) = producer.reserve(1) else {
+        return Err(span);
     };
     if reservation.push(span).is_err() {
         unreachable!("a one-slot reservation has room for one item");
     }
     reservation.commit();
-    metrics.spans_submitted.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
 impl SpanProducer {
-    /// Submits a span with retry and backoff
+    /// Submits a span, retrying with backoff while the ring is full.
+    ///
+    /// Each attempt is its own send section (one reserve and commit, never a
+    /// wait for space, ringmpsc INV-CH-05); the backoff runs between
+    /// sections, so it never holds up a closing consumer's final drain.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::Closed`] once the collector is closed;
+    /// [`SubmitError::Full`] if the ring stays full through the backoff.
     pub fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
-        // Commit only inside this producer's send section, so a close can't
-        // drain past a submit that returns `Ok` (ringmpsc INV-CH-05). The
-        // backoff inside is bounded (spin, yield, give up).
-        let Some(section) = self.gates.begin(self.producer.id()) else {
-            return Err(SubmitError::Closed);
-        };
-        let result = submit_in_section(&mut self.producer, &self.metrics, span, true);
-        let _ = section.end();
-        result
+        let mut backoff = Backoff::new();
+        let mut span = span;
+        loop {
+            let Some(section) = self.gates.begin(self.producer.id()) else {
+                return Err(SubmitError::Closed);
+            };
+            let attempt = commit_once(&mut self.producer, span);
+            let _ = section.end();
+            match attempt {
+                Ok(()) => {
+                    self.metrics.spans_submitted.fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(back) => span = back,
+            }
+            if self.producer.is_closed() || backoff.is_completed() {
+                return Err(reserve_failed(&self.producer, &self.metrics));
+            }
+            backoff.snooze();
+        }
     }
 
-    /// Tries to submit a span without blocking
+    /// Tries to submit a span without blocking.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::Closed`] once the collector is closed;
+    /// [`SubmitError::Full`] if the ring is full.
     pub fn try_submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         let Some(section) = self.gates.begin(self.producer.id()) else {
             return Err(SubmitError::Closed);
         };
-        let result = submit_in_section(&mut self.producer, &self.metrics, span, false);
+        let attempt = commit_once(&mut self.producer, span);
         let _ = section.end();
-        result
+        match attempt {
+            Ok(()) => {
+                self.metrics.spans_submitted.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(_) => Err(reserve_failed(&self.producer, &self.metrics)),
+        }
     }
 }
 

@@ -9,6 +9,7 @@ use tokio::sync::oneshot;
 use crate::entry::WalEntry;
 use crate::error::WalError;
 use crate::wal::CommitRegistry;
+use ringmpsc_rs::ChannelError;
 use ringmpsc_stream::{RingSender, SenderFactory, StreamError};
 
 /// Internal envelope sent through the ring buffer.
@@ -67,10 +68,13 @@ where
     /// Returns `Err` if the maximum number of writers has been reached
     /// or the WAL is closed.
     pub fn register(&self) -> Result<WalWriter<K, V>, WalError> {
+        // The writer limit arrives as the core channel's `TooManyProducers`,
+        // carrying the real maximum. Everything else here means the WAL is
+        // closed.
         let sender = self.factory.register().map_err(|e| match e {
-            StreamError::Full => WalError::MaxWriters {
-                max: 0, // actual max is in config
-            },
+            StreamError::RegistrationFailed(ChannelError::TooManyProducers { max }) => {
+                WalError::MaxWriters { max }
+            }
             _ => WalError::Closed,
         })?;
         Ok(WalWriter {

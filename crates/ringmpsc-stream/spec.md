@@ -248,7 +248,7 @@ is_terminal(Closed | ShutDown) = true
 | INV-CH-03 | Close/shutdown tests (`test_waiting_sender_returns_closed_on_factory_close`, `test_send_after_factory_close_is_closed`) | N/A (behavioral) |
 | INV-SHUT-01 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_shutdown_signaled!` |
 | INV-SHUT-02 | Graceful shutdown tests | `shutdown.rs` → `debug_assert_senders_woken!` |
-| INV-SHUT-04 | `receiver_waits_for_an_open_send_section` (deterministic, `sender.rs`), `test_every_ok_send_is_received_across_close` (concurrent senders vs close); the gates themselves: ringmpsc `loom_gate_section_before_close_is_drained` | ringmpsc `invariants.rs` → `gate.rs` (`debug_assert_section_was_open!`) |
+| INV-SHUT-04 | `receiver_waits_for_an_open_send_section` (deterministic, `sender.rs`), `test_every_ok_send_is_received_across_close` (concurrent senders vs close); the gates themselves: ringmpsc `loom_gate_section_before_close_is_drained` | `receiver.rs` → `debug_assert_quiet_at_end!`; ringmpsc `invariants.rs` → `gate.rs` (`debug_assert_section_was_open!`) |
 
 ## debug_assert! Macros
 
@@ -265,6 +265,7 @@ All runtime invariant checks are in [src/invariants.rs](src/invariants.rs):
 | `debug_assert_explicit_registration!` | INV-CH-01 | Document explicit registration via factory |
 | `debug_assert_shutdown_signaled!` | INV-SHUT-01 | Verify shutdown oneshot sent |
 | `debug_assert_senders_woken!` | INV-SHUT-02 | Verify blocked senders woken on shutdown |
+| `debug_assert_quiet_at_end!` | INV-SHUT-04 | Verify the stream ends only once closed and every send gate is quiet |
 
 ## Related Specifications
 

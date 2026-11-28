@@ -8,7 +8,7 @@
 //! Run: `cargo bench -p ringmpsc-stream --bench stream_throughput`
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use ringmpsc_rs::Config;
+use ringmpsc_rs::{Backoff, Config};
 use ringmpsc_stream::{channel, StreamExt};
 use std::sync::Barrier;
 use std::thread;
@@ -34,9 +34,16 @@ fn run(senders: usize) {
             s.spawn(move || {
                 for i in 0..PER_SENDER {
                     let mut item = i;
+                    // Ring full: back off (spin, then yield, then sleep),
+                    // never a bare spin.
+                    let mut backoff = Backoff::new();
                     while let Err(back) = tx.try_send(item) {
                         item = back;
-                        thread::yield_now();
+                        if backoff.is_completed() {
+                            thread::sleep(Duration::from_micros(10));
+                        } else {
+                            backoff.snooze();
+                        }
                     }
                 }
             });

@@ -215,7 +215,16 @@ impl AsyncSpanCollector {
                     }
 
                     _ = &mut shutdown_rx => {
-                        // `shutdown()` closed the collector before signaling.
+                        // Reached by `shutdown()`, or when the
+                        // `AsyncSpanCollector` is dropped without it (the
+                        // sender side of `shutdown_rx` is dropped). Close here
+                        // in both cases: without a close, the gates never go
+                        // quiet and the wait below would never end. Closing
+                        // twice is harmless. Then wake producers waiting for
+                        // space, so they see the close.
+                        collector_clone.close();
+                        backpressure_clone.notify_waiters();
+
                         // A submit already in its send section may not have
                         // committed yet; wait for those (each is one reserve
                         // and commit) so the drain below sees every span
@@ -418,6 +427,36 @@ mod tests {
         collector.shutdown().await.unwrap();
 
         assert_eq!(exporter.exported_count(), 400);
+    }
+
+    /// Dropping the collector without `shutdown()` still ends the consumer
+    /// task. It used to wait forever for the gates to go quiet, because
+    /// nothing had closed them.
+    #[tokio::test]
+    async fn test_drop_without_shutdown_ends_consumer_task() {
+        let exporter = Arc::new(TestExporter::new());
+        let collector = AsyncSpanCollector::new(AsyncCollectorConfig::default(), exporter.clone()).await;
+        let mut producer = collector.register_producer().await.expect("one producer");
+        producer
+            .submit_span(Span::new(1, 1, 0, "op".to_string(), SpanKind::Internal))
+            .await
+            .expect("open collector accepts a span");
+        drop(collector);
+
+        // The consumer task holds the only other reference to the exporter;
+        // it is released when the task ends.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Arc::strong_count(&exporter) > 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("consumer task must end after the collector is dropped");
+        assert_eq!(exporter.exported_count(), 1, "the span was drained on the way out");
+        assert_eq!(
+            producer.try_submit_span(Span::new(1, 2, 0, "op".to_string(), SpanKind::Internal)),
+            Err(SubmitError::Closed)
+        );
     }
 
     /// INV-CH-05: every submit that returns `Ok` is exported, even one that
