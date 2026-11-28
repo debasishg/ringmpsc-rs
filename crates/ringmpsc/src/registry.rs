@@ -37,8 +37,8 @@ pub enum ClaimError {
 pub trait AtomicWord {
     fn load_acquire(&self) -> usize;
     fn load_relaxed(&self) -> usize;
-    /// `compare_exchange_weak` with Acquire on success and on failure.
-    fn cas_weak_acquire(&self, current: usize, new: usize) -> Result<usize, usize>;
+    /// `compare_exchange_weak` with `AcqRel` on success and `Acquire` on failure.
+    fn cas_weak_acq_rel(&self, current: usize, new: usize) -> Result<usize, usize>;
     /// `fetch_or` with Release.
     fn fetch_or_release(&self, v: usize) -> usize;
 }
@@ -55,11 +55,11 @@ macro_rules! impl_atomic_word {
                 self.load(std::sync::atomic::Ordering::Relaxed)
             }
             #[inline]
-            fn cas_weak_acquire(&self, current: usize, new: usize) -> Result<usize, usize> {
+            fn cas_weak_acq_rel(&self, current: usize, new: usize) -> Result<usize, usize> {
                 self.compare_exchange_weak(
                     current,
                     new,
-                    std::sync::atomic::Ordering::Acquire,
+                    std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
             }
@@ -79,13 +79,18 @@ impl_atomic_word!(loom::sync::atomic::AtomicUsize);
 ///
 /// Memory orderings, the minimum each use needs:
 /// - **`close`: Release.** Everything the closing thread did before
-///   `close()` happens-before any thread that then sees the channel closed,
-///   through `is_closed` or a `claim` that fails with `Closed`.
-/// - **`is_closed` and `claim`: Acquire,** to pair with that Release.
-/// - **`count`: Relaxed.** It only bounds an index into the rings, which
-///   exist before the channel is shared. The bound comes from the value
-///   itself (never above `max`, INV-CH-04), not from any ordering, and each
-///   ring's own atomics order access to it.
+///   `close()` happens-before any thread whose `claim` then fails with
+///   `Closed`, or that sees the bit through `is_closed`.
+/// - **A successful `claim`: `AcqRel`.** Release, so everything a registering
+///   thread did before `register()` happens-before a thread that sees the new
+///   count through `count_acquire` (the public `producer_count()`). Acquire,
+///   to pair with `close` and with earlier claims.
+/// - **`is_closed`, `count_acquire`, a failed `claim`: Acquire,** to pair
+///   with those Releases.
+/// - **`count`: Relaxed.** For internal slicing only. It only bounds an index
+///   into the rings, which exist before the channel is shared. The bound comes
+///   from the value itself (never above `max`, INV-CH-04), not from any
+///   ordering, and each ring's own atomics order access to it.
 pub struct Registry<W: AtomicWord = std::sync::atomic::AtomicUsize> {
     state: W,
 }
@@ -95,6 +100,12 @@ impl Registry {
     #[must_use]
     pub const fn new() -> Self {
         Self::from_word(std::sync::atomic::AtomicUsize::new(0))
+    }
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -124,7 +135,7 @@ impl<W: AtomicWord> Registry<W> {
             if current >= max {
                 return Err(ClaimError::Full);
             }
-            match self.state.cas_weak_acquire(current, current + 1) {
+            match self.state.cas_weak_acq_rel(current, current + 1) {
                 Ok(_) => {
                     let registered = current + 1;
                     debug_assert_registered_bound!(registered, max);
@@ -145,12 +156,22 @@ impl<W: AtomicWord> Registry<W> {
 
     /// The number of claimed ids. Never above the `max` passed to `claim`
     /// (INV-CH-04), so it is always a valid bound for slicing the rings.
+    /// Relaxed: it synchronizes with nothing; use `count_acquire` for that.
     #[inline]
     pub fn count(&self) -> usize {
         self.state.load_relaxed() & !CLOSED
     }
 
-    /// Whether `close` has run.
+    /// `count`, with Acquire: a thread that sees `k` here sees everything the
+    /// first `k` registering threads did before their `claim`.
+    #[inline]
+    pub fn count_acquire(&self) -> usize {
+        self.state.load_acquire() & !CLOSED
+    }
+
+    /// Whether `close` has run. The channels report `is_closed()` from their
+    /// own flag, set after their rings close, so only the tests use this.
+    #[cfg(any(test, feature = "loom"))]
     #[inline]
     pub fn is_closed(&self) -> bool {
         self.state.load_acquire() & CLOSED != 0

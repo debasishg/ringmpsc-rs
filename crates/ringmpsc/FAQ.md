@@ -16,7 +16,8 @@ The struct layout groups fields into 128-byte-aligned zones:
 |------|--------|-------------|
 | Producer hot | `tail`, `cached_head` | Producer only (or producer-read by consumer) |
 | Consumer hot | `head`, `cached_tail` | Consumer only (or consumer-read by producer) |
-| Cold | `active`, `closed`, `metrics` | Rarely touched — no contention concern |
+| Producer-read flag | `closed` (own 128-byte line) | Read by the producer on every `reserve`; written once, by `close()` |
+| Cold | `active`, `metrics` | Rarely touched by the producer (metrics are written by the consumer when enabled) |
 
 > **Spec reference:** INV-MEM-01 in [spec.md](spec.md)
 

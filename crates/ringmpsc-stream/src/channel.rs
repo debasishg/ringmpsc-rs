@@ -125,17 +125,21 @@ impl<T: Send + 'static> SenderFactory<T> {
         ))
     }
 
-    /// Closes the channel for new registrations.
+    /// Closes the channel.
     ///
-    /// Existing senders can continue to send until their rings are full
-    /// or they are dropped. New calls to `register()` will return
-    /// `StreamError::Closed`.
+    /// New calls to `register()` return `StreamError::Closed`, and so does
+    /// every existing sender's next send: `close()` closes every sender's
+    /// ring, and a sender waiting for space is woken to see that. Items
+    /// already sent can still be received.
     pub fn close(&self) {
         self.shutdown_state.close();
         self.channel.close();
+        // Wake senders waiting for space; they re-check, see the closed ring
+        // and return `Closed` instead of waiting for a drain.
+        self.backpressure_notify.notify_waiters();
     }
 
-    /// Returns `true` if the channel is closed for new registrations.
+    /// Returns `true` once `close()` has run.
     #[must_use] 
     pub fn is_closed(&self) -> bool {
         self.shutdown_state.is_closed()

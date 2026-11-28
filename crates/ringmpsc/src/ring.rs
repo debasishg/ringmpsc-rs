@@ -128,8 +128,10 @@ pub struct Ring<T, A: BufferAllocator = HeapAllocator> {
     // === COLD STATE === (rarely accessed)
     /// Whether this ring is active
     active: CacheAligned<AtomicBool>,
-    /// Whether this ring is closed
-    closed: AtomicBool,
+    /// Whether this ring is closed. Read by the producer on every `reserve`,
+    /// so it gets its own cache line, apart from the consumer-written metrics
+    /// that follow it (INV-MEM-01).
+    closed: CacheAligned<AtomicBool>,
     /// Thread-safe metrics (uses atomics internally)
     metrics: Metrics,
 
@@ -211,7 +213,7 @@ impl<T, A: BufferAllocator> Ring<T, A> {
             head: CacheAligned::new(AtomicU64::new(0)),
             cached_tail: CacheAligned::new(UnsafeCell::new(0)),
             active: CacheAligned::new(AtomicBool::new(false)),
-            closed: AtomicBool::new(false),
+            closed: CacheAligned::new(AtomicBool::new(false)),
             metrics: Metrics::new(),
             config,
             buffer,

@@ -419,3 +419,34 @@ fn loom_register_never_exceeds_max() {
         assert_eq!(registry.count(), 1);
     });
 }
+
+/// `producer_count()` synchronizes with `register()`: a thread that sees the
+/// new count also sees what the registering thread wrote before registering.
+/// The write is to a loom `UnsafeCell`, so loom reports a data race if the
+/// claim's Release or the count's Acquire is missing.
+#[test]
+fn loom_producer_count_synchronizes_with_register() {
+    loom::model(|| {
+        let registry = Arc::new(loom_registry());
+        let config = Arc::new(loom::cell::UnsafeCell::new(0u64));
+
+        let (r, c) = (Arc::clone(&registry), Arc::clone(&config));
+        let registrar = thread::spawn(move || {
+            // Safety: only this thread writes, and only before its claim.
+            c.with_mut(|p| unsafe { *p = 42 });
+            r.claim(1).expect("the only claim");
+        });
+
+        // Wait to see the registration, as a coordinator polling
+        // `producer_count()` would. Without the wait, loom may never schedule
+        // the read after the claim, and the test would check nothing.
+        while registry.count_acquire() == 0 {
+            thread::yield_now();
+        }
+        // Safety: ordered after the write by the claim's Release and the
+        // count's Acquire; loom checks that.
+        let seen = config.with(|p| unsafe { *p });
+        assert_eq!(seen, 42);
+        registrar.join().expect("registrar thread");
+    });
+}

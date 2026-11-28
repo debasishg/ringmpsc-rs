@@ -42,8 +42,12 @@ pub struct Channel<T, A: BufferAllocator = HeapAllocator> {
 
 struct ChannelInner<T, A: BufferAllocator = HeapAllocator> {
     rings: Vec<Ring<T, A>>,
-    /// Producer count and closed flag in one word (INV-CH-04).
+    /// Producer count and closed bit in one word (INV-CH-04). Its bit stops
+    /// registrations; `closed` below is what `is_closed()` reports.
     registry: Registry,
+    /// Set by `close()` after every ring is closed, so `is_closed() == true`
+    /// means no ring still accepts new writes (INV-CH-04).
+    closed: AtomicBool,
     /// Set while a [`Consumer`] exists. At most one can, which is what makes
     /// the rings single-consumer.
     consumer_taken: AtomicBool,
@@ -102,6 +106,7 @@ impl<T, A: BufferAllocator + Clone> Channel<T, A> {
             inner: Arc::new(ChannelInner {
                 rings,
                 registry: Registry::new(),
+                closed: AtomicBool::new(false),
                 consumer_taken: AtomicBool::new(false),
                 config,
                 #[cfg(debug_assertions)]
@@ -161,7 +166,15 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         })
     }
 
-    /// Close the channel, preventing further operations.
+    /// Close the channel.
+    ///
+    /// After this returns, `register()` fails with `Closed`, and every
+    /// existing producer's ring is closed: a `reserve` / `push` / `send` that
+    /// starts after `close()` returns fails. One already in progress on
+    /// another thread may still commit, since `close()` doesn't wait for it,
+    /// so drain for the last time only after the producers are done (joined
+    /// or dropped). `is_closed()` turns true only after every ring is closed
+    /// (INV-CH-04). Items committed before the close can still be consumed.
     pub fn close(&self) {
         // Every producer that registered got an id below `count`, and every
         // later `register()` fails (INV-CH-04), so this closes all their rings.
@@ -169,18 +182,26 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         for ring in &self.inner.rings[..count] {
             ring.close();
         }
+        // Release: a thread that sees `is_closed()` also sees every ring
+        // closed.
+        self.inner.closed.store(true, Ordering::Release);
     }
 
     /// Returns true if the channel is closed.
     #[must_use] 
     pub fn is_closed(&self) -> bool {
-        self.inner.registry.is_closed()
+        self.inner.closed.load(Ordering::Acquire)
     }
 
     /// Returns the number of registered producers.
+    ///
+    /// Synchronizes with `register()`: a thread that sees `k` here also sees
+    /// everything the first `k` registering threads did before registering.
     #[must_use] 
     pub fn producer_count(&self) -> usize {
-        self.inner.registry.count()
+        // Acquire: seeing `k` producers means seeing what each of them did
+        // before `register()`.
+        self.inner.registry.count_acquire()
     }
 
     /// Get aggregated metrics snapshot from all rings if enabled.

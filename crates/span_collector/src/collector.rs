@@ -238,13 +238,13 @@ mod exclusive {
     ///
     /// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
     /// wrapper doesn't expose them: it forwards `reserve` and
-    /// `reserve_with_backoff` through `&mut self`, and nothing through `&self`. So
-    /// it is safe to share, and `SpanProducer` gets its `Sync` from the compiler,
-    /// which still checks every other field.
+    /// `reserve_with_backoff` through `&mut self`, and through `&self` only
+    /// `is_closed`, an atomic load. So it is safe to share, and `SpanProducer`
+    /// gets its `Sync` from the compiler, which still checks every other field.
     pub(super) struct ExclusiveProducer<T>(Producer<T>);
 
-    // Safety: a shared `&ExclusiveProducer` has no methods to call. Every write to
-    // the ring goes through `&mut self`, so it stays on one thread at a time and
+    // Safety: a shared `&ExclusiveProducer` can only call `is_closed`, an atomic
+    // load. Every write to the ring goes through `&mut self`, so it stays on one thread at a time and
     // the ring keeps a single producer (ringmpsc INV-SW-01). Keep it that way:
     // never add a `&self` method that reserves, pushes or sends, and never hand
     // out `&Producer`. `T: Send` matches `Producer`'s own `Send` bound.
@@ -265,11 +265,27 @@ mod exclusive {
         pub(super) fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T>> {
             self.0.reserve_with_backoff(n)
         }
+
+        #[inline]
+        pub(super) fn is_closed(&self) -> bool {
+            self.0.is_closed()
+        }
     }
 }
 use exclusive::ExclusiveProducer;
 
 impl SpanProducer {
+    /// Why a `reserve` returned `None`: a closed ring always refuses, and
+    /// that isn't backpressure, so it doesn't count as a full event.
+    fn reserve_failed(&self) -> SubmitError {
+        if self.producer.is_closed() {
+            SubmitError::Closed
+        } else {
+            self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
+            SubmitError::Full
+        }
+    }
+
     /// Submits a span with retry and backoff
     pub fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         // Try to reserve with backoff
@@ -286,8 +302,7 @@ impl SpanProducer {
             
             Ok(())
         } else {
-            self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
-            Err(SubmitError::Full)
+            Err(self.reserve_failed())
         }
     }
 
@@ -305,8 +320,7 @@ impl SpanProducer {
             
             Ok(())
         } else {
-            self.metrics.full_events.fetch_add(1, Ordering::Relaxed);
-            Err(SubmitError::Full)
+            Err(self.reserve_failed())
         }
     }
 }
@@ -315,6 +329,20 @@ impl SpanProducer {
 mod tests {
     use super::*;
     use crate::span::SpanKind;
+
+    /// #45 follow-up: on a closed collector, submits report `Closed`, not
+    /// `Full`, and don't count as full events.
+    #[test]
+    fn submit_after_close_is_closed_not_full() {
+        let collector = SpanCollector::new(CollectorConfig::default());
+        let mut producer = collector.register().expect("one producer");
+        collector.close();
+
+        let span = || Span::new(1, 1, 0, "op".to_string(), SpanKind::Internal);
+        assert_eq!(producer.submit_span(span()), Err(SubmitError::Closed));
+        assert_eq!(producer.try_submit_span(span()), Err(SubmitError::Closed));
+        assert_eq!(collector.metrics().full_events(), 0);
+    }
 
     #[test]
     fn span_producer_is_send_and_sync() {

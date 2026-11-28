@@ -371,3 +371,43 @@ async fn test_no_lost_wakeup_burst_pattern() {
     sender.await.expect("sender panicked");
     assert_eq!(received.len(), total as usize);
 }
+
+/// #45 follow-up: a sender waiting for space on a full ring must return
+/// `Closed` when the factory closes, not wait forever for a drain.
+#[tokio::test]
+async fn test_waiting_sender_returns_closed_on_factory_close() {
+    // 2-slot ring, and the receiver is never polled, so nothing drains it.
+    let (factory, _rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    let mut filled = 0;
+    while tx.try_send(filled).is_ok() {
+        filled += 1;
+    }
+    assert!(filled > 0, "the ring took at least one item");
+
+    let waiting = tokio::spawn(async move { tx.send(99).await });
+    // Let the sender reach its wait.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    factory.close();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .expect("send must not hang after close")
+        .expect("sender task");
+    assert!(
+        matches!(result, Err(ringmpsc_stream::StreamError::Closed)),
+        "got {result:?}"
+    );
+}
+
+/// A send after the factory closes fails at once.
+#[tokio::test]
+async fn test_send_after_factory_close_is_closed() {
+    let (factory, _rx) = channel::<u64>(Config::new(3, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    factory.close();
+    let result = tokio::time::timeout(Duration::from_secs(2), tx.send(1))
+        .await
+        .expect("send must not hang after close");
+    assert!(matches!(result, Err(ringmpsc_stream::StreamError::Closed)));
+}

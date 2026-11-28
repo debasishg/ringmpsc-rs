@@ -137,9 +137,15 @@ impl<T: Send + 'static> RingSender<T> {
     /// Uses reserve/commit internally to ensure no item loss.
     pub async fn send(&mut self, item: T) -> Result<(), StreamError> {
         loop {
-            if self.shutdown_state.is_closed() || self.producer.is_closed() {
+            if self.is_closed() {
                 return Err(StreamError::Closed);
             }
+
+            // Create the `Notified` before trying, so a wake-up between the
+            // failed reserve and the await isn't lost: `notify_waiters()`
+            // (from the receiver after a drain, or from `SenderFactory::close`)
+            // completes every `Notified` created before it.
+            let notified = std::pin::pin!(self.backpressure_notify.notified());
 
             // Try to reserve space. `item` is moved only on this branch,
             // which always returns, so it is still here on the next attempt.
@@ -153,6 +159,12 @@ impl<T: Send + 'static> RingSender<T> {
                 #[cfg(debug_assertions)]
                 debug_assert_data_notified!(true, true);
                 return Ok(());
+            }
+
+            // A closed ring refuses every reserve, so `None` here may mean
+            // closed rather than full. Waiting would never end then.
+            if self.is_closed() {
+                return Err(StreamError::Closed);
             }
 
             // Ring is full - wait for backpressure relief
@@ -181,12 +193,7 @@ impl<T: Send + 'static> RingSender<T> {
             //
             // The Notify internally uses atomic operations (no mutex) to manage the
             // waiter list, making this coordination lock-free and safe across threads.
-            self.backpressure_notify.notified().await;
-
-            // After waking, check if we should give up
-            if self.shutdown_state.is_closed() {
-                return Err(StreamError::Closed);
-            }
+            notified.await;
 
             // Retry - item is still owned by us
         }
@@ -249,6 +256,13 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
             } else {
                 // Still full - re-store the item and wait
                 *this.pending_item = Some(item);
+
+                // A closed ring refuses every reserve, so this may be closed
+                // rather than full, and no drain would ever wake us. Keep the
+                // item pending and report the close.
+                if this.shutdown_state.is_closed() || this.producer.is_closed() {
+                    return Poll::Ready(Err(StreamError::Closed));
+                }
 
                 // Register for backpressure notification
                 let notified = this.backpressure_notify.notified();
@@ -362,6 +376,13 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
                 // Still full - re-store and wait
                 *this.pending_item = Some(item);
 
+                // A closed ring refuses every reserve, so this may be closed
+                // rather than full, and no drain would ever wake us. Keep the
+                // item pending and report the close.
+                if this.shutdown_state.is_closed() || this.producer.is_closed() {
+                    return Poll::Ready(Err(StreamError::Closed));
+                }
+
                 let notified = this.backpressure_notify.notified();
                 tokio::pin!(notified);
                 match notified.poll(cx) {
@@ -424,9 +445,12 @@ impl<T: Send + Clone + 'static> RingSender<T> {
     pub async fn send_cloned(&mut self, item: T) -> Result<(), StreamError> {
 
         loop {
-            if self.shutdown_state.is_closed() || self.producer.is_closed() {
+            if self.is_closed() {
                 return Err(StreamError::Closed);
             }
+
+            // Created before trying, as in `send`, so no wake-up is lost.
+            let notified = std::pin::pin!(self.backpressure_notify.notified());
 
             if let Some(mut reservation) = self.producer.reserve(1) {
                 if reservation.push(item).is_err() {
@@ -437,13 +461,13 @@ impl<T: Send + Clone + 'static> RingSender<T> {
                 return Ok(());
             }
 
-            // Ring is full - wait for backpressure relief
-            self.backpressure_notify.notified().await;
-
-            // After waking, check if we should give up
-            if self.shutdown_state.is_closed() {
+            // `None` may mean closed rather than full; see `send`.
+            if self.is_closed() {
                 return Err(StreamError::Closed);
             }
+
+            // Ring is full - wait for backpressure relief
+            notified.await;
 
             // Retry - item is cloned on each attempt
         }

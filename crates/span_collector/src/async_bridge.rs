@@ -274,8 +274,12 @@ impl AsyncSpanCollector {
 
     /// Gracefully shuts down the collector
     pub async fn shutdown(mut self) -> Result<(), AsyncError> {
-        // Close the collector to prevent new registrations
+        // Close the collector: new registrations fail, and every producer's
+        // ring refuses new spans.
         self.collector.close();
+        // Wake producers waiting for space, so they see the closed ring and
+        // return `Closed` instead of waiting for a consumer that is stopping.
+        self.backpressure_notify.notify_waiters();
 
         // Send shutdown signal to consumer task
         if let Some(tx) = self.shutdown_tx.take() {
@@ -300,15 +304,23 @@ pub struct AsyncSpanProducer {
 }
 
 impl AsyncSpanProducer {
-    /// Submits a span, waiting if the ring buffer is full
+    /// Submits a span, waiting if the ring buffer is full.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::Closed`] once the collector is closed or shut down,
+    /// including while this call is waiting for space.
     pub async fn submit_span(&mut self, span: Span) -> Result<(), SubmitError> {
         loop {
+            // Create the `Notified` before trying, so a wake-up between the
+            // failed try and the await isn't lost: `notify_waiters()` (from
+            // the consumer after a drain, or from `shutdown()`) completes
+            // every `Notified` created before it.
+            let notified = std::pin::pin!(self.backpressure_notify.notified());
             match self.producer.try_submit_span(span.clone()) {
                 Ok(()) => return Ok(()),
-                Err(SubmitError::Full) => {
-                    // Ring full - wait for consumer to drain
-                    self.backpressure_notify.notified().await;
-                }
+                // Ring full - wait for the consumer to drain, or for shutdown.
+                Err(SubmitError::Full) => notified.await,
                 Err(e) => return Err(e),
             }
         }
@@ -390,6 +402,22 @@ mod tests {
         collector.shutdown().await.unwrap();
 
         assert_eq!(exporter.exported_count(), 400);
+    }
+
+    /// #45 follow-up: after `shutdown()`, `submit_span` returns `Closed`
+    /// instead of waiting forever for a consumer that has stopped.
+    #[tokio::test]
+    async fn test_submit_after_shutdown_is_closed() {
+        let exporter = Arc::new(TestExporter::new());
+        let collector = AsyncSpanCollector::new(AsyncCollectorConfig::default(), exporter).await;
+        let mut producer = collector.register_producer().await.expect("one producer");
+        collector.shutdown().await.expect("shutdown");
+
+        let span = Span::new(1, 1, 0, "op".to_string(), SpanKind::Internal);
+        let result = tokio::time::timeout(Duration::from_secs(2), producer.submit_span(span))
+            .await
+            .expect("submit_span must not hang after shutdown");
+        assert_eq!(result, Err(SubmitError::Closed));
     }
 
     #[tokio::test]

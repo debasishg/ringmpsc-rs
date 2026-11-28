@@ -122,8 +122,11 @@ pub enum StackChannelError {
 /// ```
 #[repr(C)]
 pub struct StackChannel<T, const N: usize, const P: usize> {
-    /// Producer count and closed flag in one word (INV-CH-04)
+    /// Producer count and closed bit in one word (INV-CH-04). Its bit stops
+    /// registrations; `closed` below is what `is_closed()` reports.
     registry: Registry,
+    /// Set by `close()` after every ring is closed (INV-CH-04).
+    closed: AtomicBool,
     /// Set while a [`StackConsumer`] exists. At most one can, which is what
     /// makes the rings single-consumer.
     consumer_taken: AtomicBool,
@@ -179,6 +182,7 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
 
         Self {
             registry: Registry::new(),
+            closed: AtomicBool::new(false),
             consumer_taken: AtomicBool::new(false),
             // Initialize P rings using const evaluation
             rings: [const { StackRing::new() }; P],
@@ -205,15 +209,20 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     }
 
     /// Returns the number of registered producers.
+    ///
+    /// Synchronizes with `register()`: a thread that sees `k` here also sees
+    /// everything the first `k` registering threads did before registering.
     #[inline]
     pub fn producer_count(&self) -> usize {
-        self.registry.count()
+        // Acquire: seeing `k` producers means seeing what each of them did
+        // before `register()`.
+        self.registry.count_acquire()
     }
 
     /// Returns true if the channel is closed.
     #[inline]
     pub fn is_closed(&self) -> bool {
-        self.registry.is_closed()
+        self.closed.load(Ordering::Acquire)
     }
 
     // =========================================================================
@@ -307,10 +316,14 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
 
     /// Close the channel and all rings.
     ///
-    /// After closing:
+    /// After this returns:
     /// - `register()` returns `Err(Closed)`
-    /// - Existing producers' `push()` returns `false`
-    /// - Consumers can still drain remaining items
+    /// - an existing producer's `push()` / `send()` / `reserve()` that starts
+    ///   now fails. One already in progress on another thread may still
+    ///   commit, since `close()` doesn't wait for it, so drain for the last
+    ///   time only after the producers are done
+    /// - `is_closed()` is true, and only once every ring is closed (INV-CH-04)
+    /// - consumers can still drain remaining items
     pub fn close(&self) {
         // Every producer that registered got an id below `count`, and every
         // later `register()` fails (INV-CH-04), so this closes all their rings.
@@ -318,6 +331,9 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
         for ring in &self.rings[..count] {
             ring.close();
         }
+        // Release: a thread that sees `is_closed()` also sees every ring
+        // closed.
+        self.closed.store(true, Ordering::Release);
     }
 }
 
