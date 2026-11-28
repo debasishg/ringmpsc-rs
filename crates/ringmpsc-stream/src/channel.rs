@@ -124,10 +124,14 @@ impl<T: Send + 'static> SenderFactory<T> {
             ChannelError::Closed => StreamError::Closed,
             other => StreamError::RegistrationFailed(other),
         })?;
-        // A close can also land after the core registration: report it, so a
-        // caller never gets a sender on a closed channel. Dropping
-        // `producer` is enough; its ring is closed with the channel.
-        if self.shutdown_state.is_closed() {
+        // A close can also land after the core registration. `close()`
+        // closes the gates first, so check this sender's own gate: if it is
+        // already closed, report `Closed` instead of handing out a sender
+        // that could never send. A close that reaches the gate after this
+        // check is the same as for any existing sender: its next send
+        // returns `Closed`. Dropping `producer` is enough; its ring is
+        // closed with the channel.
+        if !self.shutdown_state.is_gate_open(producer.id()) {
             return Err(StreamError::Closed);
         }
 

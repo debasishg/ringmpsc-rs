@@ -150,7 +150,10 @@ SenderFactory::close() → new register() calls return Closed
                          (its ring is closed), and senders waiting for space
                          are woken to see that
 RingReceiver::shutdown() → same close, then drains remaining items → returns None
+ShutdownSignal::shutdown() → same close
+dropping the RingReceiver → same close (blocked senders return Closed)
 ```
+Every close path goes through `ShutdownState::close()`: it marks shutdown as initiated (so `is_shutdown()` is true after any close), closes the send gates and then the core channel, and wakes the receiver and blocked senders. After a close, a `Sink` `flush` with nothing pending returns `Ok`: everything `start_send` accepted was committed and will be received.
 A send that returned `Ok` before the close is always received (INV-SHUT-04). For the `Sink` API, that means `poll_flush` / `flush` returning `Ok`: `start_send` / `feed` returning `Ok` only means the item was accepted, and it may still be pending. If the channel closes before it is flushed, `flush` returns `Closed` and `RingSender::take_pending()` returns the unsent item.
 
 ## 4. Shutdown Invariants
@@ -196,7 +199,7 @@ receiver: notified().await → read_from_ring
 shutdown_state (per-producer send gates + closed flag):
   - close(): every gate fetch_or(CLOSED), Release; then closed.store, Release
   - is_closed(): Acquire; is_closed_and_quiet(): Acquire on the flag and each gate
-  - begin_send(id): compare_exchange(0, IN_SECTION) on gate id, Acquire
+  - begin_send(id): compare_exchange(0, IN_SECTION) on gate id; Relaxed on success, Acquire on failure (pairs with close)
   - end of a send section: fetch_and(!IN_SECTION), Release (publishes its commit)
 ```
 Per gate, every change is a read-modify-write on one word, so each section's Release heads a release sequence that the receiver's Acquire load reads from (INV-SHUT-04, ringmpsc INV-CH-05).

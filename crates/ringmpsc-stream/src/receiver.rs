@@ -32,7 +32,8 @@ pin_project! {
     /// # Shutdown
     ///
     /// Call `shutdown()` for graceful termination which drains remaining items
-    /// before returning `None`. Can also be composed with `StreamExt::take_until`
+    /// before returning `None`. Dropping the receiver also closes the channel,
+    /// so blocked senders return `Closed`. Can also be composed with `StreamExt::take_until`
     /// for external cancellation control.
     pub struct RingReceiver<T> {
         // The channel's one consumer handle. Every drain goes through it.
@@ -52,6 +53,16 @@ pin_project! {
         data_wait: Option<NotifyWait>,
         // After a close: the wait for the last open send sections to end.
         quiet_wait: Option<NotifyWait>,
+    }
+
+    // Dropping the receiver closes the channel (the same close as
+    // `SenderFactory::close`), so senders waiting for space are woken and
+    // return `Closed` instead of waiting for a drain that will never come.
+    // Idempotent, so a receiver that already shut down is fine.
+    impl<T> PinnedDrop for RingReceiver<T> {
+        fn drop(this: Pin<&mut Self>) {
+            this.project().shutdown_state.close();
+        }
     }
 }
 

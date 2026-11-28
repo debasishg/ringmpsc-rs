@@ -373,7 +373,13 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
                 *this.pending_item = Some(item);
                 Ok(())
             }
-            Push::Closed(_) => Err(StreamError::Closed),
+            Push::Closed(item) => {
+                // Keep the unsent item, so `take_pending()` can hand it back
+                // (INV-SINK-01): a close can land between `poll_ready` and
+                // this call.
+                *this.pending_item = Some(item);
+                Err(StreamError::Closed)
+            }
         }
     }
 
@@ -402,12 +408,26 @@ impl<T: Send + 'static> Sink<T> for RingSender<T> {
     ///
     /// # Backpressure
     ///
+    /// After a close, `poll_flush` returns `Ok` if nothing is pending (every
+    /// accepted item was committed and will be received), and `Closed` if an
+    /// item is still pending (recover it with [`RingSender::take_pending`]).
+    ///
     /// When the ring is full, this method stores a wait for the receiver's
     /// `notify_waiters()` (sent after it drains items, or on close) and returns
     /// `Poll::Pending`. The stored wait keeps the task registered across polls
     /// (#47).
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
+        // Nothing pending: everything `start_send` accepted is committed and
+        // will be received (INV-SHUT-04), so the flush succeeds even if the
+        // channel has closed since. Reporting `Closed` here would make the
+        // caller treat delivered items as lost.
+        if this.pending_item.is_none() {
+            *this.space_wait = None;
+            return Poll::Ready(Ok(()));
+        }
+        // An item is still pending and the channel is closed: it can't be
+        // sent; it stays in `pending_item` for `take_pending()`.
         if this.shutdown_state.is_closed() || this.producer.is_closed() {
             return Poll::Ready(Err(StreamError::Closed));
         }

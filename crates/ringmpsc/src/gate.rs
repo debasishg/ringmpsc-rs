@@ -27,9 +27,7 @@
 //!   sees the gate back at `CLOSED` reads from a release sequence headed by
 //!   that end, so its drain afterwards sees the item.
 
-use crate::invariants::{
-    debug_assert_gate_exists, debug_assert_gate_not_reentered, debug_assert_section_was_open,
-};
+use crate::invariants::{debug_assert_gate_not_reentered, debug_assert_section_was_open};
 use crate::registry::AtomicWord;
 use crate::ring::CacheAligned;
 
@@ -53,15 +51,17 @@ impl<W: AtomicWord> GatesImpl<W> {
     }
 
     /// Opens producer `id`'s section, or returns `None` if the gates are
-    /// closed (or `id` has no gate). Hold at most one section per id, and
-    /// end it with [`SectionImpl::end`] after the commit.
+    /// closed or `id` has no gate (the same in every build profile). Hold at
+    /// most one section per id, and end it with [`SectionImpl::end`] after
+    /// the commit.
     pub fn begin(&self, id: usize) -> Option<SectionImpl<'_, W>> {
-        debug_assert_gate_exists!(id, self.gates.len());
         let gate: &W = self.gates.get(id)?;
         // Only this producer sets IN_SECTION, and only `close` sets CLOSED,
-        // so a failure means the gate is closed. Acquire pairs with
-        // `close`'s Release.
-        match gate.cas_acquire(0, IN_SECTION) {
+        // so a failure means the gate is closed. Success needs no ordering:
+        // it reads the initial 0 or this producer's own earlier end, and
+        // pairs with nothing. Failure is Acquire, pairing with `close`'s
+        // Release.
+        match gate.cas_relaxed_acquire(0, IN_SECTION) {
             Ok(_) => Some(SectionImpl { gate, ended: false }),
             Err(_prev) => {
                 // A section already open for this id would fail here too and
@@ -70,6 +70,14 @@ impl<W: AtomicWord> GatesImpl<W> {
                 None
             }
         }
+    }
+
+    /// `true` if producer `id`'s gate is not closed yet (Acquire). `false`
+    /// once `close` has reached it, or if `id` has no gate.
+    pub fn is_open(&self, id: usize) -> bool {
+        self.gates
+            .get(id)
+            .is_some_and(|gate| gate.load_acquire() & CLOSED == 0)
     }
 
     /// Closes every gate: each later `begin` fails. Sections already open
@@ -167,10 +175,23 @@ impl SendGates {
     /// Opens a section for producer `id` before it reserves, or returns
     /// `None` once the gates are closed. At most one section per id at a
     /// time.
+    ///
+    /// Also returns `None` if `id` has no gate (`id >= producers`), in every
+    /// build profile. That is a caller bug, and the sender then behaves as
+    /// if closed, so size the gates to the channel's `max_producers`.
     #[inline]
     #[must_use]
     pub fn begin(&self, id: usize) -> Option<SendSection<'_>> {
         self.0.begin(id).map(SendSection)
+    }
+
+    /// `true` if producer `id`'s gate is not closed yet. Useful for a
+    /// registration that must not hand out a sender whose gate is already
+    /// closed.
+    #[inline]
+    #[must_use]
+    pub fn is_open(&self, id: usize) -> bool {
+        self.0.is_open(id)
     }
 
     /// Closes every gate. Call it before (or with) closing the channel.
@@ -253,9 +274,16 @@ mod tests {
     #[test]
     fn unknown_id_gets_no_section() {
         let gates = SendGates::new(1);
-        // debug builds assert; release builds return None.
-        if !cfg!(debug_assertions) {
-            assert!(gates.begin(5).is_none());
-        }
+        // The same in every build profile.
+        assert!(gates.begin(5).is_none());
+        assert!(!gates.is_open(5));
+    }
+
+    #[test]
+    fn is_open_until_close() {
+        let gates = SendGates::new(2);
+        assert!(gates.is_open(0) && gates.is_open(1));
+        gates.close();
+        assert!(!gates.is_open(0) && !gates.is_open(1));
     }
 }

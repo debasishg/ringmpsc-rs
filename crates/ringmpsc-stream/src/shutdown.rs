@@ -59,6 +59,10 @@ impl ShutdownState {
     /// afterwards fail with `Closed`; sends already in a section finish
     /// first, and the receiver waits for them. Idempotent.
     pub(crate) fn close(&self) {
+        // Every close is a shutdown, whichever path started it, so
+        // `is_shutdown()` reports it for a factory close and a receiver drop
+        // too.
+        self.initiate_shutdown();
         // Gates first: no send section opens after this.
         self.gates.close();
         // Then the core channel: its registry refuses new producers and its
@@ -84,6 +88,12 @@ impl ShutdownState {
     #[inline]
     pub(crate) fn begin_send(&self, id: usize) -> Option<SendSection<'_>> {
         self.gates.begin(id)
+    }
+
+    /// Returns `true` if sender `id`'s gate is not closed yet.
+    #[inline]
+    pub(crate) fn is_gate_open(&self, id: usize) -> bool {
+        self.gates.is_open(id)
     }
 
     /// Returns `true` if the channel is closed and no send section is open,

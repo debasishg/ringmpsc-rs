@@ -622,3 +622,76 @@ async fn test_idle_receiver_wakes_for_data_without_tick() {
         start.elapsed()
     );
 }
+
+/// A `Sink` send that `start_send` already committed is reported as `Ok` by
+/// `flush`, even if the channel closes in between: the item is received.
+#[tokio::test]
+async fn test_flush_after_close_is_ok_when_nothing_pending() {
+    use futures::Sink;
+    let (factory, mut rx) = channel::<u64>(Config::new(3, 1, false));
+    let mut tx = factory.register().expect("one sender");
+
+    // Commit through start_send directly (the ring has room).
+    futures::future::poll_fn(|cx| std::pin::Pin::new(&mut tx).poll_ready(cx))
+        .await
+        .expect("ready");
+    std::pin::Pin::new(&mut tx).start_send(42).expect("committed");
+
+    factory.close();
+    tx.flush().await.expect("nothing pending: the flush succeeds");
+    assert_eq!(tx.take_pending(), None);
+    assert_eq!(rx.next().await, Some(42), "the item is received");
+    assert_eq!(rx.next().await, None);
+}
+
+/// A close between `poll_ready` and `start_send` keeps the item for
+/// `take_pending`, instead of dropping it.
+#[tokio::test]
+async fn test_start_send_after_close_keeps_the_item() {
+    use futures::Sink;
+    let (factory, _rx) = channel::<u64>(Config::new(3, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    futures::future::poll_fn(|cx| std::pin::Pin::new(&mut tx).poll_ready(cx))
+        .await
+        .expect("ready");
+
+    factory.close();
+    assert!(matches!(
+        std::pin::Pin::new(&mut tx).start_send(7),
+        Err(ringmpsc_stream::StreamError::Closed)
+    ));
+    assert_eq!(tx.take_pending(), Some(7), "the unsent item is handed back");
+}
+
+/// `is_shutdown()` reports a close from any path, including a factory close.
+#[tokio::test]
+async fn test_factory_close_is_a_shutdown() {
+    let (factory, rx) = channel::<u64>(Config::new(3, 1, false));
+    let signal = rx.shutdown_signal();
+    factory.close();
+    assert!(rx.is_shutdown());
+    assert!(signal.is_shutdown());
+}
+
+/// Dropping the receiver wakes a sender blocked on a full ring with
+/// `Closed`, instead of leaving it waiting forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_receiver_drop_unblocks_senders() {
+    let (factory, rx) = channel::<u64>(Config::new(1, 1, false));
+    let mut tx = factory.register().expect("one sender");
+    fill(&mut tx);
+    let waiting = tokio::spawn(async move { tx.send(99).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let start = std::time::Instant::now();
+    drop(rx);
+    let result = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the blocked send must end after the receiver is dropped")
+        .expect("sender task");
+    assert!(
+        matches!(result, Err(ringmpsc_stream::StreamError::Closed)),
+        "got {result:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(1), "took {:?}", start.elapsed());
+}
