@@ -61,6 +61,8 @@
 use crate::stack_ring::StackRing;
 #[cfg(debug_assertions)]
 use crate::invariants::debug_assert_fifo_count;
+use std::cell::Cell;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
@@ -251,7 +253,11 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
             return Err(StackChannelError::TooManyProducers { max: P });
         }
 
-        Ok(StackProducer { channel: self, id })
+        Ok(StackProducer {
+            channel: self,
+            id,
+            _not_sync: PhantomData,
+        })
     }
 
     // =========================================================================
@@ -285,6 +291,14 @@ impl<T, const N: usize, const P: usize> StackChannel<T, N, P> {
     /// [consumer contract](StackRing#consumer-contract). Calling them while
     /// this channel's [`StackConsumer`] exists, or from two threads without a
     /// happens-before ordering between the calls, is undefined behavior.
+    ///
+    /// Its producer methods (`reserve`, `commit`) are `unsafe` too; see the
+    /// [producer contract](StackRing#producer-contract) (INV-SW-01). Calling
+    /// them while a [`StackProducer`] for `ring_id` exists, or from two
+    /// threads without a happens-before ordering between the calls (including
+    /// the last use of a dropped `StackProducer` for that ring), is undefined
+    /// behavior: both writers would fill the same slots and store the same
+    /// `tail`.
     ///
     /// Returns `None` if `ring_id >= P`.
     #[inline]
@@ -495,15 +509,43 @@ impl<T, const N: usize, const P: usize> Drop for StackConsumer<'_, T, N, P> {
 ///
 /// # Note
 ///
-/// `StackProducer` does NOT implement `Clone`. Cloning would allow multiple
-/// threads to write to the same ring, breaking the SPSC invariant.
+/// `StackProducer` does NOT implement `Clone` or `Sync`. Either would let
+/// two threads write to the same ring, breaking the SPSC invariant
+/// (INV-SW-01): `push` and `send` take `&self`.
+///
+/// ```compile_fail,E0277
+/// use ringmpsc_rs::StackChannel;
+///
+/// let channel: StackChannel<u64, 8, 1> = StackChannel::new();
+/// let producer = channel.register().expect("one producer");
+/// std::thread::scope(|s| {
+///     s.spawn(|| producer.push(1)); // ERROR: `StackProducer` is not `Sync`
+///     s.spawn(|| producer.push(2));
+/// });
+/// ```
+///
+/// Moving it to another thread is fine:
+///
+/// ```
+/// use ringmpsc_rs::StackChannel;
+///
+/// let channel: StackChannel<u64, 8, 1> = StackChannel::new();
+/// std::thread::scope(|s| {
+///     let producer = channel.register().expect("one producer");
+///     s.spawn(move || assert!(producer.push(1)));
+/// });
+/// ```
 pub struct StackProducer<'a, T, const N: usize, const P: usize> {
     channel: &'a StackChannel<T, N, P>,
     id: usize,
+    /// `Cell<()>` is `!Sync`, which makes `StackProducer` `!Sync` (INV-SW-01).
+    _not_sync: PhantomData<Cell<()>>,
 }
 
-// Safety: StackProducer is Send if T is Send.
-// Only this producer writes to its ring; the consumer reads.
+// Safety: moving a StackProducer to another thread moves its exclusive claim
+// on its ring with it, so the ring still has one producer (INV-SW-01,
+// INV-CH-01). Only this producer writes to its ring; the consumer reads.
+// StackProducer is deliberately not Sync.
 unsafe impl<T: Send, const N: usize, const P: usize> Send for StackProducer<'_, T, N, P> {}
 
 impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
@@ -526,7 +568,11 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     ///
     /// # Safety
     ///
-    /// The caller must write exactly `len` items before calling `commit(len)`.
+    /// The caller must follow `StackRing`'s [producer contract](StackRing#producer-contract), which
+    /// applies to this producer's ring: a `Some` result opens a reservation
+    /// (rule 2), and `ptr` may be used only while it is open (rule 4). A `push`
+    /// that returns `true`, or a `send` that sends anything, closes it: after
+    /// one, the pointer is dead and `commit` must not be called for it.
     ///
     /// # Example
     ///
@@ -542,16 +588,21 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub unsafe fn reserve(&self, n: usize) -> Option<(*mut T, usize)> {
-        self.channel.rings[self.id].reserve(n)
+        // SAFETY: rules 2-4 of the producer contract are forwarded to the
+        // caller. Rule 1 holds because this `StackProducer` is the ring's only
+        // producer (INV-SW-01, INV-CH-01): ids are unique per `register()`,
+        // and it is neither `Clone` nor `Sync`.
+        unsafe { self.channel.rings[self.id].reserve(n) }
     }
 
     /// Commit `n` elements that were written after `reserve()`.
     ///
     /// # Safety
     ///
-    /// - `n` must be at most the length returned by the preceding `reserve()`.
-    /// - The caller must have written `n` initialized values to the first `n`
-    ///   slots that `reserve()` returned.
+    /// The caller must follow `StackRing`'s [producer contract](StackRing#producer-contract): a
+    /// reservation from this producer's `reserve` must be open (no `commit`,
+    /// and no successful `push` or `send`, since), `n` must be at most its
+    /// length, and its first `n` slots must be written (rule 3).
     ///
     /// Without that, the consumer would read unwritten slots as `T`s (#15).
     /// Calling it without `unsafe` does not compile:
@@ -565,9 +616,11 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub unsafe fn commit(&self, n: usize) {
-        // SAFETY: forwarded from this function's own contract. A
-        // `StackProducer` is its ring's only producer: ids are unique per
-        // `register()` and `StackProducer` is not `Clone`.
+        // SAFETY: the written-slots requirement is forwarded from this
+        // function's own contract (INV-INIT-01). A `StackProducer` is its
+        // ring's only producer (INV-SW-01, INV-CH-01): ids are unique per
+        // `register()`, `StackProducer` is not `Clone`, and it is not `Sync`,
+        // so its `&self` methods never run on two threads at once.
         unsafe { self.channel.rings[self.id].commit(n) }
     }
 
@@ -584,7 +637,10 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     /// ```
     #[inline]
     pub fn push(&self, item: T) -> bool {
-        // SAFETY: We write exactly 1 item and commit 1
+        // SAFETY: this `StackProducer` is the ring's only producer and is not
+        // `Sync`, so no other thread reserves or commits on it (INV-SW-01,
+        // INV-CH-01). `reserve(1)` returns at least the one slot asked for,
+        // which is written before `commit(1)` publishes it (INV-INIT-01).
         unsafe {
             if let Some((ptr, len)) = self.reserve(1) {
                 debug_assert!(len >= 1);
@@ -607,6 +663,12 @@ impl<'a, T, const N: usize, const P: usize> StackProducer<'a, T, N, P> {
     {
         let mut sent = 0;
         while sent < items.len() {
+            // SAFETY: only producer, not `Sync` (INV-SW-01, INV-CH-01), as in
+            // `push`. `to_copy <= len`, so the copy stays inside the reserved
+            // window, and `sent + to_copy <= items.len()` keeps the source in
+            // bounds. All `to_copy` slots are written before `commit(to_copy)`
+            // publishes them (INV-INIT-01). `T: Copy`, so the copy can't
+            // double-drop.
             unsafe {
                 if let Some((ptr, len)) = self.reserve(items.len() - sent) {
                     let to_copy = len.min(items.len() - sent);

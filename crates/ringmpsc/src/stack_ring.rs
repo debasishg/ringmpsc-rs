@@ -138,6 +138,42 @@ impl<T> std::ops::DerefMut for CacheAligned<T> {
 /// and store it after a newer one, moving `head` backwards so the same items
 /// are read and dropped twice. For a ring owned by a `StackChannel`, make no
 /// such call outside its `StackConsumer` while one exists.
+///
+/// # Producer contract
+///
+/// The producer methods (`reserve`, `commit`) take `&self` and are `unsafe`.
+/// This is the one statement of their rules; every other producer-side
+/// Safety section in the crate points here.
+///
+/// 1. **Ordering (INV-SW-01).** Every producer call on one ring must be
+///    ordered by happens-before with every other: make them all from one
+///    thread, or hand the producer role to another thread through a
+///    Release/Acquire synchronization. Calls that merely don't overlap in
+///    time are not enough: `cached_head` is a plain cell and `tail` is read
+///    `Relaxed`, so two unordered writers race on them and fill the same
+///    slots. For a ring owned by a `StackChannel`, make no call except through
+///    its `StackProducer` while one exists for the ring, and order calls made
+///    after that producer is dropped with its last use.
+/// 2. **Open reservation.** A `reserve` that returns `Some((ptr, len))` opens
+///    a reservation of those `len` slots. It replaces any reservation that was
+///    already open, which is abandoned: `tail` hasn't moved, so both start at
+///    `tail`. A `reserve` that returns `None` opens nothing and changes
+///    nothing, so retrying it is always fine, and so is abandoning a
+///    reservation by never committing it.
+/// 3. **Commit (INV-INIT-01).** Call `commit(n)` only while a reservation is
+///    open, with `n <= len`, after writing the first `n` of its slots. That
+///    closes it. With no open reservation (before any `reserve`, or a second
+///    `commit` after one `reserve`), don't call `commit`: it would publish
+///    slots nobody wrote.
+/// 4. **Pointer.** Use `ptr` only while its reservation is open: not after
+///    its `commit`, which hands the slots to the consumer, and not after a
+///    later successful `reserve` abandons it.
+///
+/// A `StackProducer::push` that returns `true`, or a `send` that sends at
+/// least one item, counts as a successful `reserve` followed by its `commit`,
+/// so it closes any reservation that was open. A `push` that returns `false`,
+/// or a `send` that returns 0, is a `reserve` that returned `None` and
+/// changes nothing (rule 2).
 #[repr(C)]
 pub struct StackRing<T, const N: usize> {
     // === PRODUCER HOT === (128-byte aligned)
@@ -334,10 +370,8 @@ impl<T, const N: usize> StackRing<T, N> {
     ///
     /// # Safety
     ///
-    /// The caller must:
-    /// - Write to exactly `len` slots starting at `ptr` before calling `commit(len)`
-    /// - Not hold the pointer across a `commit()` call
-    /// - Ensure only one producer thread calls this
+    /// The caller must follow the [producer contract](StackRing#producer-contract). A `Some` result opens
+    /// a reservation (rule 2); `ptr` may be used only while it is open (rule 4).
     ///
     /// # Example
     ///
@@ -403,10 +437,9 @@ impl<T, const N: usize> StackRing<T, N> {
     ///
     /// # Safety
     ///
-    /// - `n` must be at most the length returned by the preceding `reserve()`.
-    /// - The caller must have written `n` initialized values to the first `n`
-    ///   slots that `reserve()` returned.
-    /// - The caller must be this ring's only producer.
+    /// The caller must follow the [producer contract](StackRing#producer-contract): a reservation must be
+    /// open, `n` must be at most its length, and its first `n` slots must be
+    /// written (rule 3).
     ///
     /// Calling it without `unsafe` does not compile:
     ///

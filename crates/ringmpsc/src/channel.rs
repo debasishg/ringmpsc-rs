@@ -5,6 +5,8 @@ use crate::{Config, Reservation, Ring};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU64;
+use std::cell::Cell;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -129,6 +131,7 @@ impl<T, A: BufferAllocator> Channel<T, A> {
         Ok(Producer {
             channel: Arc::clone(&self.inner),
             id,
+            _not_sync: PhantomData,
         })
     }
 
@@ -470,9 +473,39 @@ impl<T, A: BufferAllocator> Drop for Consumer<T, A> {
 /// Producer handle for sending to the channel.
 ///
 /// Each producer has a dedicated ring buffer, eliminating contention.
+///
+/// A `Producer` is `Send` but not `Sync`: it can move to another thread,
+/// but it can't be shared between threads (INV-SW-01, INV-CH-01). `push`
+/// and `send` take `&self`, so a shared `&Producer` would let two threads
+/// write the same slot and store the same `tail`.
+///
+/// ```compile_fail,E0277
+/// use ringmpsc_rs::{Channel, Config};
+///
+/// let channel = Channel::<u64>::new(Config::new(3, 1, false));
+/// let producer = channel.register().expect("one producer");
+/// std::thread::scope(|s| {
+///     s.spawn(|| producer.push(1)); // ERROR: `Producer` is not `Sync`
+///     s.spawn(|| producer.push(2));
+/// });
+/// ```
+///
+/// Moving it to another thread is fine:
+///
+/// ```
+/// use ringmpsc_rs::{Channel, Config};
+///
+/// let channel = Channel::<u64>::new(Config::new(3, 1, false));
+/// let producer = channel.register().expect("one producer");
+/// std::thread::spawn(move || assert!(producer.push(1)))
+///     .join()
+///     .expect("producer thread");
+/// ```
 pub struct Producer<T, A: BufferAllocator = HeapAllocator> {
     channel: Arc<ChannelInner<T, A>>,
     id: usize,
+    /// `Cell<()>` is `!Sync`, which makes `Producer` `!Sync` (INV-SW-01).
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<T, A: BufferAllocator> Producer<T, A> {
@@ -530,7 +563,9 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     pub fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
         // SAFETY: `&mut self` is exclusive and a `Producer` is the only route
         // to its ring (ids are unique per `register()` and `Producer` is not
-        // `Clone`), so no other reservation on that ring can be outstanding.
+        // `Clone`; INV-CH-01), so no other reservation on that ring can be
+        // outstanding. `Producer` is not `Sync`, so every producer call on the
+        // ring stays on the thread that owns it (INV-SW-01).
         unsafe { self.channel.rings[self.id].reserve_shared(n) }
     }
 
@@ -540,7 +575,9 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     #[inline]
     #[must_use]
     pub fn reserve_with_backoff(&mut self, n: usize) -> Option<Reservation<'_, T, A>> {
-        // SAFETY: as in `reserve`.
+        // SAFETY: as in `reserve`: `&mut self` is exclusive, this is the
+        // ring's only producer (INV-CH-01), and its calls stay on one thread
+        // (INV-SW-01).
         unsafe { self.channel.rings[self.id].reserve_with_backoff_shared(n) }
     }
 
@@ -561,9 +598,11 @@ impl<T, A: BufferAllocator> Producer<T, A> {
         // SAFETY: `&self` suffices here because a `Reservation` can only be
         // obtained through `reserve(&mut self)`, and while one is alive it
         // holds that `&mut` borrow - so this method cannot be called. No
-        // other route reaches this ring: ids are unique per `register()`,
-        // `Producer` is not `Clone`, and `Channel::get_ring` hands out `&Ring`,
-        // which can neither reserve nor consume.
+        // other thread can call it at the same time: `Producer` is not `Sync`,
+        // so `&self` stays on one thread (INV-SW-01). No other route reaches
+        // this ring: ids are unique per `register()`, `Producer` is not
+        // `Clone`, and `Channel::get_ring` hands out `&Ring`, which can
+        // neither reserve nor consume (INV-CH-01).
         unsafe { self.channel.rings[self.id].push_shared(item) }
     }
 
@@ -573,7 +612,9 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     where
         T: Copy,
     {
-        // SAFETY: as in `push`.
+        // SAFETY: as in `push`: no `Reservation` can be alive while `&self` is
+        // usable, this is the ring's only producer (INV-CH-01), and `Producer`
+        // is not `Sync`, so its calls stay on one thread (INV-SW-01).
         unsafe { self.channel.rings[self.id].send_shared(items) }
     }
 
@@ -591,14 +632,15 @@ impl<T, A: BufferAllocator> Producer<T, A> {
     }
 }
 
-// Note: Producer intentionally does NOT implement Clone.
-// Cloning would allow multiple threads to write to the same Ring,
-// breaking the single-producer invariant that enables lock-free operation.
+// Note: Producer intentionally does NOT implement Clone or Sync.
+// Either would let two threads write to the same Ring, breaking the
+// single-producer invariant that enables lock-free operation.
 
-// Safety: Producer is Send + Sync as long as T is Send.
-// BufferAllocator requires Send + Sync.
+// Safety: moving a Producer to another thread moves its exclusive claim on
+// its ring with it, so the ring still has one producer (INV-SW-01,
+// INV-CH-01). Items of type T cross threads, so T must be Send.
+// BufferAllocator requires Send + Sync. Producer is deliberately not Sync.
 unsafe impl<T: Send, A: BufferAllocator> Send for Producer<T, A> {}
-unsafe impl<T: Send, A: BufferAllocator> Sync for Producer<T, A> {}
 
 #[cfg(test)]
 mod tests {

@@ -27,13 +27,60 @@ pin_project! {
     /// to preserve the single-producer-per-ring invariant. To create
     /// multiple senders, call `SenderFactory::register()` for each.
     pub struct RingSender<T> {
-        producer: Producer<T>,
+        producer: ExclusiveProducer<T>,
         data_notify: Arc<Notify>,
         backpressure_notify: Arc<Notify>,
         shutdown_state: Arc<ShutdownState>,
         pending_item: Option<T>,
     }
 }
+
+/// Holds the `Producer` in its own module, so the tuple field is private to
+/// it: nothing else in this file can reach `Producer::push` / `send` through
+/// `&self`, and the `unsafe impl Sync` below stays true by construction.
+mod exclusive {
+    use ringmpsc_rs::{Producer, Reservation};
+
+    /// A `Producer` reached only through `&mut self` for writes.
+    ///
+    /// `Producer` is `!Sync` because its `push` and `send` take `&self`. This
+    /// wrapper doesn't expose them: it forwards `reserve` through `&mut self`, and
+    /// through `&self` only `is_closed` and `close`, which touch nothing but
+    /// atomics. So it is safe to share, and `RingSender` gets its `Sync` from the
+    /// compiler, which still checks every other field.
+    pub(super) struct ExclusiveProducer<T>(Producer<T>);
+
+    // Safety: a shared `&ExclusiveProducer` can only call `is_closed` and `close`,
+    // which are atomic loads and stores. Every write to the ring goes through
+    // `&mut self`, so it stays on one thread at a time and the ring keeps a single
+    // producer (ringmpsc INV-SW-01). Keep it that way: never add a `&self` method
+    // that reserves, pushes or sends, and never hand out `&Producer`. `T: Send`
+    // matches `Producer`'s own `Send` bound.
+    unsafe impl<T: Send> Sync for ExclusiveProducer<T> {}
+
+    impl<T> ExclusiveProducer<T> {
+        #[inline]
+        pub(super) fn new(producer: Producer<T>) -> Self {
+            Self(producer)
+        }
+
+        #[inline]
+        pub(super) fn reserve(&mut self, n: usize) -> Option<Reservation<'_, T>> {
+            self.0.reserve(n)
+        }
+
+        #[inline]
+        pub(super) fn is_closed(&self) -> bool {
+            self.0.is_closed()
+        }
+
+        #[inline]
+        pub(super) fn close(&self) {
+            self.0.close();
+        }
+    }
+}
+use exclusive::ExclusiveProducer;
 
 impl<T: Send + 'static> RingSender<T> {
     /// Creates a new sender wrapping the given producer.
@@ -44,7 +91,7 @@ impl<T: Send + 'static> RingSender<T> {
         shutdown_state: Arc<ShutdownState>,
     ) -> Self {
         Self {
-            producer,
+            producer: ExclusiveProducer::new(producer),
             data_notify,
             backpressure_notify,
             shutdown_state,
@@ -89,18 +136,15 @@ impl<T: Send + 'static> RingSender<T> {
     /// This is a convenience method for simple async sending.
     /// Uses reserve/commit internally to ensure no item loss.
     pub async fn send(&mut self, item: T) -> Result<(), StreamError> {
-
-        let mut item = Some(item);
-
         loop {
             if self.shutdown_state.is_closed() || self.producer.is_closed() {
                 return Err(StreamError::Closed);
             }
 
-            // Try to reserve space
+            // Try to reserve space. `item` is moved only on this branch,
+            // which always returns, so it is still here on the next attempt.
             if let Some(mut reservation) = self.producer.reserve(1) {
-                // Safety: item is Some here
-                if reservation.push(item.take().unwrap()).is_err() {
+                if reservation.push(item).is_err() {
                     unreachable!("a one-slot reservation has room for one item");
                 }
                 reservation.commit();
@@ -112,9 +156,10 @@ impl<T: Send + 'static> RingSender<T> {
             }
 
             // Ring is full - wait for backpressure relief
-            // INV-SINK-01: Item preserved (still in Option)
+            // INV-SINK-01: Item preserved. The compiler guarantees it here:
+            // `item` was not moved, or this line wouldn't compile.
             #[cfg(debug_assertions)]
-            debug_assert_item_preserved!(true, item.is_some());
+            debug_assert_item_preserved!(true, true);
 
             // BACKPRESSURE FLOW:
             // ==================
@@ -402,5 +447,16 @@ impl<T: Send + Clone + 'static> RingSender<T> {
 
             // Retry - item is cloned on each attempt
         }
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::RingSender;
+
+    #[test]
+    fn ring_sender_is_send_and_sync() {
+        fn assert_send_sync<S: Send + Sync>() {}
+        assert_send_sync::<RingSender<u64>>();
     }
 }
